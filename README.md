@@ -4,6 +4,8 @@ English | [中文](./README.zh-CN.md)
 
 Create and edit CapCut projects from the command line. Build drafts from scratch, add media, modify subtitles, cut long-form to shorts.
 
+> **Looking for the complete viral-shorts workflow?** `capcut-cli` is the engine I use to ship YouTube Shorts at volume. The full pipeline — story selection, hook templates, the Claude skill that drives it — is packaged as the **[Viral Story Shorts Blueprint](https://renezander.gumroad.com/l/viral-youtube-shorts-blueprint?utm_source=capcut-cli&utm_medium=readme&utm_campaign=hero)**.
+
 ## The problem
 
 CapCut stores projects as `draft_content.json` -- deeply nested, undocumented, with timing in microseconds and text buried inside escaped JSON-in-JSON. Every manual edit means: find the right segment ID, trace it to the material, figure out the content format, convert your timestamp, edit, pray you didn't break the structure. **15 seconds per change**, minimum.
@@ -189,6 +191,8 @@ capcut add-text ./teaser.json 0s 5s "MYCENAE" --font-size 24 --color "#FFD700"
 capcut add-text ./teaser.json 55s 5s "Full video in description" --font-size 14
 ```
 
+> **Cutting long-form into viral Shorts is what I built this for.** The full pipeline — picking the right 60-second story, writing hooks that hold attention, the Claude skill that orchestrates `capcut-cli` end-to-end — is the [Viral Story Shorts Blueprint](https://renezander.gumroad.com/l/viral-youtube-shorts-blueprint?utm_source=capcut-cli&utm_medium=readme&utm_campaign=cut-section).
+
 ### Batch
 
 Multiple edits, one JSON parse, one file write:
@@ -261,6 +265,12 @@ End-to-end recipes in [`examples/`](./examples/):
 - [Programmatic Ken Burns zoom keyframes](./examples/keyframe-zoom.md)
 - [Unfinished-pan keyframe pattern for epilogue stills](./examples/keyframe-pan.md)
 - [Pre-flight check on VO + word-level timestamps](./examples/verify-vo-alignment.md)
+
+## What's next
+
+- **Want the full viral-shorts system, not just the CLI?** Get the [Viral Story Shorts Blueprint + Claude Skill](https://renezander.gumroad.com/l/viral-youtube-shorts-blueprint?utm_source=capcut-cli&utm_medium=readme&utm_campaign=footer) — the complete pipeline I use to ship Shorts at volume.
+- **Author**: I'm Rene Zander — I build AI-driven content automation systems. More guides at [renezander.com](https://renezander.com/?utm_source=capcut-cli&utm_medium=readme&utm_campaign=author).
+- **Hire me** for AI/automation work: [renezander.com/contact](https://renezander.com/contact/?utm_source=capcut-cli&utm_medium=readme&utm_campaign=hire).
 
 ## License
 

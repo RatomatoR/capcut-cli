@@ -4,6 +4,8 @@
 
 命令行编辑 CapCut / 剪映 (JianYing) 项目文件。从零创建草稿、添加素材、修改字幕、把长视频切成短片。
 
+> **想要完整的爆款短视频工作流？** `capcut-cli` 是我量产 YouTube Shorts 的底层引擎。完整流水线 —— 选题逻辑、爆款开头模板、驱动它的 Claude skill —— 都打包在 **[Viral Story Shorts Blueprint（爆款故事短片蓝图）](https://renezander.gumroad.com/l/viral-youtube-shorts-blueprint?utm_source=capcut-cli&utm_medium=readme-cn&utm_campaign=hero)**。
+
 ## 解决什么问题
 
 CapCut / 剪映把项目存为 `draft_content.json` —— 嵌套很深、没有官方文档、时间单位是微秒、文字内容嵌套在转义过的 JSON 字符串里。每次手动修改都要：找到正确的 segment ID，关联到 material，搞清楚内容格式，转换时间戳，编辑，然后祈祷自己没把结构改坏。**最少 15 秒一次。**
@@ -70,6 +72,8 @@ capcut cut ./project 1:00 2:00 --out ./short.json
 # 导出 SRT
 capcut export-srt ./project > subtitles.srt
 ```
+
+> **把长视频切成爆款短片** 正是我做这个工具的初衷。完整流水线 —— 挑出值得做成 60 秒的故事、写能抓住观众的开头、用 Claude skill 串起 `capcut-cli` 全自动跑 —— 在 [Viral Story Shorts Blueprint](https://renezander.gumroad.com/l/viral-youtube-shorts-blueprint?utm_source=capcut-cli&utm_medium=readme-cn&utm_campaign=cut-section) 里。
 
 ## 从零创建剪映 / CapCut 草稿
 
@@ -148,6 +152,11 @@ capcut set-text ./project a1b2c3 "新文字" -q
 ## 示例
 
 更多端到端的例子见 [`examples/`](./examples/)。
+
+## 下一步
+
+- **想要完整的爆款短片系统，不只是 CLI？** 入手 [Viral Story Shorts Blueprint + Claude Skill](https://renezander.gumroad.com/l/viral-youtube-shorts-blueprint?utm_source=capcut-cli&utm_medium=readme-cn&utm_campaign=footer) —— 我量产 Shorts 的完整流水线。
+- **作者**：Rene Zander，做 AI 内容自动化。更多技术文章：[renezander.com](https://renezander.com/?utm_source=capcut-cli&utm_medium=readme-cn&utm_campaign=author)。
 
 ## License
 
