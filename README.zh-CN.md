@@ -4,7 +4,7 @@
 
 命令行编辑 CapCut / 剪映 (JianYing) 项目文件。从零创建草稿、添加素材、修改字幕、把长视频切成短片。
 
-> **想要完整的爆款短视频工作流？** `capcut-cli` 是我量产 YouTube Shorts 的底层引擎。完整流水线 —— 选题逻辑、爆款开头模板、驱动它的 Claude skill —— 都打包在 **[Viral Story Shorts Blueprint（爆款故事短片蓝图）](https://renezander.gumroad.com/l/viral-youtube-shorts-blueprint?utm_source=capcut-cli&utm_medium=readme-cn&utm_campaign=hero)**。
+> **想要完整的国产大模型 + 剪映短视频流水线？** `capcut-cli` 是引擎，配套的 **[病毒短视频蓝图](https://renezander.com/zh-cn/guides/automate-xiaohongshu-capcut-cli/?utm_source=capcut-cli&utm_medium=readme&utm_campaign=hero-cn)** 给你完整方法 —— DeepSeek / GLM / Kimi / Qwen 都能跑，专为 **小红书 + 抖音** 优化（不是 YouTube），**支付宝 / 微信支付** 通过 Stripe 直接下单。
 
 ## 解决什么问题
 
@@ -22,6 +22,18 @@ $ capcut set-text ./project a1b2c3 "字幕已修正"
 
 零依赖。默认 JSON 输出。可管道。同时支持 CapCut 和剪映 (JianYing)。
 
+## 模型无关 — 国产大模型友好
+
+`capcut-cli` 是纯命令行工具，**不绑定任何 AI 模型**。它接受任何能输出 JSON 的脚本作为输入。配套的提示词和 Skill 已在以下模型上验证：
+
+- **DeepSeek-V3 / R1** —— 国内首选，编程和结构化输出最稳，性价比最高
+- **智谱 GLM-4.5** —— 中文短视频文案首选，中文流畅度最好
+- **Moonshot Kimi** —— 200k+ 长上下文，适合从长视频选段
+- **通义千问 Qwen** —— 阿里云生态打通，企业部署友好
+- Claude / OpenAI Codex —— 海外用户可用，性能强但需科学上网
+
+> 海外创作者常用的 Claude Code Plugin (`/plugin marketplace add ...`) 也支持，但**不是前置条件**。详见英文 README。
+
 ## 安装
 
 ```bash
@@ -32,15 +44,6 @@ npm install -g capcut-cli
 ```bash
 npx capcut-cli info ./my-project/
 ```
-
-### Claude Code 插件
-
-```
-/plugin marketplace add https://github.com/renezander030/capcut-cli
-/plugin enable capcut-cli
-```
-
-启用后 Claude Code 拥有 `/capcut-cli:capcut-edit` 技能，自动安装 CLI、识别命令、定位 macOS/Windows 上的项目目录。
 
 ## 常用命令
 
@@ -72,8 +75,6 @@ capcut cut ./project 1:00 2:00 --out ./short.json
 # 导出 SRT
 capcut export-srt ./project > subtitles.srt
 ```
-
-> **把长视频切成爆款短片** 正是我做这个工具的初衷。完整流水线 —— 挑出值得做成 60 秒的故事、写能抓住观众的开头、用 Claude skill 串起 `capcut-cli` 全自动跑 —— 在 [Viral Story Shorts Blueprint](https://renezander.gumroad.com/l/viral-youtube-shorts-blueprint?utm_source=capcut-cli&utm_medium=readme-cn&utm_campaign=cut-section) 里。
 
 ## 从零创建剪映 / CapCut 草稿
 
@@ -108,17 +109,40 @@ echo '{"cmd":"set-text","id":"a1b2c3","text":"第一行已修正"}
 {"cmd":"shift-all","offset":"+0.3s","track":"text"}' | capcut batch ./project
 ```
 
-## 模板复用
+## 模板复用 — 开箱即用
 
-把任意 segment（标题、贴纸、视频、音频）抽成模板，跨项目复用：
+`templates/` 目录内置 3 个常用模板，安装后即可直接使用：
 
 ```bash
-# 抽出来
-capcut save-template ./project <id> "我的标题样式" --out ./title.json
+# 大标题（黄色 + 黑边 + 阴影，适合开场)
+capcut apply-template ./project ./node_modules/capcut-cli/templates/gold-title.json 0s 5s "你发现了吗？"
 
-# 用到别的项目
+# 片尾卡片（白色居中）
+capcut apply-template ./project ./node_modules/capcut-cli/templates/end-card.json 50s 5s "下一条更精彩"
+
+# 关注引导（右下角，红色)
+capcut apply-template ./project ./node_modules/capcut-cli/templates/subscribe-cta.json 55s 5s "点关注 →"
+```
+
+也可以把项目里现成的 segment（标题、贴纸、视频、音频）抽成自己的模板：
+
+```bash
+capcut save-template ./project <id> "我的标题样式" --out ./title.json
 capcut apply-template ./other ./title.json 0s 5s
 ```
+
+## 长视频切短 — 短视频流水线核心
+
+```bash
+# 从 10 分钟长视频切出 60 秒爆款片段
+capcut cut ./project 1:00 2:00 --out ./teaser.json
+
+# 加标题
+capcut add-text ./teaser.json 0s 5s "你绝对没看过" --font-size 24 --color "#FFD700"
+capcut add-text ./teaser.json 55s 5s "完整版在主页" --font-size 14
+```
+
+> **把长视频切成小红书 / 抖音爆款，是这个工具的主要场景。** 完整方法 —— 选题、爆款钩子、剧本结构、配音对齐、自动批量产出 —— 都打包在 **[病毒短视频蓝图](https://renezander.com/zh-cn/guides/automate-xiaohongshu-capcut-cli/?utm_source=capcut-cli&utm_medium=readme&utm_campaign=cut-section-cn)**。支付宝 / 微信支付直接下单（Stripe 收款，国内卡和海外卡都支持）。
 
 ## 输出格式
 
@@ -155,8 +179,9 @@ capcut set-text ./project a1b2c3 "新文字" -q
 
 ## 下一步
 
-- **想要完整的爆款短片系统，不只是 CLI？** 入手 [Viral Story Shorts Blueprint + Claude Skill](https://renezander.gumroad.com/l/viral-youtube-shorts-blueprint?utm_source=capcut-cli&utm_medium=readme-cn&utm_campaign=footer) —— 我量产 Shorts 的完整流水线。
-- **作者**：Rene Zander，做 AI 内容自动化。更多技术文章：[renezander.com](https://renezander.com/?utm_source=capcut-cli&utm_medium=readme-cn&utm_campaign=author)。
+- **想要完整的短视频流水线（不只是 CLI）？** 拿 [病毒短视频蓝图 + AI Skill](https://renezander.com/zh-cn/guides/automate-xiaohongshu-capcut-cli/?utm_source=capcut-cli&utm_medium=readme&utm_campaign=footer-cn) —— DeepSeek / GLM / Kimi / Qwen 都能跑，专为小红书 + 抖音优化，支付宝 / 微信支付一键下单。
+- **作者**：我是 René Zander，专注 AI 内容自动化系统。更多中文教程：[renezander.com/zh-cn](https://renezander.com/zh-cn/?utm_source=capcut-cli&utm_medium=readme&utm_campaign=author-cn)
+- **企业定制 / 合作**：[renezander.com/zh-cn/contact](https://renezander.com/zh-cn/contact/?utm_source=capcut-cli&utm_medium=readme&utm_campaign=hire-cn)
 
 ## License
 
