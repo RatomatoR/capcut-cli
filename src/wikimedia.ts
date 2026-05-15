@@ -17,7 +17,7 @@
 // User-Agent is required — Wikimedia 403s anonymous requests. Use a stable id
 // so ops teams can correlate if traffic spikes.
 
-import { writeFile, mkdir } from "node:fs/promises";
+import { mkdir, writeFile } from "node:fs/promises";
 import { dirname, extname, join } from "node:path";
 import { URL } from "node:url";
 
@@ -26,18 +26,18 @@ const UA = "capcut-cli/0.3 (+https://github.com/renezander030/capcut-cli/issues)
 export type LicenseClass = "permissive" | "fair-use" | "restrictive" | "unknown";
 
 export interface WikimediaAsset {
-  fileTitle: string;            // e.g. "File:Barcelona_collage.jpg"
-  directUrl: string;             // upload.wikimedia.org CDN URL
-  descriptionUrl: string;        // commons page URL
-  mime: string;                  // e.g. "image/jpeg"
+  fileTitle: string; // e.g. "File:Barcelona_collage.jpg"
+  directUrl: string; // upload.wikimedia.org CDN URL
+  descriptionUrl: string; // commons page URL
+  mime: string; // e.g. "image/jpeg"
   sizeBytes: number | null;
   width: number | null;
   height: number | null;
   license: {
-    raw: string | null;          // LicenseShortName.value or null
+    raw: string | null; // LicenseShortName.value or null
     class: LicenseClass;
-    artist: string | null;       // from extmetadata.Artist.value (may contain HTML)
-    credit: string | null;       // from extmetadata.Credit.value
+    artist: string | null; // from extmetadata.Artist.value (may contain HTML)
+    credit: string | null; // from extmetadata.Credit.value
   };
 }
 
@@ -62,7 +62,12 @@ export function classifyLicense(raw: string | null | undefined): LicenseClass {
   const s = raw.trim().toLowerCase();
   // Permissive: Creative Commons (CC0, CC BY, CC BY-SA, CC-PD), Public domain, no restrictions.
   // Match ahead of fair-use because "CC BY-NC" contains "nc" — that's NOT permissive.
-  if (/^cc0\b|^cc-?0\b|^cc\s*by(\s*-?\s*sa)?(\s+\d|\s*$)|\bpublic\s*domain\b|\bpd[- ]|^pd\b|^pd$|no\s*restrictions/i.test(raw)) return "permissive";
+  if (
+    /^cc0\b|^cc-?0\b|^cc\s*by(\s*-?\s*sa)?(\s+\d|\s*$)|\bpublic\s*domain\b|\bpd[- ]|^pd\b|^pd$|no\s*restrictions/i.test(
+      raw,
+    )
+  )
+    return "permissive";
   if (/\bnc\b|non[- ]?commercial|\bnd\b|no[- ]?deriv/i.test(raw)) return "restrictive";
   if (/fair[- ]?use|fair[- ]?dealing|\bfu\b/i.test(raw)) return "fair-use";
   if (/©|copyright/.test(s)) return "restrictive";
@@ -93,31 +98,36 @@ export function extractFileTitle(u: string): string | null {
         return titles.replace(/^(Image|Media):/i, "File:");
       }
     }
-  } catch { /* fall through */ }
+  } catch {
+    /* fall through */
+  }
   return null;
 }
 
 // Result wrapper for API JSON — minimal typing; we only touch a few fields.
 interface ApiResponse {
   query?: {
-    pages?: Record<string, {
-      title?: string;
-      pageid?: number;
-      missing?: string;
-      pageimage?: string;
-      pageprops?: { page_image_free?: string };
-      original?: { source?: string };
-      imageinfo?: Array<{
-        url?: string;
-        descriptionurl?: string;
-        descriptionshorturl?: string;
-        mime?: string;
-        size?: number;
-        width?: number;
-        height?: number;
-        extmetadata?: Record<string, { value?: string; source?: string }>;
-      }>;
-    }>;
+    pages?: Record<
+      string,
+      {
+        title?: string;
+        pageid?: number;
+        missing?: string;
+        pageimage?: string;
+        pageprops?: { page_image_free?: string };
+        original?: { source?: string };
+        imageinfo?: Array<{
+          url?: string;
+          descriptionurl?: string;
+          descriptionshorturl?: string;
+          mime?: string;
+          size?: number;
+          width?: number;
+          height?: number;
+          extmetadata?: Record<string, { value?: string; source?: string }>;
+        }>;
+      }
+    >;
   };
 }
 
@@ -125,7 +135,7 @@ async function apiGet(api: string, params: Record<string, string>): Promise<ApiR
   const url = new URL(api);
   for (const [k, v] of Object.entries(params)) url.searchParams.set(k, v);
   const res = await fetch(url.toString(), {
-    headers: { "User-Agent": UA, "Accept": "application/json" },
+    headers: { "User-Agent": UA, Accept: "application/json" },
   });
   if (!res.ok) throw new Error(`Wikimedia API HTTP ${res.status} on ${url.toString()}`);
   return (await res.json()) as ApiResponse;
@@ -139,8 +149,11 @@ async function resolvePageimagesApi(apiUrl: string): Promise<string> {
   const titles = url.searchParams.get("titles");
   if (!titles) throw new Error("api.php URL missing titles");
   const resp = await apiGet(api, {
-    action: "query", format: "json", prop: "pageimages|pageprops",
-    piprop: "original", titles,
+    action: "query",
+    format: "json",
+    prop: "pageimages|pageprops",
+    piprop: "original",
+    titles,
   });
   const pages = resp.query?.pages ?? {};
   for (const p of Object.values(pages)) {
@@ -167,7 +180,8 @@ export async function resolveWikimediaAsset(inputUrl: string): Promise<Wikimedia
 
   const COMMONS_API = "https://commons.wikimedia.org/w/api.php";
   const resp = await apiGet(COMMONS_API, {
-    action: "query", format: "json",
+    action: "query",
+    format: "json",
     titles: fileTitle,
     prop: "imageinfo",
     iiprop: "url|size|mime|extmetadata",
@@ -216,9 +230,9 @@ export async function downloadAsset(asset: WikimediaAsset, destPath: string): Pr
 }
 
 export interface FetchOptions {
-  forceLicense?: boolean;        // override non-permissive license gate
-  destDir: string;               // directory to save into
-  destFilename?: string;         // override filename (else derived from fileTitle)
+  forceLicense?: boolean; // override non-permissive license gate
+  destDir: string; // directory to save into
+  destFilename?: string; // override filename (else derived from fileTitle)
 }
 
 export interface FetchResult {
@@ -234,17 +248,19 @@ export async function fetchWikimediaAsset(inputUrl: string, opts: FetchOptions):
   const cls = asset.license.class;
   if (cls === "restrictive" || cls === "unknown") {
     if (!opts.forceLicense) {
-      const msg = cls === "restrictive"
-        ? `License is restrictive ("${asset.license.raw}") — refusing. Re-run with --force-license to override (e.g. if you have separate rights or claim fair use).`
-        : `License is unknown (extmetadata missing LicenseShortName) — refusing. Re-run with --force-license to proceed anyway.`;
+      const msg =
+        cls === "restrictive"
+          ? `License is restrictive ("${asset.license.raw}") — refusing. Re-run with --force-license to override (e.g. if you have separate rights or claim fair use).`
+          : `License is unknown (extmetadata missing LicenseShortName) — refusing. Re-run with --force-license to proceed anyway.`;
       throw new Error(msg);
     }
   }
-  const warning = cls === "fair-use"
-    ? `License "${asset.license.raw}" indicates fair-use — usually legal for short educational content but not guaranteed. Review Commons page: ${asset.descriptionUrl}`
-    : (cls === "restrictive" || cls === "unknown") && opts.forceLicense
-      ? `--force-license: proceeding despite ${cls} license ("${asset.license.raw ?? "unset"}"). You take responsibility. Source: ${asset.descriptionUrl}`
-      : undefined;
+  const warning =
+    cls === "fair-use"
+      ? `License "${asset.license.raw}" indicates fair-use — usually legal for short educational content but not guaranteed. Review Commons page: ${asset.descriptionUrl}`
+      : (cls === "restrictive" || cls === "unknown") && opts.forceLicense
+        ? `--force-license: proceeding despite ${cls} license ("${asset.license.raw ?? "unset"}"). You take responsibility. Source: ${asset.descriptionUrl}`
+        : undefined;
 
   // Derive filename from File:Foo.jpg if not overridden. Preserve extension.
   const filenameFromTitle = asset.fileTitle.replace(/^File:/i, "").replace(/\s+/g, "_");

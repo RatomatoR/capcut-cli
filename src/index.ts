@@ -1,15 +1,60 @@
 #!/usr/bin/env node
 
 import { readFileSync, writeFileSync } from "node:fs";
-import { loadDraft, saveDraft, extractText, updateTextContent, findSegment, findMaterial, findMaterialGlobal, getMaterialTypes, getTracksByType } from "./draft.js";
-import { formatTime, formatDuration, parseTimeInput, srtTime } from "./time.js";
-import { addText, addAudio, addVideo, addSticker, addEffect, cutProject, saveTemplate, applyTemplate, initDraft, effectSlugs, copyTextStyle, resolveAssetPath } from "./factory.js";
-import { addKeyframes, parseKeyframeValue, keyframeProperties, addTransition, addMask, setBgBlur, setTextStyle, addTextAnim, addImageAnim, setTextRanges, transitionSlugs, maskSlugs, textAnimSlugs, imageAnimSlugs } from "./decorators.js";
-import type { KeyframeInput, MaskOptions, TextStyleOptions, TextAnimOptions, ImageAnimOptions, TextRangeInput } from "./decorators.js";
-import type { Draft, Track, Segment } from "./draft.js";
-import type { AddTextOptions, AddAudioOptions, AddVideoOptions, CutOptions, InitOptions } from "./factory.js";
-import { listEnum, type Category, type Namespace } from "./enums.js";
+import type {
+  ImageAnimOptions,
+  KeyframeInput,
+  MaskOptions,
+  TextAnimOptions,
+  TextRangeInput,
+  TextStyleOptions,
+} from "./decorators.js";
+import {
+  addImageAnim,
+  addKeyframes,
+  addMask,
+  addTextAnim,
+  addTransition,
+  imageAnimSlugs,
+  keyframeProperties,
+  maskSlugs,
+  parseKeyframeValue,
+  setBgBlur,
+  setTextRanges,
+  setTextStyle,
+  textAnimSlugs,
+  transitionSlugs,
+} from "./decorators.js";
+import type { Draft, Segment, Track } from "./draft.js";
+import {
+  extractText,
+  findMaterial,
+  findMaterialGlobal,
+  findSegment,
+  getMaterialTypes,
+  getTracksByType,
+  loadDraft,
+  saveDraft,
+  updateTextContent,
+} from "./draft.js";
+import { type Category, listEnum, type Namespace } from "./enums.js";
+import type { AddAudioOptions, AddTextOptions, AddVideoOptions, CutOptions, InitOptions } from "./factory.js";
+import {
+  addAudio,
+  addEffect,
+  addSticker,
+  addText,
+  addVideo,
+  applyTemplate,
+  copyTextStyle,
+  cutProject,
+  effectSlugs,
+  initDraft,
+  resolveAssetPath,
+  saveTemplate,
+} from "./factory.js";
 import { parseSrt } from "./srt.js";
+import { formatDuration, formatTime, parseTimeInput, srtTime } from "./time.js";
 
 const HELP = `capcut-cli -- fast edits to CapCut projects
 
@@ -260,18 +305,18 @@ interface Flags {
 
 // Map CLI enum flags -> enums.json category key. Order matters for HELP text.
 const ENUM_FLAG_MAP: Array<{ flag: string; category: Category }> = [
-  { flag: "--transitions",       category: "transitions" },
-  { flag: "--masks",             category: "masks" },
-  { flag: "--image-intros",      category: "image_intros" },
-  { flag: "--image-outros",      category: "image_outros" },
-  { flag: "--image-combos",      category: "image_combos" },
-  { flag: "--text-intros",       category: "text_intros" },
-  { flag: "--text-outros",       category: "text_outros" },
-  { flag: "--text-loop-anims",   category: "text_loop_anims" },
-  { flag: "--scene-effects",     category: "scene_effects" },
+  { flag: "--transitions", category: "transitions" },
+  { flag: "--masks", category: "masks" },
+  { flag: "--image-intros", category: "image_intros" },
+  { flag: "--image-outros", category: "image_outros" },
+  { flag: "--image-combos", category: "image_combos" },
+  { flag: "--text-intros", category: "text_intros" },
+  { flag: "--text-outros", category: "text_outros" },
+  { flag: "--text-loop-anims", category: "text_loop_anims" },
+  { flag: "--scene-effects", category: "scene_effects" },
   { flag: "--character-effects", category: "character_effects" },
-  { flag: "--audio-effects",     category: "audio_effects" },
-  { flag: "--fonts",             category: "fonts" },
+  { flag: "--audio-effects", category: "audio_effects" },
+  { flag: "--fonts", category: "fonts" },
 ];
 
 function parseFlags(args: string[]): { positional: string[]; flags: Flags } {
@@ -282,68 +327,127 @@ function parseFlags(args: string[]): { positional: string[]; flags: Flags } {
     if (a === "-H" || a === "--human") flags.human = true;
     else if (a === "-q" || a === "--quiet") flags.quiet = true;
     else if (a === "--batch") flags.batch = true;
-    else if ((a === "--track" || a === "--type") && i + 1 < args.length) { flags.track = args[++i]; }
-    else if (a === "--out" && i + 1 < args.length) { flags.out = args[++i]; }
-    else if (a === "--font-size" && i + 1 < args.length) { flags.fontSize = parseFloat(args[++i]); }
-    else if (a === "--color" && i + 1 < args.length) { flags.color = args[++i]; }
-    else if (a === "--align" && i + 1 < args.length) { flags.align = parseInt(args[++i]); }
-    else if (a === "--x" && i + 1 < args.length) { flags.x = parseFloat(args[++i]); }
-    else if (a === "--y" && i + 1 < args.length) { flags.y = parseFloat(args[++i]); }
-    else if (a === "--track-name" && i + 1 < args.length) { flags.trackName = args[++i]; }
-    else if (a === "--volume" && i + 1 < args.length) { flags.volume = parseFloat(args[++i]); }
-    else if (a === "--template" && i + 1 < args.length) { flags.template = args[++i]; }
-    else if (a === "--drafts" && i + 1 < args.length) { flags.drafts = args[++i]; }
-    else if (a === "--duration" && i + 1 < args.length) { flags.duration = args[++i]; }
-    else if (a === "--off") { flags.off = true; }
-    else if (a === "--center-x" && i + 1 < args.length) { flags.centerX = parseFloat(args[++i]); }
-    else if (a === "--center-y" && i + 1 < args.length) { flags.centerY = parseFloat(args[++i]); }
-    else if (a === "--size" && i + 1 < args.length) { flags.size = parseFloat(args[++i]); }
-    else if (a === "--rotation" && i + 1 < args.length) { flags.rotation = parseFloat(args[++i]); }
-    else if (a === "--feather" && i + 1 < args.length) { flags.feather = parseFloat(args[++i]); }
-    else if (a === "--invert") { flags.invert = true; }
-    else if (a === "--rect-width" && i + 1 < args.length) { flags.rectWidth = parseFloat(args[++i]); }
-    else if (a === "--round-corner" && i + 1 < args.length) { flags.roundCorner = parseFloat(args[++i]); }
-    else if (a === "--alpha" && i + 1 < args.length) { flags.alpha = parseFloat(args[++i]); }
-    else if (a === "--vertical") { flags.vertical = true; }
-    else if (a === "--fixed-width" && i + 1 < args.length) { flags.fixedWidth = parseFloat(args[++i]); }
-    else if (a === "--fixed-height" && i + 1 < args.length) { flags.fixedHeight = parseFloat(args[++i]); }
-    else if (a === "--shadow") { flags.shadow = true; }
-    else if (a === "--no-shadow") { flags.shadow = false; }
-    else if (a === "--shadow-alpha" && i + 1 < args.length) { flags.shadowAlpha = parseFloat(args[++i]); }
-    else if (a === "--shadow-angle" && i + 1 < args.length) { flags.shadowAngle = parseFloat(args[++i]); }
-    else if (a === "--shadow-color" && i + 1 < args.length) { flags.shadowColor = args[++i]; }
-    else if (a === "--shadow-distance" && i + 1 < args.length) { flags.shadowDistance = parseFloat(args[++i]); }
-    else if (a === "--shadow-smoothing" && i + 1 < args.length) { flags.shadowSmoothing = parseFloat(args[++i]); }
-    else if (a === "--border-width" && i + 1 < args.length) { flags.borderWidth = parseFloat(args[++i]); }
-    else if (a === "--border-color" && i + 1 < args.length) { flags.borderColor = args[++i]; }
-    else if (a === "--border-alpha" && i + 1 < args.length) { flags.borderAlpha = parseFloat(args[++i]); }
-    else if (a === "--bg-color" && i + 1 < args.length) { flags.bgColor = args[++i]; }
-    else if (a === "--bg-alpha" && i + 1 < args.length) { flags.bgAlpha = parseFloat(args[++i]); }
-    else if (a === "--bg-style" && i + 1 < args.length) { flags.bgStyle = parseInt(args[++i]); }
-    else if (a === "--bg-round-radius" && i + 1 < args.length) { flags.bgRoundRadius = parseFloat(args[++i]); }
-    else if (a === "--bg-width" && i + 1 < args.length) { flags.bgWidth = parseFloat(args[++i]); }
-    else if (a === "--bg-height" && i + 1 < args.length) { flags.bgHeight = parseFloat(args[++i]); }
-    else if (a === "--bg-h-offset" && i + 1 < args.length) { flags.bgHOffset = parseFloat(args[++i]); }
-    else if (a === "--bg-v-offset" && i + 1 < args.length) { flags.bgVOffset = parseFloat(args[++i]); }
-    else if (a === "--intro" && i + 1 < args.length) { flags.intro = args[++i]; }
-    else if (a === "--outro" && i + 1 < args.length) { flags.outro = args[++i]; }
-    else if (a === "--intro-duration" && i + 1 < args.length) { flags.introDuration = args[++i]; }
-    else if (a === "--outro-duration" && i + 1 < args.length) { flags.outroDuration = args[++i]; }
-    else if (a === "--combo" && i + 1 < args.length) { flags.combo = args[++i]; }
-    else if (a === "--combo-duration" && i + 1 < args.length) { flags.comboDuration = args[++i]; }
-    else if (a === "--scale" && i + 1 < args.length) { flags.scale = parseFloat(args[++i]); }
-    else if (a === "--resource-id" && i + 1 < args.length) { flags.resourceId = args[++i]; }
-    else if (a === "--params" && i + 1 < args.length) { flags.params = args[++i]; }
-    else if (a === "--style-ref" && i + 1 < args.length) { flags.styleRef = args[++i]; }
-    else if (a === "--time-offset" && i + 1 < args.length) { flags.timeOffset = args[++i]; }
-    else if (a === "--font" && i + 1 < args.length) { flags.font = args[++i]; }
-    else if (a === "--jianying") { flags.jianying = true; }
-    else if (a === "--styles" && i + 1 < args.length) { flags.styles = args[++i]; }
-    else if (a === "--force-license") { flags.forceLicense = true; }
-    else {
-      const hit = ENUM_FLAG_MAP.find(f => f.flag === a);
-      if (hit) { flags.enumCategory = hit.category; }
-      else positional.push(a);
+    else if ((a === "--track" || a === "--type") && i + 1 < args.length) {
+      flags.track = args[++i];
+    } else if (a === "--out" && i + 1 < args.length) {
+      flags.out = args[++i];
+    } else if (a === "--font-size" && i + 1 < args.length) {
+      flags.fontSize = parseFloat(args[++i]);
+    } else if (a === "--color" && i + 1 < args.length) {
+      flags.color = args[++i];
+    } else if (a === "--align" && i + 1 < args.length) {
+      flags.align = parseInt(args[++i]);
+    } else if (a === "--x" && i + 1 < args.length) {
+      flags.x = parseFloat(args[++i]);
+    } else if (a === "--y" && i + 1 < args.length) {
+      flags.y = parseFloat(args[++i]);
+    } else if (a === "--track-name" && i + 1 < args.length) {
+      flags.trackName = args[++i];
+    } else if (a === "--volume" && i + 1 < args.length) {
+      flags.volume = parseFloat(args[++i]);
+    } else if (a === "--template" && i + 1 < args.length) {
+      flags.template = args[++i];
+    } else if (a === "--drafts" && i + 1 < args.length) {
+      flags.drafts = args[++i];
+    } else if (a === "--duration" && i + 1 < args.length) {
+      flags.duration = args[++i];
+    } else if (a === "--off") {
+      flags.off = true;
+    } else if (a === "--center-x" && i + 1 < args.length) {
+      flags.centerX = parseFloat(args[++i]);
+    } else if (a === "--center-y" && i + 1 < args.length) {
+      flags.centerY = parseFloat(args[++i]);
+    } else if (a === "--size" && i + 1 < args.length) {
+      flags.size = parseFloat(args[++i]);
+    } else if (a === "--rotation" && i + 1 < args.length) {
+      flags.rotation = parseFloat(args[++i]);
+    } else if (a === "--feather" && i + 1 < args.length) {
+      flags.feather = parseFloat(args[++i]);
+    } else if (a === "--invert") {
+      flags.invert = true;
+    } else if (a === "--rect-width" && i + 1 < args.length) {
+      flags.rectWidth = parseFloat(args[++i]);
+    } else if (a === "--round-corner" && i + 1 < args.length) {
+      flags.roundCorner = parseFloat(args[++i]);
+    } else if (a === "--alpha" && i + 1 < args.length) {
+      flags.alpha = parseFloat(args[++i]);
+    } else if (a === "--vertical") {
+      flags.vertical = true;
+    } else if (a === "--fixed-width" && i + 1 < args.length) {
+      flags.fixedWidth = parseFloat(args[++i]);
+    } else if (a === "--fixed-height" && i + 1 < args.length) {
+      flags.fixedHeight = parseFloat(args[++i]);
+    } else if (a === "--shadow") {
+      flags.shadow = true;
+    } else if (a === "--no-shadow") {
+      flags.shadow = false;
+    } else if (a === "--shadow-alpha" && i + 1 < args.length) {
+      flags.shadowAlpha = parseFloat(args[++i]);
+    } else if (a === "--shadow-angle" && i + 1 < args.length) {
+      flags.shadowAngle = parseFloat(args[++i]);
+    } else if (a === "--shadow-color" && i + 1 < args.length) {
+      flags.shadowColor = args[++i];
+    } else if (a === "--shadow-distance" && i + 1 < args.length) {
+      flags.shadowDistance = parseFloat(args[++i]);
+    } else if (a === "--shadow-smoothing" && i + 1 < args.length) {
+      flags.shadowSmoothing = parseFloat(args[++i]);
+    } else if (a === "--border-width" && i + 1 < args.length) {
+      flags.borderWidth = parseFloat(args[++i]);
+    } else if (a === "--border-color" && i + 1 < args.length) {
+      flags.borderColor = args[++i];
+    } else if (a === "--border-alpha" && i + 1 < args.length) {
+      flags.borderAlpha = parseFloat(args[++i]);
+    } else if (a === "--bg-color" && i + 1 < args.length) {
+      flags.bgColor = args[++i];
+    } else if (a === "--bg-alpha" && i + 1 < args.length) {
+      flags.bgAlpha = parseFloat(args[++i]);
+    } else if (a === "--bg-style" && i + 1 < args.length) {
+      flags.bgStyle = parseInt(args[++i]);
+    } else if (a === "--bg-round-radius" && i + 1 < args.length) {
+      flags.bgRoundRadius = parseFloat(args[++i]);
+    } else if (a === "--bg-width" && i + 1 < args.length) {
+      flags.bgWidth = parseFloat(args[++i]);
+    } else if (a === "--bg-height" && i + 1 < args.length) {
+      flags.bgHeight = parseFloat(args[++i]);
+    } else if (a === "--bg-h-offset" && i + 1 < args.length) {
+      flags.bgHOffset = parseFloat(args[++i]);
+    } else if (a === "--bg-v-offset" && i + 1 < args.length) {
+      flags.bgVOffset = parseFloat(args[++i]);
+    } else if (a === "--intro" && i + 1 < args.length) {
+      flags.intro = args[++i];
+    } else if (a === "--outro" && i + 1 < args.length) {
+      flags.outro = args[++i];
+    } else if (a === "--intro-duration" && i + 1 < args.length) {
+      flags.introDuration = args[++i];
+    } else if (a === "--outro-duration" && i + 1 < args.length) {
+      flags.outroDuration = args[++i];
+    } else if (a === "--combo" && i + 1 < args.length) {
+      flags.combo = args[++i];
+    } else if (a === "--combo-duration" && i + 1 < args.length) {
+      flags.comboDuration = args[++i];
+    } else if (a === "--scale" && i + 1 < args.length) {
+      flags.scale = parseFloat(args[++i]);
+    } else if (a === "--resource-id" && i + 1 < args.length) {
+      flags.resourceId = args[++i];
+    } else if (a === "--params" && i + 1 < args.length) {
+      flags.params = args[++i];
+    } else if (a === "--style-ref" && i + 1 < args.length) {
+      flags.styleRef = args[++i];
+    } else if (a === "--time-offset" && i + 1 < args.length) {
+      flags.timeOffset = args[++i];
+    } else if (a === "--font" && i + 1 < args.length) {
+      flags.font = args[++i];
+    } else if (a === "--jianying") {
+      flags.jianying = true;
+    } else if (a === "--styles" && i + 1 < args.length) {
+      flags.styles = args[++i];
+    } else if (a === "--force-license") {
+      flags.forceLicense = true;
+    } else {
+      const hit = ENUM_FLAG_MAP.find((f) => f.flag === a);
+      if (hit) {
+        flags.enumCategory = hit.category;
+      } else positional.push(a);
     }
   }
   return { positional, flags };
@@ -357,7 +461,10 @@ function out(data: unknown, flags: Flags): void {
 }
 
 class CliError extends Error {
-  constructor(msg: string) { super(msg); this.name = "CliError"; }
+  constructor(msg: string) {
+    super(msg);
+    this.name = "CliError";
+  }
 }
 
 function die(msg: string): never {
@@ -373,7 +480,7 @@ function requireArgs(args: string[], min: number, usage: string): void {
 function cmdInfo(draft: Draft, flags: Flags): void {
   const totalSegments = draft.tracks.reduce((n, t) => n + t.segments.length, 0);
   const matTypes = getMaterialTypes(draft);
-  const matWithItems = matTypes.filter(m => m.count > 0);
+  const matWithItems = matTypes.filter((m) => m.count > 0);
   const data = {
     id: draft.id,
     name: draft.name || draft.id,
@@ -384,10 +491,12 @@ function cmdInfo(draft: Draft, flags: Flags): void {
     ratio: draft.canvas_config.ratio,
     tracks: draft.tracks.length,
     segments: totalSegments,
-    platform: draft.platform ? `${draft.platform.app_source === "cc" ? "CapCut" : "JianYing"} ${draft.platform.app_version}` : null,
+    platform: draft.platform
+      ? `${draft.platform.app_source === "cc" ? "CapCut" : "JianYing"} ${draft.platform.app_version}`
+      : null,
     material_types: matTypes.length,
     materials_with_items: matWithItems.length,
-    material_summary: matWithItems.map(m => ({ type: m.type, count: m.count })),
+    material_summary: matWithItems.map((m) => ({ type: m.type, count: m.count })),
   };
   if (flags.human) {
     const d = data;
@@ -432,7 +541,9 @@ function cmdTracks(draft: Draft, flags: Flags): void {
       if (t.muted) fl.push("muted");
       if (t.hidden) fl.push("hidden");
       if (t.locked) fl.push("locked");
-      console.log(`${String(t.index).padStart(2)}  ${t.type.padEnd(8)} ${t.name.padEnd(14)} ${String(t.segments).padStart(4)} segs  ${formatDuration(t.duration_us).padStart(10)}${fl.length ? "  [" + fl.join(",") + "]" : ""}`);
+      console.log(
+        `${String(t.index).padStart(2)}  ${t.type.padEnd(8)} ${t.name.padEnd(14)} ${String(t.segments).padStart(4)} segs  ${formatDuration(t.duration_us).padStart(10)}${fl.length ? "  [" + fl.join(",") + "]" : ""}`,
+      );
     }
   } else {
     out(data, flags);
@@ -467,12 +578,14 @@ function segmentData(draft: Draft, track: Track, seg: Segment) {
 function cmdSegments(draft: Draft, flags: Flags): void {
   const tracks = flags.track ? getTracksByType(draft, flags.track) : draft.tracks;
   if (tracks.length === 0) die(`No tracks of type "${flags.track}"`);
-  const data = tracks.flatMap(track => track.segments.map(seg => segmentData(draft, track, seg)));
+  const data = tracks.flatMap((track) => track.segments.map((seg) => segmentData(draft, track, seg)));
   if (flags.human) {
     console.log(`ID        Type   Start   -End         Dur   Spd  Label`);
     for (const s of data) {
       const end = s.start_us + s.duration_us;
-      console.log(`${s.id.slice(0, 8)}  ${s.type.padEnd(6)} ${formatTime(s.start_us).padStart(8)}-${formatTime(end).padStart(8)}  ${formatDuration(s.duration_us).padStart(8)}  ${s.speed !== 1 ? s.speed + "x" : "   "}  ${s.label.slice(0, 40)}`);
+      console.log(
+        `${s.id.slice(0, 8)}  ${s.type.padEnd(6)} ${formatTime(s.start_us).padStart(8)}-${formatTime(end).padStart(8)}  ${formatDuration(s.duration_us).padStart(8)}  ${s.speed !== 1 ? s.speed + "x" : "   "}  ${s.label.slice(0, 40)}`,
+      );
     }
   } else {
     out(data, flags);
@@ -481,8 +594,8 @@ function cmdSegments(draft: Draft, flags: Flags): void {
 
 function cmdTexts(draft: Draft, flags: Flags): void {
   const textTracks = getTracksByType(draft, "text");
-  const data = textTracks.flatMap(track =>
-    track.segments.map(seg => {
+  const data = textTracks.flatMap((track) =>
+    track.segments.map((seg) => {
       const mat = findMaterial(draft.materials.texts, seg.material_id);
       const t = seg.target_timerange;
       return {
@@ -491,13 +604,18 @@ function cmdTexts(draft: Draft, flags: Flags): void {
         duration_us: t.duration,
         text: mat ? extractText(mat.content) : "",
       };
-    })
+    }),
   );
   if (flags.human) {
-    if (data.length === 0) { console.log("No text segments found."); return; }
+    if (data.length === 0) {
+      console.log("No text segments found.");
+      return;
+    }
     console.log(`ID        Start   -End       Text`);
     for (const s of data) {
-      console.log(`${s.id.slice(0, 8)}  ${formatTime(s.start_us).padStart(8)}-${formatTime(s.start_us + s.duration_us).padStart(8)}  ${s.text}`);
+      console.log(
+        `${s.id.slice(0, 8)}  ${formatTime(s.start_us).padStart(8)}-${formatTime(s.start_us + s.duration_us).padStart(8)}  ${s.text}`,
+      );
     }
   } else {
     out(data, flags);
@@ -568,7 +686,15 @@ function cmdVolume(draft: Draft, filePath: string, segId: string, levelStr: stri
   out({ ok: true, id: result.segment.id, old_volume: old, new_volume: level }, flags);
 }
 
-function cmdTrim(draft: Draft, filePath: string, segId: string, startStr: string, durationStr: string, flags: Flags, save = true): void {
+function cmdTrim(
+  draft: Draft,
+  filePath: string,
+  segId: string,
+  startStr: string,
+  durationStr: string,
+  flags: Flags,
+  save = true,
+): void {
   const result = findSegment(draft, segId);
   if (!result) die(`Segment not found: ${segId}`);
   const start = parseTimeInput(startStr);
@@ -578,7 +704,16 @@ function cmdTrim(draft: Draft, filePath: string, segId: string, startStr: string
   seg.source_timerange.duration = duration;
   seg.target_timerange.duration = Math.round(duration / seg.speed);
   if (save) saveDraft(filePath, draft);
-  out({ ok: true, id: seg.id, source_start_us: start, source_duration_us: duration, target_duration_us: seg.target_timerange.duration }, flags);
+  out(
+    {
+      ok: true,
+      id: seg.id,
+      source_start_us: start,
+      source_duration_us: duration,
+      target_duration_us: seg.target_timerange.duration,
+    },
+    flags,
+  );
 }
 
 function cmdOpacity(draft: Draft, filePath: string, segId: string, alphaStr: string, flags: Flags, save = true): void {
@@ -629,11 +764,16 @@ function cmdMaterials(draft: Draft, flags: Flags): void {
       return summary;
     });
     if (flags.human) {
-      if (items.length === 0) { console.log(`No ${key} materials.`); return; }
+      if (items.length === 0) {
+        console.log(`No ${key} materials.`);
+        return;
+      }
       console.log(`ID        Name/Path                                    Fields`);
       for (const item of items) {
         const label = (item.name || item.path || "") as string;
-        console.log(`${(item.id as string).slice(0, 8)}  ${label.slice(0, 44).padEnd(44)} ${String(item.fields).padStart(3)}`);
+        console.log(
+          `${(item.id as string).slice(0, 8)}  ${label.slice(0, 44).padEnd(44)} ${String(item.fields).padStart(3)}`,
+        );
       }
     } else {
       out(items, flags);
@@ -687,7 +827,8 @@ async function cmdAddAudio(draft: Draft, filePath: string, positional: string[],
   const audioPath = positional[2];
   const startStr = positional[3];
   const durationStr = positional[4];
-  if (!audioPath || !startStr || !durationStr) die("Usage: capcut add-audio <project> <file-or-wikimedia-url> <start> <duration>");
+  if (!audioPath || !startStr || !durationStr)
+    die("Usage: capcut add-audio <project> <file-or-wikimedia-url> <start> <duration>");
   // Wikimedia URLs go through the license-gated fetcher; locals pass through.
   const { localPath, asset, warning } = await resolveAssetPath(audioPath, filePath, "audio", flags.forceLicense);
   const absPath = localPath.startsWith("/") ? localPath : process.cwd() + "/" + localPath;
@@ -703,8 +844,13 @@ async function cmdAddAudio(draft: Draft, filePath: string, positional: string[],
   const result = addAudio(draft, filePath, opts);
   saveDraft(filePath, draft);
   const payload: Record<string, unknown> = {
-    ok: true, segment_id: result.segmentId, material_id: result.materialId, track_id: result.trackId,
-    path: absPath, start_us: start, duration_us: duration,
+    ok: true,
+    segment_id: result.segmentId,
+    material_id: result.materialId,
+    track_id: result.trackId,
+    path: absPath,
+    start_us: start,
+    duration_us: duration,
   };
   if (asset) {
     payload.wikimedia = {
@@ -724,7 +870,8 @@ async function cmdAddVideo(draft: Draft, filePath: string, positional: string[],
   const videoPath = positional[2];
   const startStr = positional[3];
   const durationStr = positional[4];
-  if (!videoPath || !startStr || !durationStr) die("Usage: capcut add-video <project> <file-or-wikimedia-url> <start> <duration>");
+  if (!videoPath || !startStr || !durationStr)
+    die("Usage: capcut add-video <project> <file-or-wikimedia-url> <start> <duration>");
   const { localPath, asset, warning } = await resolveAssetPath(videoPath, filePath, "video", flags.forceLicense);
   const absPath = localPath.startsWith("/") ? localPath : process.cwd() + "/" + localPath;
   const start = parseTimeInput(startStr);
@@ -738,8 +885,13 @@ async function cmdAddVideo(draft: Draft, filePath: string, positional: string[],
   const result = addVideo(draft, filePath, opts);
   saveDraft(filePath, draft);
   const payload: Record<string, unknown> = {
-    ok: true, segment_id: result.segmentId, material_id: result.materialId, track_id: result.trackId,
-    path: absPath, start_us: start, duration_us: duration,
+    ok: true,
+    segment_id: result.segmentId,
+    material_id: result.materialId,
+    track_id: result.trackId,
+    path: absPath,
+    start_us: start,
+    duration_us: duration,
   };
   if (asset) {
     payload.wikimedia = {
@@ -749,7 +901,9 @@ async function cmdAddVideo(draft: Draft, filePath: string, positional: string[],
       artist: asset.license.artist,
       credit: asset.license.credit,
       description_url: asset.descriptionUrl,
-      width: asset.width, height: asset.height, mime: asset.mime,
+      width: asset.width,
+      height: asset.height,
+      mime: asset.mime,
     };
   }
   if (warning) payload.warning = warning;
@@ -776,7 +930,18 @@ function cmdAddText(draft: Draft, filePath: string, positional: string[], flags:
   };
   const result = addText(draft, filePath, opts);
   saveDraft(filePath, draft);
-  out({ ok: true, segment_id: result.segmentId, material_id: result.materialId, track_id: result.trackId, text, start_us: start, duration_us: duration }, flags);
+  out(
+    {
+      ok: true,
+      segment_id: result.segmentId,
+      material_id: result.materialId,
+      track_id: result.trackId,
+      text,
+      start_us: start,
+      duration_us: duration,
+    },
+    flags,
+  );
 }
 
 function cmdKeyframe(draft: Draft, filePath: string, positional: string[], flags: Flags): void {
@@ -804,7 +969,9 @@ function cmdKeyframe(draft: Draft, filePath: string, positional: string[], flags
     const timeStr = positional[4];
     const valueStr = positional[5];
     if (!property || !timeStr || valueStr === undefined) {
-      die(`Usage: capcut keyframe <project> <id> <property> <time> <value>\nProperties: ${keyframeProperties().join(", ")}`);
+      die(
+        `Usage: capcut keyframe <project> <id> <property> <time> <value>\nProperties: ${keyframeProperties().join(", ")}`,
+      );
     }
     const timeUs = parseTimeInput(timeStr);
     const value = parseKeyframeValue(property, valueStr);
@@ -820,7 +987,10 @@ function cmdTransition(draft: Draft, filePath: string, positional: string[], fla
   const segId = positional[2];
   const slug = positional[3];
   const ns: Namespace = flags.jianying ? "jianying" : "capcut";
-  if (!segId || !slug) die(`Usage: capcut transition <project> <id> <slug> [--duration <s>] [--jianying]\nSlugs: capcut enums --transitions${ns === "jianying" ? " --jianying" : ""}`);
+  if (!segId || !slug)
+    die(
+      `Usage: capcut transition <project> <id> <slug> [--duration <s>] [--jianying]\nSlugs: capcut enums --transitions${ns === "jianying" ? " --jianying" : ""}`,
+    );
   const durUs = flags.duration ? parseTimeInput(flags.duration) : undefined;
   const result = addTransition(draft, segId, slug, durUs, ns);
   saveDraft(filePath, draft);
@@ -838,7 +1008,9 @@ function cmdMask(draft: Draft, filePath: string, positional: string[], flags: Fl
     const seg = found.segment;
     const masksArr = (draft.materials.common_mask || []) as Array<Record<string, unknown>>;
     const before = (seg.extra_material_refs || []).length;
-    seg.extra_material_refs = (seg.extra_material_refs || []).filter(r => !masksArr.some(m => (m as { id?: string }).id === r));
+    seg.extra_material_refs = (seg.extra_material_refs || []).filter(
+      (r) => !masksArr.some((m) => (m as { id?: string }).id === r),
+    );
     saveDraft(filePath, draft);
     out({ ok: true, id: seg.id, removed: before - (seg.extra_material_refs || []).length }, flags);
     return;
@@ -910,7 +1082,10 @@ function cmdTextStyle(draft: Draft, filePath: string, positional: string[], flag
 function cmdTextAnim(draft: Draft, filePath: string, positional: string[], flags: Flags): void {
   const segId = positional[2];
   const ns: Namespace = flags.jianying ? "jianying" : "capcut";
-  if (!segId) die(`Usage: capcut text-anim <project> <id> [--intro <slug>] [--outro <slug>] [--jianying]\nFeatured slugs: ${textAnimSlugs().join(", ")}`);
+  if (!segId)
+    die(
+      `Usage: capcut text-anim <project> <id> [--intro <slug>] [--outro <slug>] [--jianying]\nFeatured slugs: ${textAnimSlugs().join(", ")}`,
+    );
   const opts: TextAnimOptions = {
     intro: flags.intro,
     outro: flags.outro,
@@ -926,13 +1101,16 @@ function cmdAddSticker(draft: Draft, filePath: string, positional: string[], fla
   const resId = positional[2];
   const startStr = positional[3];
   const durStr = positional[4];
-  if (!resId || !startStr || !durStr) die(`Usage: capcut add-sticker <project> <resource-id> <start> <duration> [flags]`);
+  if (!resId || !startStr || !durStr)
+    die(`Usage: capcut add-sticker <project> <resource-id> <start> <duration> [flags]`);
   const start = parseTimeInput(startStr);
   const duration = parseTimeInput(durStr);
   const result = addSticker(draft, {
     resourceId: resId,
-    start, duration,
-    x: flags.x, y: flags.y,
+    start,
+    duration,
+    x: flags.x,
+    y: flags.y,
     scale: flags.scale,
     rotation: flags.rotation,
     trackName: flags.trackName,
@@ -946,7 +1124,10 @@ function cmdAddEffect(draft: Draft, filePath: string, positional: string[], flag
   const startStr = positional[3];
   const durStr = positional[4];
   const ns: Namespace = flags.jianying ? "jianying" : "capcut";
-  if (!slug || !startStr || !durStr) die(`Usage: capcut add-effect <project> <slug> <start> <duration> [--params <json-array>] [--jianying]\nFeatured slugs: ${effectSlugs().join(", ")}`);
+  if (!slug || !startStr || !durStr)
+    die(
+      `Usage: capcut add-effect <project> <slug> <start> <duration> [--params <json-array>] [--jianying]\nFeatured slugs: ${effectSlugs().join(", ")}`,
+    );
   const start = parseTimeInput(startStr);
   const duration = parseTimeInput(durStr);
   let params: number[] | undefined;
@@ -963,7 +1144,10 @@ function cmdAddEffect(draft: Draft, filePath: string, positional: string[], flag
 function cmdImageAnim(draft: Draft, filePath: string, positional: string[], flags: Flags): void {
   const segId = positional[2];
   const ns: Namespace = flags.jianying ? "jianying" : "capcut";
-  if (!segId) die(`Usage: capcut image-anim <project> <id> [--intro <slug>] [--outro <slug>] [--combo <slug>] [--jianying]\nFeatured slugs: ${imageAnimSlugs().join(", ")}`);
+  if (!segId)
+    die(
+      `Usage: capcut image-anim <project> <id> [--intro <slug>] [--outro <slug>] [--combo <slug>] [--jianying]\nFeatured slugs: ${imageAnimSlugs().join(", ")}`,
+    );
   const opts: ImageAnimOptions = {
     intro: flags.intro,
     outro: flags.outro,
@@ -997,14 +1181,17 @@ function cmdSaveTemplate(draft: Draft, positional: string[], flags: Flags): void
   const name = positional[3];
   if (!flags.out) die("Missing --out <path>. Usage: capcut save-template <project> <id> <name> --out <path>");
   const template = saveTemplate(draft, segId, name, flags.out);
-  out({
-    ok: true,
-    name: template.name,
-    type: template.type,
-    material_type: template.material.type,
-    extra_materials: template.extra_materials.length,
-    out: flags.out,
-  }, flags);
+  out(
+    {
+      ok: true,
+      name: template.name,
+      type: template.type,
+      material_type: template.material.type,
+      extra_materials: template.extra_materials.length,
+      out: flags.out,
+    },
+    flags,
+  );
 }
 
 function cmdApplyTemplate(draft: Draft, filePath: string, positional: string[], flags: Flags): void {
@@ -1020,14 +1207,17 @@ function cmdApplyTemplate(draft: Draft, filePath: string, positional: string[], 
     text: textOverride,
   });
   saveDraft(filePath, draft);
-  out({
-    ok: true,
-    segment_id: result.segmentId,
-    material_id: result.materialId,
-    track_id: result.trackId,
-    start_us: start,
-    duration_us: duration,
-  }, flags);
+  out(
+    {
+      ok: true,
+      segment_id: result.segmentId,
+      material_id: result.materialId,
+      track_id: result.trackId,
+      start_us: start,
+      duration_us: duration,
+    },
+    flags,
+  );
 }
 
 // --- Phase 4: multi-style text ranges ---
@@ -1041,7 +1231,9 @@ function cmdTextRanges(draft: Draft, filePath: string, positional: string[], fla
     raw = readFileSync(raw.slice(1), "utf-8");
   }
   let parsed: unknown;
-  try { parsed = JSON.parse(raw); } catch (e) {
+  try {
+    parsed = JSON.parse(raw);
+  } catch (e) {
     die(`--styles is not valid JSON: ${e instanceof Error ? e.message : String(e)}`);
   }
   if (!Array.isArray(parsed)) die(`--styles must be a JSON array of {start,end,...} ranges`);
@@ -1055,13 +1247,16 @@ function cmdTextRanges(draft: Draft, filePath: string, positional: string[], fla
 
 function cmdEnums(flags: Flags): void {
   if (!flags.enumCategory) {
-    const flagList = ENUM_FLAG_MAP.map(f => f.flag).join(" | ");
+    const flagList = ENUM_FLAG_MAP.map((f) => f.flag).join(" | ");
     die(`Usage: capcut enums <flag> [--jianying] [-H]\nFlags: ${flagList}`);
   }
   const ns: Namespace = flags.jianying ? "jianying" : "capcut";
   const entries = listEnum(flags.enumCategory, ns);
   if (flags.human) {
-    if (entries.length === 0) { console.log(`No ${flags.enumCategory} in ${ns} namespace.`); return; }
+    if (entries.length === 0) {
+      console.log(`No ${flags.enumCategory} in ${ns} namespace.`);
+      return;
+    }
     console.log(`Slug                              Name                             Member`);
     for (const e of entries) {
       const display = (e.name ?? e.title ?? "") as string;
@@ -1118,7 +1313,7 @@ function cmdImportSrt(draft: Draft, filePath: string, positional: string[], flag
     bgHOffset: flags.bgHOffset,
     bgVOffset: flags.bgVOffset,
   };
-  const hasStyleFlags = Object.values(styleOpts).some(v => v !== undefined);
+  const hasStyleFlags = Object.values(styleOpts).some((v) => v !== undefined);
 
   const created: Array<{ id: string; start_us: number; duration_us: number; text: string }> = [];
   for (const cue of cues) {
@@ -1143,15 +1338,18 @@ function cmdImportSrt(draft: Draft, filePath: string, positional: string[], flag
   }
 
   saveDraft(filePath, draft);
-  out({
-    ok: true,
-    cues: created.length,
-    track_name: flags.trackName ?? "subtitle",
-    style_ref: flags.styleRef ?? null,
-    time_offset_us: offsetUs,
-    first: created[0],
-    last: created[created.length - 1],
-  }, flags);
+  out(
+    {
+      ok: true,
+      cues: created.length,
+      track_name: flags.trackName ?? "subtitle",
+      style_ref: flags.styleRef ?? null,
+      time_offset_us: offsetUs,
+      first: created[0],
+      last: created[created.length - 1],
+    },
+    flags,
+  );
 }
 
 // --- Batch ---
@@ -1253,7 +1451,8 @@ async function main(): Promise<void> {
     if (!name) die("Missing name. Usage: capcut init <name> [--template <dir>] [--drafts <dir>]");
     const cliDir = new URL(".", import.meta.url).pathname.replace(/\/dist\/$/, "");
     const templateDir = flags.template ?? cliDir + "/../CapCutAPI/template";
-    const draftsDir = flags.drafts ?? (process.env.HOME || "~") + "/Movies/CapCut/User Data/Projects/com.lveditor.draft";
+    const draftsDir =
+      flags.drafts ?? (process.env.HOME || "~") + "/Movies/CapCut/User Data/Projects/com.lveditor.draft";
     const result = initDraft({ name, templateDir, draftsDir });
     out({ ok: true, name, draft_path: result.draftPath, file_path: result.filePath }, flags);
     if (!flags.quiet) process.stderr.write(`Created: ${result.draftPath}\n`);

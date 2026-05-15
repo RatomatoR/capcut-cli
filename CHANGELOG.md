@@ -2,6 +2,19 @@
 
 All notable changes to capcut-cli are documented here. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); the project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.1] — 2026-05-15
+
+### Added
+
+- **`docs/draft-schema/`** — 7-file reference for the CapCut / JianYing project JSON: overview, tracks-and-segments, materials, keyframes-and-animations, effects-filters-stickers-masks-transitions, CapCut↔JianYing version differences. Practical, field-level, derived from real drafts + `pyJianYingDraft`. Closes the most-asked question for anyone writing tooling against the format: "what's the JSON shape?"
+- **`node:test` fixture-backed test suite** — 36 tests across 5 test files (`inspect`, `edit`, `create`, `template`, `decorators`) covering the major CLI surface against the canonical `test/draft_content.json` fixture. ~1 second total runtime.
+- **Husky pre-commit hook + Biome lint** — every commit runs `lint-staged` (Biome check/format on staged files only) followed by the full `node:test` suite. Cheap (<10s on a clean tree), catches regressions before they hit npm. Skipping with `--no-verify` should be rare.
+- **`npm run test` / `test:fast` / `lint` / `lint:fix` / `format` scripts** in `package.json`.
+
+### Changed
+
+- Test runner: shell-based `scripts/_test.sh` (which tests skill wrappers) remains, but the canonical CLI test suite is now `test/*.test.mjs` via `node --test`. CI-friendly, parallel, cross-platform.
+
 ## [0.3.0] — 2026-05-15
 
 Five phases of new commands ported from the upstream Python project (sun-guannan/VectCutAPI / CapCutAPI), all keeping the original zero-dep, local-only, JSON-by-default, pipeable design. No new runtime, no network beyond the Wikimedia gate, no Python at runtime.
@@ -70,6 +83,7 @@ Five phases of new commands ported from the upstream Python project (sun-guannan
 
 - Long-form videos to shorts, end to end.
 
+[0.3.1]: https://github.com/renezander030/capcut-cli/compare/v0.3.0...v0.3.1
 [0.3.0]: https://github.com/renezander030/capcut-cli/compare/v0.2.2...v0.3.0
 [0.2.2]: https://github.com/renezander030/capcut-cli/compare/v0.2.1...v0.2.2
 [0.2.1]: https://github.com/renezander030/capcut-cli/compare/v0.2.0...v0.2.1

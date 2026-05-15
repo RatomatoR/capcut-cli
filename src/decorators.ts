@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import type { Draft, MaterialText, Segment } from "./draft.js";
-import { findSegment, findMaterial } from "./draft.js";
-import { findEnum, slugsFor, type Namespace } from "./enums.js";
+import { findMaterial, findSegment } from "./draft.js";
+import { findEnum, type Namespace, slugsFor } from "./enums.js";
 
 const PROPERTY_MAP: Record<string, string> = {
   position_x: "KFTypePositionX",
@@ -28,7 +28,8 @@ export function parseKeyframeValue(property: string, value: string): number {
   const v = value.trim();
   if (property === "position_x" || property === "position_y") {
     const n = parseFloat(v);
-    if (!isFinite(n) || n < -10 || n > 10) throw new Error(`${property} must be a finite number in [-10, 10], got: ${value}`);
+    if (!isFinite(n) || n < -10 || n > 10)
+      throw new Error(`${property} must be a finite number in [-10, 10], got: ${value}`);
     return n;
   }
   if (property === "rotation") {
@@ -70,7 +71,7 @@ export function parseKeyframeValue(property: string, value: string): number {
 export interface KeyframeInput {
   property: string;
   timeUs: number; // segment-relative time in microseconds
-  value: number;  // already parsed/normalised
+  value: number; // already parsed/normalised
 }
 
 function uuidHex(): string {
@@ -101,7 +102,9 @@ export function addKeyframes(
   for (const kf of keyframes) {
     const propEnum = PROPERTY_MAP[kf.property];
     if (!propEnum) {
-      throw new Error(`Unsupported keyframe property: ${kf.property}. Supported: ${Object.keys(PROPERTY_MAP).join(", ")}`);
+      throw new Error(
+        `Unsupported keyframe property: ${kf.property}. Supported: ${Object.keys(PROPERTY_MAP).join(", ")}`,
+      );
     }
     let list = commonKeyframes.find((l) => l.property_type === propEnum);
     if (!list) {
@@ -162,12 +165,12 @@ export function addTransition(
 
   // Refuse to stack transitions on one segment.
   const existing = (seg.extra_material_refs || []).find((r) =>
-    transitions.some((t) => (t as { id?: string }).id === r)
+    transitions.some((t) => (t as { id?: string }).id === r),
   );
   if (existing) throw new Error(`Segment already has a transition (material ${existing}). Remove it first.`);
 
   const id = randomUUID();
-  const dur = durationUs ?? (meta.default_duration ?? 500000);
+  const dur = durationUs ?? meta.default_duration ?? 500000;
   transitions.push({
     category_id: "",
     category_name: "",
@@ -197,13 +200,13 @@ export function maskSlugs(namespace: Namespace = "capcut"): string[] {
 }
 
 export interface MaskOptions {
-  centerX?: number;     // in half-canvas units (-1 .. 1)
+  centerX?: number; // in half-canvas units (-1 .. 1)
   centerY?: number;
-  size?: number;        // fraction of canvas height
-  rotation?: number;    // degrees clockwise
-  feather?: number;     // 0 .. 100
+  size?: number; // fraction of canvas height
+  rotation?: number; // degrees clockwise
+  feather?: number; // 0 .. 100
   invert?: boolean;
-  rectWidth?: number;   // rectangle only — fraction of canvas width
+  rectWidth?: number; // rectangle only — fraction of canvas width
   roundCorner?: number; // rectangle only — 0 .. 100
 }
 
@@ -226,9 +229,7 @@ export function addMask(
   const masks = (draft.materials.common_mask ??= [] as Array<Record<string, unknown>>);
 
   // Refuse to stack masks on one segment.
-  const existing = (seg.extra_material_refs || []).find((r) =>
-    masks.some((m) => (m as { id?: string }).id === r)
-  );
+  const existing = (seg.extra_material_refs || []).find((r) => masks.some((m) => (m as { id?: string }).id === r));
   if (existing) throw new Error(`Segment already has a mask (material ${existing}). Remove it first.`);
 
   const resolvedSlug = (MASK_ALIASES[slug] ?? slug).toLowerCase();
@@ -241,9 +242,7 @@ export function addMask(
   const size = opts.size ?? 0.5;
   const canvasW = draft.canvas_config?.width ?? 1920;
   const canvasH = draft.canvas_config?.height ?? 1080;
-  const width = isRect
-    ? (opts.rectWidth ?? size)
-    : (size * canvasH * aspectRatio) / canvasW;
+  const width = isRect ? (opts.rectWidth ?? size) : (size * canvasH * aspectRatio) / canvasW;
   const height = size;
 
   const id = randomUUID();
@@ -357,17 +356,29 @@ export function setTextStyle(
   const applied: string[] = [];
   const t = text as unknown as Record<string, unknown>;
 
-  if (opts.alpha !== undefined)       { t.text_alpha = opts.alpha; applied.push("alpha"); }
-  if (opts.vertical !== undefined)    { t.typesetting = opts.vertical ? 1 : 0; applied.push("vertical"); }
-  if (opts.fixedWidth !== undefined)  { t.fixed_width = opts.fixedWidth; applied.push("fixed_width"); }
-  if (opts.fixedHeight !== undefined) { t.fixed_height = opts.fixedHeight; applied.push("fixed_height"); }
+  if (opts.alpha !== undefined) {
+    t.text_alpha = opts.alpha;
+    applied.push("alpha");
+  }
+  if (opts.vertical !== undefined) {
+    t.typesetting = opts.vertical ? 1 : 0;
+    applied.push("vertical");
+  }
+  if (opts.fixedWidth !== undefined) {
+    t.fixed_width = opts.fixedWidth;
+    applied.push("fixed_width");
+  }
+  if (opts.fixedHeight !== undefined) {
+    t.fixed_height = opts.fixedHeight;
+    applied.push("fixed_height");
+  }
 
   if (opts.shadow) {
     t.has_shadow = true;
-    if (opts.shadowAlpha     !== undefined) t.shadow_alpha    = opts.shadowAlpha;
-    if (opts.shadowAngle     !== undefined) t.shadow_angle    = opts.shadowAngle;
-    if (opts.shadowColor     !== undefined) t.shadow_color    = opts.shadowColor;
-    if (opts.shadowDistance  !== undefined) t.shadow_distance = opts.shadowDistance;
+    if (opts.shadowAlpha !== undefined) t.shadow_alpha = opts.shadowAlpha;
+    if (opts.shadowAngle !== undefined) t.shadow_angle = opts.shadowAngle;
+    if (opts.shadowColor !== undefined) t.shadow_color = opts.shadowColor;
+    if (opts.shadowDistance !== undefined) t.shadow_distance = opts.shadowDistance;
     if (opts.shadowSmoothing !== undefined) t.shadow_smoothing = opts.shadowSmoothing;
     applied.push("shadow");
   } else if (opts.shadow === false) {
@@ -376,25 +387,32 @@ export function setTextStyle(
   }
 
   if (opts.borderWidth !== undefined || opts.borderColor !== undefined || opts.borderAlpha !== undefined) {
-    t.border_width = opts.borderWidth ?? (t.border_width ?? 0);
-    t.border_color = opts.borderColor ?? (t.border_color ?? "#000000");
-    t.border_alpha = opts.borderAlpha ?? (t.border_alpha ?? 1);
+    t.border_width = opts.borderWidth ?? t.border_width ?? 0;
+    t.border_color = opts.borderColor ?? t.border_color ?? "#000000";
+    t.border_alpha = opts.borderAlpha ?? t.border_alpha ?? 1;
     t.has_border = true;
     applied.push("border");
   }
 
-  if (opts.bgColor !== undefined || opts.bgAlpha !== undefined || opts.bgStyle !== undefined
-   || opts.bgRoundRadius !== undefined || opts.bgWidth !== undefined || opts.bgHeight !== undefined
-   || opts.bgHOffset !== undefined || opts.bgVOffset !== undefined) {
+  if (
+    opts.bgColor !== undefined ||
+    opts.bgAlpha !== undefined ||
+    opts.bgStyle !== undefined ||
+    opts.bgRoundRadius !== undefined ||
+    opts.bgWidth !== undefined ||
+    opts.bgHeight !== undefined ||
+    opts.bgHOffset !== undefined ||
+    opts.bgVOffset !== undefined
+  ) {
     t.has_text_shadow_config = true;
-    if (opts.bgColor        !== undefined) t.background_color         = opts.bgColor;
-    if (opts.bgAlpha        !== undefined) t.background_alpha         = opts.bgAlpha;
-    if (opts.bgStyle        !== undefined) t.background_style         = opts.bgStyle;
-    if (opts.bgRoundRadius  !== undefined) t.background_round_radius  = opts.bgRoundRadius;
-    if (opts.bgWidth        !== undefined) t.background_width         = opts.bgWidth;
-    if (opts.bgHeight       !== undefined) t.background_height        = opts.bgHeight;
-    if (opts.bgHOffset      !== undefined) t.background_horizontal_offset = opts.bgHOffset;
-    if (opts.bgVOffset      !== undefined) t.background_vertical_offset   = opts.bgVOffset;
+    if (opts.bgColor !== undefined) t.background_color = opts.bgColor;
+    if (opts.bgAlpha !== undefined) t.background_alpha = opts.bgAlpha;
+    if (opts.bgStyle !== undefined) t.background_style = opts.bgStyle;
+    if (opts.bgRoundRadius !== undefined) t.background_round_radius = opts.bgRoundRadius;
+    if (opts.bgWidth !== undefined) t.background_width = opts.bgWidth;
+    if (opts.bgHeight !== undefined) t.background_height = opts.bgHeight;
+    if (opts.bgHOffset !== undefined) t.background_horizontal_offset = opts.bgHOffset;
+    if (opts.bgVOffset !== undefined) t.background_vertical_offset = opts.bgVOffset;
     applied.push("bg");
   }
 
@@ -409,10 +427,7 @@ const TEXT_ANIM_ALIASES: Record<string, string> = {
 
 // Kept-small set of known slugs documented in SKILL.md — the full catalogue
 // (70+ intros, 60+ outros) is discoverable via `capcut enums --text-intros/--text-outros`.
-const TEXT_ANIM_FEATURED = [
-  "fade-in", "fade-out", "typewriter", "pop-up", "throw-out",
-  "blur-text-in", "zoom-in-text",
-];
+const TEXT_ANIM_FEATURED = ["fade-in", "fade-out", "typewriter", "pop-up", "throw-out", "blur-text-in", "zoom-in-text"];
 
 export function textAnimSlugs(): string[] {
   return TEXT_ANIM_FEATURED;
@@ -442,15 +457,96 @@ interface ImageAnimMeta {
 }
 
 const IMAGE_ANIMS: Record<string, ImageAnimMeta> = {
-  "fade-in":       { name: "Fade In",       effect_id: "6798320778182922760", resource_id: "6798320778182922760", md5: "883ad04bd79b502aaa55b5d9b87175ea", default_duration_us: 500000, category_id: "2037708296", third_resource_id: "6798320778182922760", type: "in"  },
-  "flash-in":      { name: "Flash In",      effect_id: "7211044701367964162", resource_id: "7211044701367964162", md5: "6a680c49cd11a05f3eb0e5a3fed165f7", default_duration_us: 433333, category_id: "2037708312", third_resource_id: "7211044701367964162", type: "in"  },
-  "pulsing-zooms": { name: "Pulsing Zooms", effect_id: "7530463994486820097", resource_id: "7530463994486820097", md5: "c2223de4486ee5b2a5900d707e9a362b", default_duration_us: 3000000, category_id: "2037708296", third_resource_id: "0", type: "in"  },
-  "scroll-up":     { name: "Scroll up",     effect_id: "7315336764636271105", resource_id: "7315336764636271105", md5: "cb8899ed512a2d40bd27d9e03d039ec0", default_duration_us: 1200000, category_id: "in_fav", third_resource_id: "7315336764636271105", type: "in"  },
-  "stripe-merge":  { name: "Stripe Merge",  effect_id: "7570497406203251973", resource_id: "7570497406203251973", md5: "fc08875f779dae706387fb160dbaa898", default_duration_us: 633333, category_id: "2037708296", third_resource_id: "0", type: "in"  },
-  "zoom-out":      { name: "Zoom Out",      effect_id: "6798332584276267527", resource_id: "6798332584276267527", md5: "0c736f993d36a7b1ef00cc73d2ba656f", default_duration_us: 2000000, category_id: "", third_resource_id: "", type: "in"  },
-  "fade-out":      { name: "Fade Out",      effect_id: "6798320902548230669", resource_id: "6798320902548230669", md5: "c6f05ce62355b537be762550040bfc08", default_duration_us: 500000, category_id: "2037708296", third_resource_id: "0", type: "out" },
-  "blur-out":      { name: "Blur Out",      effect_id: "7507514531212479761", resource_id: "7507514531212479761", md5: "78d0826a4aba60259f37acb30149b258", default_duration_us: 1000000, category_id: "out_fav", third_resource_id: "0", type: "out" },
-  "smoke":         { name: "Smoke",         effect_id: "7229983825080619522", resource_id: "7229983825080619522", md5: "e70e26e7aa770d0deedca54e3eac0323", default_duration_us: 900000, category_id: "out_fav", third_resource_id: "7229983825080619522", type: "out" },
+  "fade-in": {
+    name: "Fade In",
+    effect_id: "6798320778182922760",
+    resource_id: "6798320778182922760",
+    md5: "883ad04bd79b502aaa55b5d9b87175ea",
+    default_duration_us: 500000,
+    category_id: "2037708296",
+    third_resource_id: "6798320778182922760",
+    type: "in",
+  },
+  "flash-in": {
+    name: "Flash In",
+    effect_id: "7211044701367964162",
+    resource_id: "7211044701367964162",
+    md5: "6a680c49cd11a05f3eb0e5a3fed165f7",
+    default_duration_us: 433333,
+    category_id: "2037708312",
+    third_resource_id: "7211044701367964162",
+    type: "in",
+  },
+  "pulsing-zooms": {
+    name: "Pulsing Zooms",
+    effect_id: "7530463994486820097",
+    resource_id: "7530463994486820097",
+    md5: "c2223de4486ee5b2a5900d707e9a362b",
+    default_duration_us: 3000000,
+    category_id: "2037708296",
+    third_resource_id: "0",
+    type: "in",
+  },
+  "scroll-up": {
+    name: "Scroll up",
+    effect_id: "7315336764636271105",
+    resource_id: "7315336764636271105",
+    md5: "cb8899ed512a2d40bd27d9e03d039ec0",
+    default_duration_us: 1200000,
+    category_id: "in_fav",
+    third_resource_id: "7315336764636271105",
+    type: "in",
+  },
+  "stripe-merge": {
+    name: "Stripe Merge",
+    effect_id: "7570497406203251973",
+    resource_id: "7570497406203251973",
+    md5: "fc08875f779dae706387fb160dbaa898",
+    default_duration_us: 633333,
+    category_id: "2037708296",
+    third_resource_id: "0",
+    type: "in",
+  },
+  "zoom-out": {
+    name: "Zoom Out",
+    effect_id: "6798332584276267527",
+    resource_id: "6798332584276267527",
+    md5: "0c736f993d36a7b1ef00cc73d2ba656f",
+    default_duration_us: 2000000,
+    category_id: "",
+    third_resource_id: "",
+    type: "in",
+  },
+  "fade-out": {
+    name: "Fade Out",
+    effect_id: "6798320902548230669",
+    resource_id: "6798320902548230669",
+    md5: "c6f05ce62355b537be762550040bfc08",
+    default_duration_us: 500000,
+    category_id: "2037708296",
+    third_resource_id: "0",
+    type: "out",
+  },
+  "blur-out": {
+    name: "Blur Out",
+    effect_id: "7507514531212479761",
+    resource_id: "7507514531212479761",
+    md5: "78d0826a4aba60259f37acb30149b258",
+    default_duration_us: 1000000,
+    category_id: "out_fav",
+    third_resource_id: "0",
+    type: "out",
+  },
+  smoke: {
+    name: "Smoke",
+    effect_id: "7229983825080619522",
+    resource_id: "7229983825080619522",
+    md5: "e70e26e7aa770d0deedca54e3eac0323",
+    default_duration_us: 900000,
+    category_id: "out_fav",
+    third_resource_id: "7229983825080619522",
+    type: "out",
+  },
 };
 
 export function imageAnimSlugs(): string[] {
@@ -471,7 +567,11 @@ export function addImageAnim(
   segmentId: string,
   opts: ImageAnimOptions,
   namespace: Namespace = "capcut",
-): { segmentId: string; added: Array<{ type: string; name: string; duration_us: number; start_us: number }>; material_id: string } {
+): {
+  segmentId: string;
+  added: Array<{ type: string; name: string; duration_us: number; start_us: number }>;
+  material_id: string;
+} {
   if (!opts.intro && !opts.outro && !opts.combo) {
     throw new Error("at least one of --intro, --outro, --combo is required");
   }
@@ -486,7 +586,10 @@ export function addImageAnim(
   let container: { animations: Array<Record<string, unknown>>; id: string } | null = null;
   for (const ref of seg.extra_material_refs || []) {
     const m = animsById[ref];
-    if (m) { container = m as unknown as { animations: Array<Record<string, unknown>>; id: string }; break; }
+    if (m) {
+      container = m as unknown as { animations: Array<Record<string, unknown>>; id: string };
+      break;
+    }
   }
   if (!container) {
     const id = randomUUID();
@@ -525,13 +628,13 @@ export function addImageAnim(
       categoryId = inline.category_id;
       thirdResourceId = inline.third_resource_id;
     } else {
-      const category =
-        animType === "in" ? "image_intros" :
-        animType === "out" ? "image_outros" : "image_combos";
+      const category = animType === "in" ? "image_intros" : animType === "out" ? "image_outros" : "image_combos";
       const meta = findEnum(category, slug, namespace);
       if (!meta || !meta.effect_id || !meta.resource_id) {
         const hint = namespace === "jianying" ? " --jianying" : "";
-        throw new Error(`Unknown image ${animType} animation: ${slug}. Run 'capcut enums --image-${animType === "in" ? "intros" : animType === "out" ? "outros" : "combos"}${hint}' for the full list.`);
+        throw new Error(
+          `Unknown image ${animType} animation: ${slug}. Run 'capcut enums --image-${animType === "in" ? "intros" : animType === "out" ? "outros" : "combos"}${hint}' for the full list.`,
+        );
       }
       name = meta.title ?? meta.name ?? slug;
       effectId = meta.effect_id;
@@ -581,7 +684,11 @@ export function addTextAnim(
   segmentId: string,
   opts: TextAnimOptions,
   namespace: Namespace = "capcut",
-): { segmentId: string; added: Array<{ type: string; name: string; duration_us: number; start_us: number }>; material_id: string } {
+): {
+  segmentId: string;
+  added: Array<{ type: string; name: string; duration_us: number; start_us: number }>;
+  material_id: string;
+} {
   if (!opts.intro && !opts.outro) throw new Error("at least one of --intro or --outro is required");
 
   const found = findSegment(draft, segmentId);
@@ -589,13 +696,18 @@ export function addTextAnim(
   const seg = found.segment;
 
   const animsArr = (draft.materials.material_animations ??= [] as Array<Record<string, unknown>>);
-  const animsById = Object.fromEntries(animsArr.map((a) => [(a as { id: string }).id, a as { animations?: Array<Record<string, unknown>>; id: string }]));
+  const animsById = Object.fromEntries(
+    animsArr.map((a) => [(a as { id: string }).id, a as { animations?: Array<Record<string, unknown>>; id: string }]),
+  );
 
   // Find or create the per-segment sticker_animation container.
   let container: { animations: Array<Record<string, unknown>>; id: string } | null = null;
   for (const ref of seg.extra_material_refs || []) {
     const m = animsById[ref];
-    if (m) { container = m as { animations: Array<Record<string, unknown>>; id: string }; break; }
+    if (m) {
+      container = m as { animations: Array<Record<string, unknown>>; id: string };
+      break;
+    }
   }
   if (!container) {
     const id = randomUUID();
@@ -618,13 +730,15 @@ export function addTextAnim(
     const meta = findEnum(category, slug, namespace, TEXT_ANIM_ALIASES);
     if (!meta || !meta.effect_id || !meta.resource_id) {
       const hint = namespace === "jianying" ? " --jianying" : "";
-      throw new Error(`Unknown text ${animType === "in" ? "intro" : "outro"}: ${slug}. Run 'capcut enums --text-${animType === "in" ? "intros" : "outros"}${hint}' for the full list.`);
+      throw new Error(
+        `Unknown text ${animType === "in" ? "intro" : "outro"}: ${slug}. Run 'capcut enums --text-${animType === "in" ? "intros" : "outros"}${hint}' for the full list.`,
+      );
     }
     const name = meta.title ?? meta.name ?? slug;
     if (container!.animations.some((a) => (a as { type: string }).type === animType)) {
       throw new Error(`segment already has a ${animType} text animation`);
     }
-    const dur = overrideDur ?? (meta.duration ?? meta.default_duration ?? 500000);
+    const dur = overrideDur ?? meta.duration ?? meta.default_duration ?? 500000;
     if (dur > targetDur) throw new Error(`duration (${dur}us) exceeds segment duration (${targetDur}us)`);
     const start = animType === "out" ? targetDur - dur : 0;
     const categoryId = animType === "in" ? "in_fav" : "out_fav";
@@ -664,11 +778,11 @@ export function addTextAnim(
 // with an inherited default block so CapCut doesn't render blank text.
 
 export interface TextRangeInput {
-  start: number;               // JS string code-unit index, inclusive
-  end: number;                 // JS string code-unit index, exclusive
-  font_color?: string;         // "#RRGGBB"
+  start: number; // JS string code-unit index, inclusive
+  end: number; // JS string code-unit index, exclusive
+  font_color?: string; // "#RRGGBB"
   font_size?: number;
-  font_alpha?: number;         // 0..1
+  font_alpha?: number; // 0..1
   bold?: boolean;
   italic?: boolean;
   underline?: boolean;
@@ -676,11 +790,7 @@ export interface TextRangeInput {
 
 function hexToRgb01(hex: string): [number, number, number] {
   const h = hex.replace("#", "");
-  return [
-    parseInt(h.slice(0, 2), 16) / 255,
-    parseInt(h.slice(2, 4), 16) / 255,
-    parseInt(h.slice(4, 6), 16) / 255,
-  ];
+  return [parseInt(h.slice(0, 2), 16) / 255, parseInt(h.slice(2, 4), 16) / 255, parseInt(h.slice(4, 6), 16) / 255];
 }
 
 export function setTextRanges(
@@ -704,7 +814,9 @@ export function setTextRanges(
 
   // Baseline style inherited for fields the user didn't override.
   const base = (content.styles && content.styles[0]) ?? {};
-  const baseFill = (base.fill as { content?: { solid?: { color?: [number, number, number]; alpha?: number } } } | undefined)?.content?.solid;
+  const baseFill = (
+    base.fill as { content?: { solid?: { color?: [number, number, number]; alpha?: number } } } | undefined
+  )?.content?.solid;
   const defaultColor: [number, number, number] = baseFill?.color ?? [1, 1, 1];
   const defaultAlpha = baseFill?.alpha ?? 1;
   const defaultSize = (base.size as number | undefined) ?? 15;
@@ -718,12 +830,15 @@ export function setTextRanges(
   const maxCodeUnits = full.length;
   for (const r of sorted) {
     if (!Number.isInteger(r.start) || !Number.isInteger(r.end)) throw new Error(`range {start,end} must be integers`);
-    if (r.start < 0 || r.end > maxCodeUnits) throw new Error(`range [${r.start},${r.end}) out of bounds (text length=${maxCodeUnits})`);
+    if (r.start < 0 || r.end > maxCodeUnits)
+      throw new Error(`range [${r.start},${r.end}) out of bounds (text length=${maxCodeUnits})`);
     if (r.end <= r.start) throw new Error(`range [${r.start},${r.end}) must have end > start`);
   }
   for (let i = 1; i < sorted.length; i++) {
     if (sorted[i].start < sorted[i - 1].end) {
-      throw new Error(`overlapping ranges: [${sorted[i - 1].start},${sorted[i - 1].end}) and [${sorted[i].start},${sorted[i].end})`);
+      throw new Error(
+        `overlapping ranges: [${sorted[i - 1].start},${sorted[i - 1].end}) and [${sorted[i].start},${sorted[i].end})`,
+      );
     }
   }
 

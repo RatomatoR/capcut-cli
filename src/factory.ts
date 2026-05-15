@@ -1,10 +1,10 @@
 import { randomUUID } from "node:crypto";
-import { readFileSync, writeFileSync, existsSync, mkdirSync, cpSync, copyFileSync } from "node:fs";
-import { resolve, dirname } from "node:path";
-import type { Draft, Segment, Track, Timerange } from "./draft.js";
+import { copyFileSync, cpSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { dirname, resolve } from "node:path";
+import type { Draft, Segment, Timerange, Track } from "./draft.js";
 import { findMaterialGlobal, findSegment } from "./draft.js";
 import { findEnum, type Namespace } from "./enums.js";
-import { isWikimediaUrl, fetchWikimediaAsset, type WikimediaAsset } from "./wikimedia.js";
+import { fetchWikimediaAsset, isWikimediaUrl, type WikimediaAsset } from "./wikimedia.js";
 
 /**
  * If `path` is an http(s) URL, resolve it through the Wikimedia fetcher, saving
@@ -24,7 +24,7 @@ export async function resolveAssetPath(
   if (!isWikimediaUrl(path)) {
     throw new Error(
       `Only Wikimedia URLs are accepted as network inputs (got: ${path}). ` +
-      `Download the file separately and pass a local path.`
+        `Download the file separately and pass a local path.`,
     );
   }
   // Save directly into the same dir addVideo/addAudio uses so their
@@ -45,8 +45,8 @@ export function uuid(): string {
 
 export interface InitOptions {
   name: string;
-  templateDir: string;  // path to template directory
-  draftsDir: string;    // path to CapCut drafts directory
+  templateDir: string; // path to template directory
+  draftsDir: string; // path to CapCut drafts directory
 }
 
 export function initDraft(opts: InitOptions): { draftPath: string; filePath: string } {
@@ -83,17 +83,29 @@ interface CompanionRefs {
 export function createCompanionMaterials(trackType: "text" | "video" | "audio" | "sticker" | "effect"): CompanionRefs {
   const speed = { id: uuid(), type: "speed", speed: 1, mode: 0, curve_speed: null };
   const placeholder = {
-    id: uuid(), type: "placeholder_info",
-    error_path: "", error_text: "", meta_type: "none", res_path: "", res_text: "",
+    id: uuid(),
+    type: "placeholder_info",
+    error_path: "",
+    error_text: "",
+    meta_type: "none",
+    res_path: "",
+    res_text: "",
   };
   const scm = {
-    id: uuid(), type: "none",
-    audio_channel_mapping: 0, is_config_open: false,
+    id: uuid(),
+    type: "none",
+    audio_channel_mapping: 0,
+    is_config_open: false,
   };
   const vocal = {
-    id: uuid(), type: "vocal_separation",
-    choice: 0, enter_from: "", final_algorithm: "",
-    production_path: "", removed_sounds: [], time_range: null,
+    id: uuid(),
+    type: "vocal_separation",
+    choice: 0,
+    enter_from: "",
+    final_algorithm: "",
+    production_path: "",
+    removed_sounds: [],
+    time_range: null,
   };
 
   const refs: CompanionRefs = {
@@ -108,20 +120,31 @@ export function createCompanionMaterials(trackType: "text" | "video" | "audio" |
 
   if (trackType === "video" || trackType === "sticker") {
     const canvas = {
-      id: uuid(), type: "canvas_color",
-      album_image: "", blur: 0, color: "", image: "",
-      image_id: "", image_name: "", source_platform: 0, team_id: "",
+      id: uuid(),
+      type: "canvas_color",
+      album_image: "",
+      blur: 0,
+      color: "",
+      image: "",
+      image_id: "",
+      image_name: "",
+      source_platform: 0,
+      team_id: "",
     };
     const matColor = {
-      id: uuid(), type: "material_color",
-      gradient_angle: 90, gradient_colors: [], gradient_percents: [],
-      height: 0, is_color_clip: false, is_gradient: false, solid_color: "", width: 0,
+      id: uuid(),
+      type: "material_color",
+      gradient_angle: 90,
+      gradient_colors: [],
+      gradient_percents: [],
+      height: 0,
+      is_color_clip: false,
+      is_gradient: false,
+      solid_color: "",
+      width: 0,
     };
     refs.ids.push(canvas.id, matColor.id);
-    refs.materials.push(
-      { type: "canvases", data: canvas },
-      { type: "material_colors", data: matColor },
-    );
+    refs.materials.push({ type: "canvases", data: canvas }, { type: "material_colors", data: matColor });
   }
 
   // Effect track segments don't take the full companion set — their segment
@@ -142,7 +165,14 @@ export function registerCompanions(draft: Draft, companions: CompanionRefs): voi
 
 // --- Base segment ---
 
-function baseSegment(id: string, materialId: string, trackId: string, timerange: Timerange, companionIds: string[], renderIndex: number): Segment {
+function baseSegment(
+  id: string,
+  materialId: string,
+  trackId: string,
+  timerange: Timerange,
+  companionIds: string[],
+  renderIndex: number,
+): Segment {
   return {
     id,
     material_id: materialId,
@@ -173,42 +203,40 @@ function baseSegment(id: string, materialId: string, trackId: string, timerange:
 
 export interface AddTextOptions {
   text: string;
-  start: number;       // microseconds
-  duration: number;    // microseconds
+  start: number; // microseconds
+  duration: number; // microseconds
   fontSize?: number;
-  color?: string;      // hex "#RRGGBB"
-  alignment?: number;  // 0=left, 1=center, 2=right
-  x?: number;          // -1 to 1
-  y?: number;          // -1 to 1
+  color?: string; // hex "#RRGGBB"
+  alignment?: number; // 0=left, 1=center, 2=right
+  x?: number; // -1 to 1
+  y?: number; // -1 to 1
   trackName?: string;
 }
 
 function hexToRgb(hex: string): [number, number, number] {
   const h = hex.replace("#", "");
-  return [
-    parseInt(h.slice(0, 2), 16) / 255,
-    parseInt(h.slice(2, 4), 16) / 255,
-    parseInt(h.slice(4, 6), 16) / 255,
-  ];
+  return [parseInt(h.slice(0, 2), 16) / 255, parseInt(h.slice(2, 4), 16) / 255, parseInt(h.slice(4, 6), 16) / 255];
 }
 
 function buildTextContent(text: string, fontSize: number, color: [number, number, number]): string {
   const encoded = Buffer.from(text, "utf16le");
   return JSON.stringify({
-    styles: [{
-      range: [0, encoded.length],
-      size: fontSize,
-      bold: false,
-      italic: false,
-      underline: false,
-      fill: {
-        alpha: 1,
-        content: {
-          render_type: "solid",
-          solid: { alpha: 1, color },
+    styles: [
+      {
+        range: [0, encoded.length],
+        size: fontSize,
+        bold: false,
+        italic: false,
+        underline: false,
+        fill: {
+          alpha: 1,
+          content: {
+            render_type: "solid",
+            solid: { alpha: 1, color },
+          },
         },
       },
-    }],
+    ],
     text,
   });
 }
@@ -216,29 +244,52 @@ function buildTextContent(text: string, fontSize: number, color: [number, number
 // Fields on a text material that describe *styling* (not content or timing).
 // Used by import-srt --style-ref to mirror an existing caption's look.
 const STYLE_FIELDS = [
-  "alignment", "font_size", "text_color", "typesetting",
-  "letter_spacing", "line_spacing", "line_feed", "line_max_width",
-  "force_apply_line_max_width", "fixed_width", "fixed_height",
-  "text_alpha", "has_shadow", "shadow_alpha", "shadow_angle", "shadow_color",
-  "shadow_distance", "shadow_smoothing",
-  "has_border", "border_width", "border_color", "border_alpha",
-  "has_text_shadow_config", "background_color", "background_alpha",
-  "background_style", "background_round_radius", "background_width",
-  "background_height", "background_horizontal_offset", "background_vertical_offset",
-  "font_id", "font_name", "font_path", "font_resource_id",
-  "bold", "italic", "underline",
+  "alignment",
+  "font_size",
+  "text_color",
+  "typesetting",
+  "letter_spacing",
+  "line_spacing",
+  "line_feed",
+  "line_max_width",
+  "force_apply_line_max_width",
+  "fixed_width",
+  "fixed_height",
+  "text_alpha",
+  "has_shadow",
+  "shadow_alpha",
+  "shadow_angle",
+  "shadow_color",
+  "shadow_distance",
+  "shadow_smoothing",
+  "has_border",
+  "border_width",
+  "border_color",
+  "border_alpha",
+  "has_text_shadow_config",
+  "background_color",
+  "background_alpha",
+  "background_style",
+  "background_round_radius",
+  "background_width",
+  "background_height",
+  "background_horizontal_offset",
+  "background_vertical_offset",
+  "font_id",
+  "font_name",
+  "font_path",
+  "font_resource_id",
+  "bold",
+  "italic",
+  "underline",
 ] as const;
 
-export function copyTextStyle(
-  draft: Draft,
-  refSegmentId: string,
-  targetMaterialId: string,
-): void {
+export function copyTextStyle(draft: Draft, refSegmentId: string, targetMaterialId: string): void {
   const refSeg = findSegment(draft, refSegmentId)?.segment;
   if (!refSeg) throw new Error(`Style-ref segment not found: ${refSegmentId}`);
   const texts = draft.materials.texts as unknown as Array<Record<string, unknown>>;
-  const refMat = texts.find(t => t.id === refSeg.material_id);
-  const tgtMat = texts.find(t => t.id === targetMaterialId);
+  const refMat = texts.find((t) => t.id === refSeg.material_id);
+  const tgtMat = texts.find((t) => t.id === targetMaterialId);
   if (!refMat) throw new Error(`Style-ref is not a text segment: ${refSegmentId}`);
   if (!tgtMat) throw new Error(`Target material not found: ${targetMaterialId}`);
   for (const f of STYLE_FIELDS) {
@@ -255,11 +306,17 @@ export function copyTextStyle(
         tgtC.styles[0] = { ...refC.styles[0], range: preservedRange };
         tgtMat.content = JSON.stringify(tgtC);
       }
-    } catch { /* keep new content */ }
+    } catch {
+      /* keep new content */
+    }
   }
 }
 
-export function addText(draft: Draft, filePath: string, opts: AddTextOptions): { segmentId: string; materialId: string; trackId: string } {
+export function addText(
+  draft: Draft,
+  filePath: string,
+  opts: AddTextOptions,
+): { segmentId: string; materialId: string; trackId: string } {
   const segId = uuid();
   const matId = uuid();
   const fontSize = opts.fontSize ?? 15;
@@ -269,7 +326,7 @@ export function addText(draft: Draft, filePath: string, opts: AddTextOptions): {
   const trackName = opts.trackName ?? "text";
 
   // Find or create text track
-  let track = draft.tracks.find(t => t.type === "text" && (t.name === trackName || !opts.trackName));
+  let track = draft.tracks.find((t) => t.type === "text" && (t.name === trackName || !opts.trackName));
   if (!track) {
     track = {
       id: uuid(),
@@ -321,14 +378,18 @@ export function addText(draft: Draft, filePath: string, opts: AddTextOptions): {
 // --- Audio ---
 
 export interface AddAudioOptions {
-  path: string;         // absolute path to audio file
-  start: number;        // microseconds
-  duration: number;     // microseconds (0 = use file duration)
-  volume?: number;      // 0.0-1.0, default 1.0
-  trackName?: string;   // default "audio"
+  path: string; // absolute path to audio file
+  start: number; // microseconds
+  duration: number; // microseconds (0 = use file duration)
+  volume?: number; // 0.0-1.0, default 1.0
+  trackName?: string; // default "audio"
 }
 
-export function addAudio(draft: Draft, filePath: string, opts: AddAudioOptions): { segmentId: string; materialId: string; trackId: string } {
+export function addAudio(
+  draft: Draft,
+  filePath: string,
+  opts: AddAudioOptions,
+): { segmentId: string; materialId: string; trackId: string } {
   const segId = uuid();
   const matId = uuid();
   const trackName = opts.trackName ?? "audio";
@@ -347,7 +408,7 @@ export function addAudio(draft: Draft, filePath: string, opts: AddAudioOptions):
   const localPath = destPath;
 
   // Find or create audio track
-  let track = draft.tracks.find(t => t.type === "audio" && t.name === trackName);
+  let track = draft.tracks.find((t) => t.type === "audio" && t.name === trackName);
   if (!track) {
     track = {
       id: uuid(),
@@ -411,16 +472,20 @@ export function addAudio(draft: Draft, filePath: string, opts: AddAudioOptions):
 // --- Video / Image ---
 
 export interface AddVideoOptions {
-  path: string;         // absolute path to video/image file
-  start: number;        // microseconds
-  duration: number;     // microseconds
-  type?: "video" | "photo";  // default: inferred from extension
-  width?: number;       // default 1920
-  height?: number;      // default 1080
-  trackName?: string;   // default "video"
+  path: string; // absolute path to video/image file
+  start: number; // microseconds
+  duration: number; // microseconds
+  type?: "video" | "photo"; // default: inferred from extension
+  width?: number; // default 1920
+  height?: number; // default 1080
+  trackName?: string; // default "video"
 }
 
-export function addVideo(draft: Draft, filePath: string, opts: AddVideoOptions): { segmentId: string; materialId: string; trackId: string } {
+export function addVideo(
+  draft: Draft,
+  filePath: string,
+  opts: AddVideoOptions,
+): { segmentId: string; materialId: string; trackId: string } {
   const segId = uuid();
   const matId = uuid();
   const trackName = opts.trackName ?? "video";
@@ -444,7 +509,7 @@ export function addVideo(draft: Draft, filePath: string, opts: AddVideoOptions):
   const localPath = destPath;
 
   // Find or create video track
-  let track = draft.tracks.find(t => t.type === "video" && t.name === trackName);
+  let track = draft.tracks.find((t) => t.type === "video" && t.name === trackName);
   if (!track) {
     track = {
       id: uuid(),
@@ -474,7 +539,16 @@ export function addVideo(draft: Draft, filePath: string, opts: AddVideoOptions):
     category_id: "",
     category_name: "local",
     check_flag: 7,
-    crop: { lower_left_x: 0, lower_left_y: 1, lower_right_x: 1, lower_right_y: 1, upper_left_x: 0, upper_left_y: 0, upper_right_x: 1, upper_right_y: 0 },
+    crop: {
+      lower_left_x: 0,
+      lower_left_y: 1,
+      lower_right_x: 1,
+      lower_right_y: 1,
+      upper_left_x: 0,
+      upper_left_y: 0,
+      upper_right_x: 1,
+      upper_right_y: 0,
+    },
     has_audio: materialType === "video",
     extra_type_option: 0,
     formula_id: "",
@@ -496,7 +570,15 @@ export function addVideo(draft: Draft, filePath: string, opts: AddVideoOptions):
     source_platform: 0,
     stable: { matrix_path: "", stable_level: 0, time_range: { duration: 0, start: 0 } },
     team_id: "",
-    video_algorithm: { algorithms: [], deflicker: null, motion_blur_config: null, noise_reduction: null, path: "", quality_enhance: null, time_range: null },
+    video_algorithm: {
+      algorithms: [],
+      deflicker: null,
+      motion_blur_config: null,
+      noise_reduction: null,
+      path: "",
+      quality_enhance: null,
+      time_range: null,
+    },
   };
   (draft.materials.videos as unknown as Array<Record<string, unknown>>).push(videoMaterial);
 
@@ -517,8 +599,8 @@ export function addVideo(draft: Draft, filePath: string, opts: AddVideoOptions):
 // --- Cut (extract time range) ---
 
 export interface CutOptions {
-  start: number;   // microseconds
-  end: number;     // microseconds
+  start: number; // microseconds
+  end: number; // microseconds
 }
 
 export function cutProject(draft: Draft, opts: CutOptions): { kept: number; removed: number } {
@@ -569,7 +651,7 @@ export function cutProject(draft: Draft, opts: CutOptions): { kept: number; remo
   }
 
   // Remove empty tracks
-  draft.tracks = draft.tracks.filter(t => t.segments.length > 0);
+  draft.tracks = draft.tracks.filter((t) => t.segments.length > 0);
 
   // Clean up orphaned materials (only if not referenced by surviving segments)
   const survivingMatIds = new Set<string>();
@@ -605,7 +687,7 @@ export function cutProject(draft: Draft, opts: CutOptions): { kept: number; remo
 
 export interface Template {
   name: string;
-  type: string;            // track type: "text", "sticker", "video", "audio"
+  type: string; // track type: "text", "sticker", "video", "audio"
   segment: Record<string, unknown>;
   material: { type: string; data: Record<string, unknown> };
   extra_materials: Array<{ type: string; data: Record<string, unknown> }>;
@@ -688,7 +770,9 @@ export function applyTemplate(
         }
         newMat.content = JSON.stringify(parsed);
       }
-    } catch { /* keep original content */ }
+    } catch {
+      /* keep original content */
+    }
   }
 
   // Register primary material
@@ -712,7 +796,7 @@ export function applyTemplate(
   }
 
   // Find or create track
-  let track = draft.tracks.find(t => t.type === template.type);
+  let track = draft.tracks.find((t) => t.type === template.type);
   if (!track) {
     track = {
       id: uuid(),
@@ -759,10 +843,7 @@ export function applyTemplate(
   return { segmentId: newSegId, materialId: newMatId, trackId: track.id };
 }
 
-function deepCloneWithIdRemap(
-  obj: Record<string, unknown>,
-  remapId: (old: string) => string,
-): Record<string, unknown> {
+function deepCloneWithIdRemap(obj: Record<string, unknown>, remapId: (old: string) => string): Record<string, unknown> {
   const clone = JSON.parse(JSON.stringify(obj)) as Record<string, unknown>;
   // Remap the id field
   if (typeof clone.id === "string") {
@@ -784,12 +865,15 @@ export interface AddStickerOptions {
   trackName?: string;
 }
 
-export function addSticker(draft: Draft, opts: AddStickerOptions): { segmentId: string; materialId: string; trackId: string } {
+export function addSticker(
+  draft: Draft,
+  opts: AddStickerOptions,
+): { segmentId: string; materialId: string; trackId: string } {
   const segId = uuid();
   const matId = uuid();
   const trackName = opts.trackName ?? "sticker";
 
-  let track = draft.tracks.find(t => t.type === "sticker" && t.name === trackName);
+  let track = draft.tracks.find((t) => t.type === "sticker" && t.name === trackName);
   if (!track) {
     track = {
       id: uuid(),
@@ -841,16 +925,53 @@ interface VideoEffectMeta {
 // kebab-case; the effect_id/resource_id come from CapCutAPI metadata or the
 // upstream `capcut_effect_meta.py` exports.
 const VIDEO_EFFECTS: Record<string, VideoEffectMeta> = {
-  "shake":            { name: "Shake",             effect_id: "7061205058364788270", resource_id: "7061205058364788270", effect_type: "video_effect" },
-  "vhs":              { name: "VHS",               effect_id: "6706773500257242119", resource_id: "6706773500257242119", effect_type: "video_effect" },
-  "cinematic":        { name: "Cinematic",         effect_id: "7102283971168211981", resource_id: "7102283971168211981", effect_type: "video_effect" },
-  "light-leak":       { name: "Light Leak",        effect_id: "7039726019823718926", resource_id: "7039726019823718926", effect_type: "video_effect" },
-  "film-grain":       { name: "Film Grain",        effect_id: "6921123676029981197", resource_id: "6921123676029981197", effect_type: "video_effect" },
-  "chromatic":        { name: "Chromatic",         effect_id: "7069620856462184973", resource_id: "7069620856462184973", effect_type: "video_effect" },
-  "vignette":         { name: "Vignette",          effect_id: "6710812571147752967", resource_id: "6710812571147752967", effect_type: "video_effect" },
+  shake: {
+    name: "Shake",
+    effect_id: "7061205058364788270",
+    resource_id: "7061205058364788270",
+    effect_type: "video_effect",
+  },
+  vhs: {
+    name: "VHS",
+    effect_id: "6706773500257242119",
+    resource_id: "6706773500257242119",
+    effect_type: "video_effect",
+  },
+  cinematic: {
+    name: "Cinematic",
+    effect_id: "7102283971168211981",
+    resource_id: "7102283971168211981",
+    effect_type: "video_effect",
+  },
+  "light-leak": {
+    name: "Light Leak",
+    effect_id: "7039726019823718926",
+    resource_id: "7039726019823718926",
+    effect_type: "video_effect",
+  },
+  "film-grain": {
+    name: "Film Grain",
+    effect_id: "6921123676029981197",
+    resource_id: "6921123676029981197",
+    effect_type: "video_effect",
+  },
+  chromatic: {
+    name: "Chromatic",
+    effect_id: "7069620856462184973",
+    resource_id: "7069620856462184973",
+    effect_type: "video_effect",
+  },
+  vignette: {
+    name: "Vignette",
+    effect_id: "6710812571147752967",
+    resource_id: "6710812571147752967",
+    effect_type: "video_effect",
+  },
 };
 
-export function effectSlugs(): string[] { return Object.keys(VIDEO_EFFECTS); }
+export function effectSlugs(): string[] {
+  return Object.keys(VIDEO_EFFECTS);
+}
 
 export interface AddEffectOptions {
   slug: string;
@@ -861,7 +982,10 @@ export interface AddEffectOptions {
   namespace?: Namespace;
 }
 
-export function addEffect(draft: Draft, opts: AddEffectOptions): { segmentId: string; materialId: string; trackId: string; name: string } {
+export function addEffect(
+  draft: Draft,
+  opts: AddEffectOptions,
+): { segmentId: string; materialId: string; trackId: string; name: string } {
   // Inline (knossos-verified) entries take precedence for the capcut namespace;
   // fall back to enums.json for any slug outside the starter set. Scene effects
   // are video_effect; character effects are face_effect. --jianying skips the
@@ -874,7 +998,9 @@ export function addEffect(draft: Draft, opts: AddEffectOptions): { segmentId: st
     const hit = scene ?? char;
     if (!hit || !hit.name || !hit.effect_id || !hit.resource_id) {
       const hint = ns === "jianying" ? " --jianying" : "";
-      throw new Error(`Unknown effect slug: ${opts.slug}. Run 'capcut enums --scene-effects${hint}' or '--character-effects${hint}' for the full list.`);
+      throw new Error(
+        `Unknown effect slug: ${opts.slug}. Run 'capcut enums --scene-effects${hint}' or '--character-effects${hint}' for the full list.`,
+      );
     }
     meta = {
       name: hit.name,
@@ -888,7 +1014,7 @@ export function addEffect(draft: Draft, opts: AddEffectOptions): { segmentId: st
   const matId = uuid();
   const trackName = opts.trackName ?? "effect";
 
-  let track = draft.tracks.find(t => t.type === "effect" && t.name === trackName);
+  let track = draft.tracks.find((t) => t.type === "effect" && t.name === trackName);
   if (!track) {
     track = {
       id: uuid(),
@@ -904,7 +1030,7 @@ export function addEffect(draft: Draft, opts: AddEffectOptions): { segmentId: st
 
   const effectMaterial = {
     adjust_params: (opts.params || []).map((v, i) => ({ name: `param_${i}`, value: v, default_value: v })),
-    apply_target_type: 2,   // track/global scope
+    apply_target_type: 2, // track/global scope
     apply_time_range: null,
     category_id: "",
     category_name: "",

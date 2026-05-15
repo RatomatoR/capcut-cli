@@ -1,6 +1,6 @@
 {
   "name": "capcut-cli",
-  "version": "0.3.0",
+  "version": "0.3.1",
   "description": "CLI to create and edit CapCut projects — build drafts from scratch, add video/audio/text, subtitles, timing, speed, volume, templates, cut long-form to shorts. No API needed.",
   "type": "module",
   "bin": {
@@ -19,7 +19,21 @@
     "build": "tsc && node -e \"import('node:fs').then(fs=>fs.copyFileSync('src/enums.json','dist/enums.json'))\"",
     "prepublishOnly": "npm run build",
     "dev": "node --import tsx src/index.ts",
-    "extract-enums": "python3 scripts/extract-enums.py"
+    "extract-enums": "python3 scripts/extract-enums.py",
+    "test": "npm run build && node --test --test-reporter=spec test/*.test.mjs",
+    "test:fast": "node --test --test-reporter=spec test/*.test.mjs",
+    "lint": "biome check src/ test/",
+    "lint:fix": "biome check --write src/ test/",
+    "format": "biome format --write src/ test/",
+    "prepare": "husky"
+  },
+  "lint-staged": {
+    "src/**/*.ts": [
+      "biome check --write --no-errors-on-unmatched"
+    ],
+    "test/**/*.mjs": [
+      "biome check --write --no-errors-on-unmatched"
+    ]
   },
   "keywords": [
     "capcut",
@@ -56,7 +70,10 @@
     "node": ">=18"
   },
   "devDependencies": {
+    "@biomejs/biome": "^2.4.15",
     "@types/node": "^25.6.0",
+    "husky": "^9.1.7",
+    "lint-staged": "^17.0.4",
     "tsx": "^4.0.0",
     "typescript": "^5.5.0"
   }
