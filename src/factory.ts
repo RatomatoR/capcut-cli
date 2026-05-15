@@ -2,7 +2,38 @@ import { randomUUID } from "node:crypto";
 import { readFileSync, writeFileSync, existsSync, mkdirSync, cpSync, copyFileSync } from "node:fs";
 import { resolve, dirname } from "node:path";
 import type { Draft, Segment, Track, Timerange } from "./draft.js";
-import { findMaterialGlobal } from "./draft.js";
+import { findMaterialGlobal, findSegment } from "./draft.js";
+import { findEnum, type Namespace } from "./enums.js";
+import { isWikimediaUrl, fetchWikimediaAsset, type WikimediaAsset } from "./wikimedia.js";
+
+/**
+ * If `path` is an http(s) URL, resolve it through the Wikimedia fetcher, saving
+ * into a `wikimedia/` subdir of the draft's assets folder. Non-Wikimedia URLs
+ * error — keeping network scope tight. Returns the local path + the fetched
+ * asset (null for plain filesystem paths).
+ */
+export async function resolveAssetPath(
+  path: string,
+  draftFilePath: string,
+  kind: "video" | "audio",
+  forceLicense?: boolean,
+): Promise<{ localPath: string; asset: WikimediaAsset | null; warning?: string }> {
+  if (!/^https?:\/\//i.test(path)) {
+    return { localPath: path, asset: null };
+  }
+  if (!isWikimediaUrl(path)) {
+    throw new Error(
+      `Only Wikimedia URLs are accepted as network inputs (got: ${path}). ` +
+      `Download the file separately and pass a local path.`
+    );
+  }
+  // Save directly into the same dir addVideo/addAudio uses so their
+  // copyFileSync becomes a no-op (file already present at destPath).
+  const draftDir = dirname(draftFilePath);
+  const destDir = resolve(draftDir, "assets", kind);
+  const { localPath, asset, warning } = await fetchWikimediaAsset(path, { destDir, forceLicense });
+  return { localPath, asset, warning };
+}
 
 // --- UUID generation ---
 
@@ -49,7 +80,7 @@ interface CompanionRefs {
   materials: Array<{ type: string; data: Record<string, unknown> }>;
 }
 
-export function createCompanionMaterials(trackType: "text" | "video" | "audio"): CompanionRefs {
+export function createCompanionMaterials(trackType: "text" | "video" | "audio" | "sticker" | "effect"): CompanionRefs {
   const speed = { id: uuid(), type: "speed", speed: 1, mode: 0, curve_speed: null };
   const placeholder = {
     id: uuid(), type: "placeholder_info",
@@ -75,7 +106,7 @@ export function createCompanionMaterials(trackType: "text" | "video" | "audio"):
     ],
   };
 
-  if (trackType === "video") {
+  if (trackType === "video" || trackType === "sticker") {
     const canvas = {
       id: uuid(), type: "canvas_color",
       album_image: "", blur: 0, color: "", image: "",
@@ -91,6 +122,12 @@ export function createCompanionMaterials(trackType: "text" | "video" | "audio"):
       { type: "canvases", data: canvas },
       { type: "material_colors", data: matColor },
     );
+  }
+
+  // Effect track segments don't take the full companion set — their segment
+  // references are the effect material itself (see addEffect).
+  if (trackType === "effect") {
+    return { ids: [], materials: [] };
   }
 
   return refs;
@@ -174,6 +211,52 @@ function buildTextContent(text: string, fontSize: number, color: [number, number
     }],
     text,
   });
+}
+
+// Fields on a text material that describe *styling* (not content or timing).
+// Used by import-srt --style-ref to mirror an existing caption's look.
+const STYLE_FIELDS = [
+  "alignment", "font_size", "text_color", "typesetting",
+  "letter_spacing", "line_spacing", "line_feed", "line_max_width",
+  "force_apply_line_max_width", "fixed_width", "fixed_height",
+  "text_alpha", "has_shadow", "shadow_alpha", "shadow_angle", "shadow_color",
+  "shadow_distance", "shadow_smoothing",
+  "has_border", "border_width", "border_color", "border_alpha",
+  "has_text_shadow_config", "background_color", "background_alpha",
+  "background_style", "background_round_radius", "background_width",
+  "background_height", "background_horizontal_offset", "background_vertical_offset",
+  "font_id", "font_name", "font_path", "font_resource_id",
+  "bold", "italic", "underline",
+] as const;
+
+export function copyTextStyle(
+  draft: Draft,
+  refSegmentId: string,
+  targetMaterialId: string,
+): void {
+  const refSeg = findSegment(draft, refSegmentId)?.segment;
+  if (!refSeg) throw new Error(`Style-ref segment not found: ${refSegmentId}`);
+  const texts = draft.materials.texts as unknown as Array<Record<string, unknown>>;
+  const refMat = texts.find(t => t.id === refSeg.material_id);
+  const tgtMat = texts.find(t => t.id === targetMaterialId);
+  if (!refMat) throw new Error(`Style-ref is not a text segment: ${refSegmentId}`);
+  if (!tgtMat) throw new Error(`Target material not found: ${targetMaterialId}`);
+  for (const f of STYLE_FIELDS) {
+    if (refMat[f] !== undefined) tgtMat[f] = refMat[f];
+  }
+  // Mirror the fill color encoded inside `content`'s styles[0] too — CapCut
+  // renders from that. Preserve the new cue's text.
+  if (typeof refMat.content === "string" && typeof tgtMat.content === "string") {
+    try {
+      const refC = JSON.parse(refMat.content) as { styles?: Array<Record<string, unknown>>; text?: string };
+      const tgtC = JSON.parse(tgtMat.content) as { styles?: Array<Record<string, unknown>>; text?: string };
+      if (refC.styles && refC.styles.length > 0 && tgtC.styles && tgtC.styles.length > 0) {
+        const preservedRange = tgtC.styles[0].range;
+        tgtC.styles[0] = { ...refC.styles[0], range: preservedRange };
+        tgtMat.content = JSON.stringify(tgtC);
+      }
+    } catch { /* keep new content */ }
+  }
 }
 
 export function addText(draft: Draft, filePath: string, opts: AddTextOptions): { segmentId: string; materialId: string; trackId: string } {
@@ -686,4 +769,185 @@ function deepCloneWithIdRemap(
     clone.id = remapId(clone.id as string);
   }
   return clone;
+}
+
+// --- Sticker ---
+
+export interface AddStickerOptions {
+  resourceId: string;
+  start: number;
+  duration: number;
+  x?: number;
+  y?: number;
+  scale?: number;
+  rotation?: number;
+  trackName?: string;
+}
+
+export function addSticker(draft: Draft, opts: AddStickerOptions): { segmentId: string; materialId: string; trackId: string } {
+  const segId = uuid();
+  const matId = uuid();
+  const trackName = opts.trackName ?? "sticker";
+
+  let track = draft.tracks.find(t => t.type === "sticker" && t.name === trackName);
+  if (!track) {
+    track = {
+      id: uuid(),
+      type: "sticker",
+      name: trackName,
+      attribute: 0,
+      segments: [],
+      is_default_name: !opts.trackName,
+      flag: 0,
+    } as unknown as Track;
+    draft.tracks.push(track);
+  }
+
+  const companions = createCompanionMaterials("sticker");
+  registerCompanions(draft, companions);
+
+  const stickerMaterial = {
+    id: matId,
+    resource_id: opts.resourceId,
+    sticker_id: opts.resourceId,
+    source_platform: 1,
+    type: "sticker",
+  };
+  if (!Array.isArray(draft.materials.stickers)) draft.materials.stickers = [];
+  (draft.materials.stickers as Array<Record<string, unknown>>).push(stickerMaterial);
+
+  const timerange: Timerange = { start: opts.start, duration: opts.duration };
+  const seg = baseSegment(segId, matId, track.id, timerange, companions.ids, 14000);
+  const scale = opts.scale ?? 1;
+  const clip = seg.clip as NonNullable<typeof seg.clip>;
+  clip.transform = { x: opts.x ?? 0, y: opts.y ?? 0 };
+  clip.scale = { x: scale, y: scale };
+  clip.rotation = opts.rotation ?? 0;
+  track.segments.push(seg);
+
+  return { segmentId: segId, materialId: matId, trackId: track.id };
+}
+
+// --- Effect (track-global scene/character effect) ---
+
+interface VideoEffectMeta {
+  name: string;
+  effect_id: string;
+  resource_id: string;
+  effect_type: "video_effect" | "face_effect";
+}
+
+// Small starter catalogue — expand via Phase 3 enum extraction. Every slug is
+// kebab-case; the effect_id/resource_id come from CapCutAPI metadata or the
+// upstream `capcut_effect_meta.py` exports.
+const VIDEO_EFFECTS: Record<string, VideoEffectMeta> = {
+  "shake":            { name: "Shake",             effect_id: "7061205058364788270", resource_id: "7061205058364788270", effect_type: "video_effect" },
+  "vhs":              { name: "VHS",               effect_id: "6706773500257242119", resource_id: "6706773500257242119", effect_type: "video_effect" },
+  "cinematic":        { name: "Cinematic",         effect_id: "7102283971168211981", resource_id: "7102283971168211981", effect_type: "video_effect" },
+  "light-leak":       { name: "Light Leak",        effect_id: "7039726019823718926", resource_id: "7039726019823718926", effect_type: "video_effect" },
+  "film-grain":       { name: "Film Grain",        effect_id: "6921123676029981197", resource_id: "6921123676029981197", effect_type: "video_effect" },
+  "chromatic":        { name: "Chromatic",         effect_id: "7069620856462184973", resource_id: "7069620856462184973", effect_type: "video_effect" },
+  "vignette":         { name: "Vignette",          effect_id: "6710812571147752967", resource_id: "6710812571147752967", effect_type: "video_effect" },
+};
+
+export function effectSlugs(): string[] { return Object.keys(VIDEO_EFFECTS); }
+
+export interface AddEffectOptions {
+  slug: string;
+  start: number;
+  duration: number;
+  params?: number[];
+  trackName?: string;
+  namespace?: Namespace;
+}
+
+export function addEffect(draft: Draft, opts: AddEffectOptions): { segmentId: string; materialId: string; trackId: string; name: string } {
+  // Inline (knossos-verified) entries take precedence for the capcut namespace;
+  // fall back to enums.json for any slug outside the starter set. Scene effects
+  // are video_effect; character effects are face_effect. --jianying skips the
+  // inline layer entirely since those effect_ids are CapCut-specific.
+  const ns: Namespace = opts.namespace ?? "capcut";
+  let meta: VideoEffectMeta | null = ns === "capcut" ? (VIDEO_EFFECTS[opts.slug] ?? null) : null;
+  if (!meta) {
+    const scene = findEnum("scene_effects", opts.slug, ns);
+    const char = scene ? null : findEnum("character_effects", opts.slug, ns);
+    const hit = scene ?? char;
+    if (!hit || !hit.name || !hit.effect_id || !hit.resource_id) {
+      const hint = ns === "jianying" ? " --jianying" : "";
+      throw new Error(`Unknown effect slug: ${opts.slug}. Run 'capcut enums --scene-effects${hint}' or '--character-effects${hint}' for the full list.`);
+    }
+    meta = {
+      name: hit.name,
+      effect_id: hit.effect_id,
+      resource_id: hit.resource_id,
+      effect_type: scene ? "video_effect" : "face_effect",
+    };
+  }
+
+  const segId = uuid();
+  const matId = uuid();
+  const trackName = opts.trackName ?? "effect";
+
+  let track = draft.tracks.find(t => t.type === "effect" && t.name === trackName);
+  if (!track) {
+    track = {
+      id: uuid(),
+      type: "effect",
+      name: trackName,
+      attribute: 0,
+      segments: [],
+      is_default_name: !opts.trackName,
+      flag: 0,
+    } as unknown as Track;
+    draft.tracks.push(track);
+  }
+
+  const effectMaterial = {
+    adjust_params: (opts.params || []).map((v, i) => ({ name: `param_${i}`, value: v, default_value: v })),
+    apply_target_type: 2,   // track/global scope
+    apply_time_range: null,
+    category_id: "",
+    category_name: "",
+    common_keyframes: [],
+    disable_effect_faces: [],
+    effect_id: meta.effect_id,
+    formula_id: "",
+    id: matId,
+    name: meta.name,
+    platform: "all",
+    render_index: 11000,
+    resource_id: meta.resource_id,
+    source_platform: 0,
+    time_range: null,
+    track_render_index: 0,
+    type: meta.effect_type,
+    value: 1.0,
+    version: "",
+  };
+  if (!Array.isArray(draft.materials.video_effects)) draft.materials.video_effects = [];
+  (draft.materials.video_effects as Array<Record<string, unknown>>).push(effectMaterial);
+
+  // Effect track segments: no clip, no speed, no companions — just the segment
+  // pointing at the effect material with a target_timerange.
+  const seg: Segment = {
+    id: segId,
+    material_id: matId,
+    raw_segment_id: track.id,
+    target_timerange: { start: opts.start, duration: opts.duration },
+    source_timerange: { start: 0, duration: opts.duration },
+    speed: 1,
+    volume: 1,
+    visible: true,
+    reverse: false,
+    clip: null,
+    render_index: 11000,
+    track_render_index: 0,
+    track_attribute: 0,
+    extra_material_refs: [],
+    common_keyframes: [],
+    keyframe_refs: [],
+  } as unknown as Segment;
+  track.segments.push(seg);
+
+  return { segmentId: segId, materialId: matId, trackId: track.id, name: meta.name };
 }

@@ -3,9 +3,13 @@
 import { readFileSync, writeFileSync } from "node:fs";
 import { loadDraft, saveDraft, extractText, updateTextContent, findSegment, findMaterial, findMaterialGlobal, getMaterialTypes, getTracksByType } from "./draft.js";
 import { formatTime, formatDuration, parseTimeInput, srtTime } from "./time.js";
-import { addText, addAudio, addVideo, cutProject, saveTemplate, applyTemplate, initDraft } from "./factory.js";
+import { addText, addAudio, addVideo, addSticker, addEffect, cutProject, saveTemplate, applyTemplate, initDraft, effectSlugs, copyTextStyle, resolveAssetPath } from "./factory.js";
+import { addKeyframes, parseKeyframeValue, keyframeProperties, addTransition, addMask, setBgBlur, setTextStyle, addTextAnim, addImageAnim, setTextRanges, transitionSlugs, maskSlugs, textAnimSlugs, imageAnimSlugs } from "./decorators.js";
+import type { KeyframeInput, MaskOptions, TextStyleOptions, TextAnimOptions, ImageAnimOptions, TextRangeInput } from "./decorators.js";
 import type { Draft, Track, Segment } from "./draft.js";
 import type { AddTextOptions, AddAudioOptions, AddVideoOptions, CutOptions, InitOptions } from "./factory.js";
+import { listEnum, type Category, type Namespace } from "./enums.js";
+import { parseSrt } from "./srt.js";
 
 const HELP = `capcut-cli -- fast edits to CapCut projects
 
@@ -16,6 +20,8 @@ Usage: capcut <command> <project> [options]
 Global flags:
   -H, --human     Human-readable table output (default: JSON)
   -q, --quiet     No output on success, exit code only (write commands)
+  --jianying      Use JianYing enum namespace (default: CapCut) for
+                  transition, mask, text-anim, image-anim, add-effect, enums
 
 Overview (start here):
   info       <project>                          Project overview + material summary
@@ -38,15 +44,21 @@ Create:
                --drafts     ~/Movies/CapCut/User Data/Projects/com.lveditor.draft
 
 Add:
-  add-audio  <project> <file> <start> <duration> [options]
-             Add an audio segment (VO, music, SFX). Options:
+  add-audio  <project> <file-or-wikimedia-url> <start> <duration> [options]
+             Add an audio segment (VO, music, SFX). URLs to wikipedia.org /
+             commons.wikimedia.org / upload.wikimedia.org are resolved via
+             the Commons imageinfo API, license-checked, then downloaded to
+             assets/audio/wikimedia/. Options:
                --volume <n>       Volume 0.0-1.0 (default: 1.0)
                --track-name <s>   Track name (default: "audio")
+               --force-license    Bypass refusal on restrictive/unknown license
 
-  add-video  <project> <file> <start> <duration> [options]
-             Add a video or image segment. Type auto-detected from extension.
+  add-video  <project> <file-or-wikimedia-url> <start> <duration> [options]
+             Add a video or image segment. Accepts Wikimedia URLs (same as
+             add-audio). Type auto-detected from extension.
              Options:
                --track-name <s>   Track name (default: "video")
+               --force-license    Bypass refusal on restrictive/unknown license
 
   add-text   <project> <start> <duration> <text> [options]
              Add a text segment. Options:
@@ -67,6 +79,67 @@ Edit:
   export-srt <project>                          Export subtitles to SRT
   batch      <project>                          Run multiple edits from stdin (JSONL)
 
+Animate:
+  keyframe   <project> <id> <property> <time> <value>
+             Add a keyframe to a segment. Single-shot.
+  keyframe   <project> <id> --batch
+             Read JSONL from stdin; each line = {"property","time","value"}.
+             Properties: position_x, position_y, rotation, scale_x, scale_y,
+                         uniform_scale, alpha, saturation, contrast, brightness, volume
+             Values: "1.5", "50%" (alpha/volume), "45deg" (rotation),
+                     "+0.5"/"-0.3" (saturation/contrast/brightness)
+
+  transition <project> <id> <slug> [--duration <s>]
+             Attach a transition to a video/image segment. Slug examples:
+               dissolve, rgb-glitch, radial-blur, horizontal-blur, twinkle-zoom,
+               urban-glitch, shake-3, vertical-blur-ii
+  mask       <project> <id> <slug> [options]  |  <project> <id> --off
+             Attach/remove a mask. Slugs: linear, mirror, circle, rectangle,
+             heart, star. Options: --center-x --center-y --size --rotation
+             --feather --invert --rect-width --round-corner (rect only).
+  bg-blur    <project> <id> <1|2|3|4>  |  <project> <id> --off
+             Set background blur level (0.0625 / 0.375 / 0.75 / 1.0).
+  text-style <project> <id> [options]
+             Rich text styling on an existing text segment. Options:
+               --alpha --vertical --fixed-width --fixed-height
+               --shadow --shadow-alpha --shadow-angle --shadow-color
+               --shadow-distance --shadow-smoothing
+               --border-width --border-color --border-alpha
+               --bg-color --bg-alpha --bg-style --bg-round-radius
+               --bg-width --bg-height --bg-h-offset --bg-v-offset
+  text-ranges <project> <id> --styles @path.json  |  --styles '<inline-json>'
+             Multi-colour text — write multiple styles to one text segment.
+             JSON array of { "start": int, "end": int,
+               "font_color":"#RRGGBB", "font_size":18, "font_alpha":1,
+               "bold":true, "italic":true, "underline":true }.
+             start/end are JS string code-unit indices (char-level for BMP).
+             Gaps are auto-filled with the baseline style.
+  text-anim  <project> <id> [--intro <slug>] [--outro <slug>]
+                          [--intro-duration <s>] [--outro-duration <s>]
+             Slugs: fade-in, fade-out, typewriter, pop-up, throw-out,
+                    blur-text-in, zoom-in-text.
+  image-anim <project> <id> [--intro <slug>] [--outro <slug>] [--combo <slug>]
+                          [--intro-duration <s>] [--outro-duration <s>]
+                          [--combo-duration <s>]
+             Video/image intro/outro/combo animations. Slugs:
+               fade-in, flash-in, pulsing-zooms, scroll-up, stripe-merge,
+               zoom-out (intros); fade-out, blur-out, smoke (outros).
+
+Tracks (Phase 2):
+  add-sticker <project> <resource-id> <start> <duration> [options]
+             Creates a sticker segment on a sticker track. Options:
+               --x <n> --y <n>       Position (-1 to 1)
+               --scale <n>           Uniform scale (default 1)
+               --rotation <deg>      Clockwise rotation
+               --track-name <s>      Sticker track name (default: "sticker")
+  add-effect <project> <slug> <start> <duration> [options]
+             Scene/character effect on an effect track. Slugs:
+               shake, vhs, cinematic, light-leak, film-grain, chromatic,
+               vignette.
+             Options:
+               --params <json-array> Effect parameters (0-100 each)
+               --track-name <s>      Effect track name (default: "effect")
+
 Templates:
   save-template <project> <id> <name> --out <path>
              Extract any segment as a reusable template (text, sticker, video, audio)
@@ -78,16 +151,43 @@ Project:
   cut        <project> <start> <end> --out <path>
              Extract a time range into a new project (long-form → short)
 
+Discovery (Phase 3):
+  enums      --transitions | --masks | --image-intros | --image-outros |
+             --image-combos | --text-intros | --text-outros |
+             --text-loop-anims | --scene-effects | --character-effects |
+             --audio-effects | --fonts
+             List valid enum slugs (CapCut namespace by default).
+             Add --jianying to switch namespace. Use -H for a table.
+
+Subtitles (Phase 3):
+  import-srt <project> <srt-path-or--> [options]
+             Parse an SRT file and create one text segment per cue.
+             Options:
+               --track-name <s>      Text track (default: "subtitle")
+               --time-offset <s>     Shift all cue timings (e.g. +0.5s)
+               --style-ref <seg-id>  Copy styling from an existing text segment
+               --font-size --color --align --x --y
+               --alpha --vertical --shadow --shadow-color --shadow-distance
+               --border-width --border-color --border-alpha
+               --bg-color --bg-alpha --bg-style --bg-round-radius --bg-h-offset
+
 Navigation: info → tracks/materials → segments → segment <id>
             info → materials --type X → material <id>
 Time formats: 1.5s, 500ms, 1:30, +0.5s, -200ms
-IDs: first 6+ chars of segment/material ID (prefix match)`;
+IDs: first 6+ chars of segment/material ID (prefix match)
+
+Full viral-shorts pipeline (Claude skill + hooks + templates):
+  https://renezander.gumroad.com/l/viral-youtube-shorts-blueprint
+Guides & docs:  https://renezander.com/guides/capcut-automation
+Sponsor:        https://github.com/sponsors/renezander030
+Hire me:        https://renezander.com/contact`;
 
 // --- Flag parsing ---
 
 interface Flags {
   human: boolean;
   quiet: boolean;
+  batch: boolean;
   track?: string;
   out?: string;
   fontSize?: number;
@@ -99,15 +199,89 @@ interface Flags {
   volume?: number;
   template?: string;
   drafts?: string;
+  // Phase 1 decorators
+  duration?: string;
+  off?: boolean;
+  centerX?: number;
+  centerY?: number;
+  size?: number;
+  rotation?: number;
+  feather?: number;
+  invert?: boolean;
+  rectWidth?: number;
+  roundCorner?: number;
+  // text-style
+  alpha?: number;
+  vertical?: boolean;
+  fixedWidth?: number;
+  fixedHeight?: number;
+  shadow?: boolean;
+  shadowNo?: boolean;
+  shadowAlpha?: number;
+  shadowAngle?: number;
+  shadowColor?: string;
+  shadowDistance?: number;
+  shadowSmoothing?: number;
+  borderWidth?: number;
+  borderColor?: string;
+  borderAlpha?: number;
+  bgColor?: string;
+  bgAlpha?: number;
+  bgStyle?: number;
+  bgRoundRadius?: number;
+  bgWidth?: number;
+  bgHeight?: number;
+  bgHOffset?: number;
+  bgVOffset?: number;
+  // text-anim / image-anim
+  intro?: string;
+  outro?: string;
+  combo?: string;
+  introDuration?: string;
+  outroDuration?: string;
+  comboDuration?: string;
+  // sticker
+  scale?: number;
+  resourceId?: string;
+  // effect
+  params?: string;
+  // enums
+  enumCategory?: Category;
+  jianying?: boolean;
+  // import-srt
+  styleRef?: string;
+  timeOffset?: string;
+  font?: string;
+  // text-ranges
+  styles?: string;
+  // wikimedia
+  forceLicense?: boolean;
 }
+
+// Map CLI enum flags -> enums.json category key. Order matters for HELP text.
+const ENUM_FLAG_MAP: Array<{ flag: string; category: Category }> = [
+  { flag: "--transitions",       category: "transitions" },
+  { flag: "--masks",             category: "masks" },
+  { flag: "--image-intros",      category: "image_intros" },
+  { flag: "--image-outros",      category: "image_outros" },
+  { flag: "--image-combos",      category: "image_combos" },
+  { flag: "--text-intros",       category: "text_intros" },
+  { flag: "--text-outros",       category: "text_outros" },
+  { flag: "--text-loop-anims",   category: "text_loop_anims" },
+  { flag: "--scene-effects",     category: "scene_effects" },
+  { flag: "--character-effects", category: "character_effects" },
+  { flag: "--audio-effects",     category: "audio_effects" },
+  { flag: "--fonts",             category: "fonts" },
+];
 
 function parseFlags(args: string[]): { positional: string[]; flags: Flags } {
   const positional: string[] = [];
-  const flags: Flags = { human: false, quiet: false };
+  const flags: Flags = { human: false, quiet: false, batch: false };
   for (let i = 0; i < args.length; i++) {
     const a = args[i];
     if (a === "-H" || a === "--human") flags.human = true;
     else if (a === "-q" || a === "--quiet") flags.quiet = true;
+    else if (a === "--batch") flags.batch = true;
     else if ((a === "--track" || a === "--type") && i + 1 < args.length) { flags.track = args[++i]; }
     else if (a === "--out" && i + 1 < args.length) { flags.out = args[++i]; }
     else if (a === "--font-size" && i + 1 < args.length) { flags.fontSize = parseFloat(args[++i]); }
@@ -119,7 +293,58 @@ function parseFlags(args: string[]): { positional: string[]; flags: Flags } {
     else if (a === "--volume" && i + 1 < args.length) { flags.volume = parseFloat(args[++i]); }
     else if (a === "--template" && i + 1 < args.length) { flags.template = args[++i]; }
     else if (a === "--drafts" && i + 1 < args.length) { flags.drafts = args[++i]; }
-    else positional.push(a);
+    else if (a === "--duration" && i + 1 < args.length) { flags.duration = args[++i]; }
+    else if (a === "--off") { flags.off = true; }
+    else if (a === "--center-x" && i + 1 < args.length) { flags.centerX = parseFloat(args[++i]); }
+    else if (a === "--center-y" && i + 1 < args.length) { flags.centerY = parseFloat(args[++i]); }
+    else if (a === "--size" && i + 1 < args.length) { flags.size = parseFloat(args[++i]); }
+    else if (a === "--rotation" && i + 1 < args.length) { flags.rotation = parseFloat(args[++i]); }
+    else if (a === "--feather" && i + 1 < args.length) { flags.feather = parseFloat(args[++i]); }
+    else if (a === "--invert") { flags.invert = true; }
+    else if (a === "--rect-width" && i + 1 < args.length) { flags.rectWidth = parseFloat(args[++i]); }
+    else if (a === "--round-corner" && i + 1 < args.length) { flags.roundCorner = parseFloat(args[++i]); }
+    else if (a === "--alpha" && i + 1 < args.length) { flags.alpha = parseFloat(args[++i]); }
+    else if (a === "--vertical") { flags.vertical = true; }
+    else if (a === "--fixed-width" && i + 1 < args.length) { flags.fixedWidth = parseFloat(args[++i]); }
+    else if (a === "--fixed-height" && i + 1 < args.length) { flags.fixedHeight = parseFloat(args[++i]); }
+    else if (a === "--shadow") { flags.shadow = true; }
+    else if (a === "--no-shadow") { flags.shadow = false; }
+    else if (a === "--shadow-alpha" && i + 1 < args.length) { flags.shadowAlpha = parseFloat(args[++i]); }
+    else if (a === "--shadow-angle" && i + 1 < args.length) { flags.shadowAngle = parseFloat(args[++i]); }
+    else if (a === "--shadow-color" && i + 1 < args.length) { flags.shadowColor = args[++i]; }
+    else if (a === "--shadow-distance" && i + 1 < args.length) { flags.shadowDistance = parseFloat(args[++i]); }
+    else if (a === "--shadow-smoothing" && i + 1 < args.length) { flags.shadowSmoothing = parseFloat(args[++i]); }
+    else if (a === "--border-width" && i + 1 < args.length) { flags.borderWidth = parseFloat(args[++i]); }
+    else if (a === "--border-color" && i + 1 < args.length) { flags.borderColor = args[++i]; }
+    else if (a === "--border-alpha" && i + 1 < args.length) { flags.borderAlpha = parseFloat(args[++i]); }
+    else if (a === "--bg-color" && i + 1 < args.length) { flags.bgColor = args[++i]; }
+    else if (a === "--bg-alpha" && i + 1 < args.length) { flags.bgAlpha = parseFloat(args[++i]); }
+    else if (a === "--bg-style" && i + 1 < args.length) { flags.bgStyle = parseInt(args[++i]); }
+    else if (a === "--bg-round-radius" && i + 1 < args.length) { flags.bgRoundRadius = parseFloat(args[++i]); }
+    else if (a === "--bg-width" && i + 1 < args.length) { flags.bgWidth = parseFloat(args[++i]); }
+    else if (a === "--bg-height" && i + 1 < args.length) { flags.bgHeight = parseFloat(args[++i]); }
+    else if (a === "--bg-h-offset" && i + 1 < args.length) { flags.bgHOffset = parseFloat(args[++i]); }
+    else if (a === "--bg-v-offset" && i + 1 < args.length) { flags.bgVOffset = parseFloat(args[++i]); }
+    else if (a === "--intro" && i + 1 < args.length) { flags.intro = args[++i]; }
+    else if (a === "--outro" && i + 1 < args.length) { flags.outro = args[++i]; }
+    else if (a === "--intro-duration" && i + 1 < args.length) { flags.introDuration = args[++i]; }
+    else if (a === "--outro-duration" && i + 1 < args.length) { flags.outroDuration = args[++i]; }
+    else if (a === "--combo" && i + 1 < args.length) { flags.combo = args[++i]; }
+    else if (a === "--combo-duration" && i + 1 < args.length) { flags.comboDuration = args[++i]; }
+    else if (a === "--scale" && i + 1 < args.length) { flags.scale = parseFloat(args[++i]); }
+    else if (a === "--resource-id" && i + 1 < args.length) { flags.resourceId = args[++i]; }
+    else if (a === "--params" && i + 1 < args.length) { flags.params = args[++i]; }
+    else if (a === "--style-ref" && i + 1 < args.length) { flags.styleRef = args[++i]; }
+    else if (a === "--time-offset" && i + 1 < args.length) { flags.timeOffset = args[++i]; }
+    else if (a === "--font" && i + 1 < args.length) { flags.font = args[++i]; }
+    else if (a === "--jianying") { flags.jianying = true; }
+    else if (a === "--styles" && i + 1 < args.length) { flags.styles = args[++i]; }
+    else if (a === "--force-license") { flags.forceLicense = true; }
+    else {
+      const hit = ENUM_FLAG_MAP.find(f => f.flag === a);
+      if (hit) { flags.enumCategory = hit.category; }
+      else positional.push(a);
+    }
   }
   return { positional, flags };
 }
@@ -458,12 +683,14 @@ function cmdMaterialDetail(draft: Draft, matId: string, flags: Flags): void {
 
 // --- Add commands ---
 
-function cmdAddAudio(draft: Draft, filePath: string, positional: string[], flags: Flags): void {
+async function cmdAddAudio(draft: Draft, filePath: string, positional: string[], flags: Flags): Promise<void> {
   const audioPath = positional[2];
   const startStr = positional[3];
   const durationStr = positional[4];
-  if (!audioPath || !startStr || !durationStr) die("Usage: capcut add-audio <project> <file> <start> <duration>");
-  const absPath = audioPath.startsWith("/") ? audioPath : process.cwd() + "/" + audioPath;
+  if (!audioPath || !startStr || !durationStr) die("Usage: capcut add-audio <project> <file-or-wikimedia-url> <start> <duration>");
+  // Wikimedia URLs go through the license-gated fetcher; locals pass through.
+  const { localPath, asset, warning } = await resolveAssetPath(audioPath, filePath, "audio", flags.forceLicense);
+  const absPath = localPath.startsWith("/") ? localPath : process.cwd() + "/" + localPath;
   const start = parseTimeInput(startStr);
   const duration = parseTimeInput(durationStr);
   const opts: AddAudioOptions = {
@@ -475,15 +702,31 @@ function cmdAddAudio(draft: Draft, filePath: string, positional: string[], flags
   };
   const result = addAudio(draft, filePath, opts);
   saveDraft(filePath, draft);
-  out({ ok: true, segment_id: result.segmentId, material_id: result.materialId, track_id: result.trackId, path: absPath, start_us: start, duration_us: duration }, flags);
+  const payload: Record<string, unknown> = {
+    ok: true, segment_id: result.segmentId, material_id: result.materialId, track_id: result.trackId,
+    path: absPath, start_us: start, duration_us: duration,
+  };
+  if (asset) {
+    payload.wikimedia = {
+      file_title: asset.fileTitle,
+      license: asset.license.raw,
+      license_class: asset.license.class,
+      artist: asset.license.artist,
+      credit: asset.license.credit,
+      description_url: asset.descriptionUrl,
+    };
+  }
+  if (warning) payload.warning = warning;
+  out(payload, flags);
 }
 
-function cmdAddVideo(draft: Draft, filePath: string, positional: string[], flags: Flags): void {
+async function cmdAddVideo(draft: Draft, filePath: string, positional: string[], flags: Flags): Promise<void> {
   const videoPath = positional[2];
   const startStr = positional[3];
   const durationStr = positional[4];
-  if (!videoPath || !startStr || !durationStr) die("Usage: capcut add-video <project> <file> <start> <duration>");
-  const absPath = videoPath.startsWith("/") ? videoPath : process.cwd() + "/" + videoPath;
+  if (!videoPath || !startStr || !durationStr) die("Usage: capcut add-video <project> <file-or-wikimedia-url> <start> <duration>");
+  const { localPath, asset, warning } = await resolveAssetPath(videoPath, filePath, "video", flags.forceLicense);
+  const absPath = localPath.startsWith("/") ? localPath : process.cwd() + "/" + localPath;
   const start = parseTimeInput(startStr);
   const duration = parseTimeInput(durationStr);
   const opts: AddVideoOptions = {
@@ -494,7 +737,23 @@ function cmdAddVideo(draft: Draft, filePath: string, positional: string[], flags
   };
   const result = addVideo(draft, filePath, opts);
   saveDraft(filePath, draft);
-  out({ ok: true, segment_id: result.segmentId, material_id: result.materialId, track_id: result.trackId, path: absPath, start_us: start, duration_us: duration }, flags);
+  const payload: Record<string, unknown> = {
+    ok: true, segment_id: result.segmentId, material_id: result.materialId, track_id: result.trackId,
+    path: absPath, start_us: start, duration_us: duration,
+  };
+  if (asset) {
+    payload.wikimedia = {
+      file_title: asset.fileTitle,
+      license: asset.license.raw,
+      license_class: asset.license.class,
+      artist: asset.license.artist,
+      credit: asset.license.credit,
+      description_url: asset.descriptionUrl,
+      width: asset.width, height: asset.height, mime: asset.mime,
+    };
+  }
+  if (warning) payload.warning = warning;
+  out(payload, flags);
 }
 
 function cmdAddText(draft: Draft, filePath: string, positional: string[], flags: Flags): void {
@@ -518,6 +777,204 @@ function cmdAddText(draft: Draft, filePath: string, positional: string[], flags:
   const result = addText(draft, filePath, opts);
   saveDraft(filePath, draft);
   out({ ok: true, segment_id: result.segmentId, material_id: result.materialId, track_id: result.trackId, text, start_us: start, duration_us: duration }, flags);
+}
+
+function cmdKeyframe(draft: Draft, filePath: string, positional: string[], flags: Flags): void {
+  const segId = positional[2];
+  if (!segId) die("Usage: capcut keyframe <project> <id> <property> <time> <value>  (or --batch with JSONL on stdin)");
+
+  const inputs: KeyframeInput[] = [];
+
+  if (flags.batch) {
+    const raw = readFileSync("/dev/stdin", "utf-8").trim();
+    if (!raw) die("No input on stdin for --batch");
+    for (const line of raw.split("\n")) {
+      const trimmed = line.trim();
+      if (!trimmed) continue;
+      const op = JSON.parse(trimmed) as { property?: string; time?: string | number; value?: string | number };
+      if (!op.property || op.time === undefined || op.value === undefined) {
+        die(`batch keyframe requires {property, time, value} per line; got: ${trimmed}`);
+      }
+      const timeUs = typeof op.time === "number" ? op.time : parseTimeInput(op.time);
+      const value = parseKeyframeValue(op.property, String(op.value));
+      inputs.push({ property: op.property, timeUs, value });
+    }
+  } else {
+    const property = positional[3];
+    const timeStr = positional[4];
+    const valueStr = positional[5];
+    if (!property || !timeStr || valueStr === undefined) {
+      die(`Usage: capcut keyframe <project> <id> <property> <time> <value>\nProperties: ${keyframeProperties().join(", ")}`);
+    }
+    const timeUs = parseTimeInput(timeStr);
+    const value = parseKeyframeValue(property, valueStr);
+    inputs.push({ property, timeUs, value });
+  }
+
+  const result = addKeyframes(draft, segId, inputs);
+  saveDraft(filePath, draft);
+  out({ ok: true, id: result.segmentId, added: result.added, lists: result.lists }, flags);
+}
+
+function cmdTransition(draft: Draft, filePath: string, positional: string[], flags: Flags): void {
+  const segId = positional[2];
+  const slug = positional[3];
+  const ns: Namespace = flags.jianying ? "jianying" : "capcut";
+  if (!segId || !slug) die(`Usage: capcut transition <project> <id> <slug> [--duration <s>] [--jianying]\nSlugs: capcut enums --transitions${ns === "jianying" ? " --jianying" : ""}`);
+  const durUs = flags.duration ? parseTimeInput(flags.duration) : undefined;
+  const result = addTransition(draft, segId, slug, durUs, ns);
+  saveDraft(filePath, draft);
+  out({ ok: true, ...result }, flags);
+}
+
+function cmdMask(draft: Draft, filePath: string, positional: string[], flags: Flags): void {
+  const segId = positional[2];
+  const slug = positional[3];
+  const ns: Namespace = flags.jianying ? "jianying" : "capcut";
+  if (!segId) die(`Usage: capcut mask <project> <id> <slug> [flags]  |  --off\nSlugs: ${maskSlugs(ns).join(", ")}`);
+  if (flags.off) {
+    const found = findSegment(draft, segId);
+    if (!found) die(`Segment not found: ${segId}`);
+    const seg = found.segment;
+    const masksArr = (draft.materials.common_mask || []) as Array<Record<string, unknown>>;
+    const before = (seg.extra_material_refs || []).length;
+    seg.extra_material_refs = (seg.extra_material_refs || []).filter(r => !masksArr.some(m => (m as { id?: string }).id === r));
+    saveDraft(filePath, draft);
+    out({ ok: true, id: seg.id, removed: before - (seg.extra_material_refs || []).length }, flags);
+    return;
+  }
+  if (!slug) die(`Usage: capcut mask <project> <id> <slug> [flags]\nSlugs: ${maskSlugs(ns).join(", ")}`);
+  const opts: MaskOptions = {
+    centerX: flags.centerX,
+    centerY: flags.centerY,
+    size: flags.size,
+    rotation: flags.rotation,
+    feather: flags.feather,
+    invert: flags.invert,
+    rectWidth: flags.rectWidth,
+    roundCorner: flags.roundCorner,
+  };
+  const result = addMask(draft, segId, slug, opts, ns);
+  saveDraft(filePath, draft);
+  out({ ok: true, ...result }, flags);
+}
+
+function cmdBgBlur(draft: Draft, filePath: string, positional: string[], flags: Flags): void {
+  const segId = positional[2];
+  const arg = positional[3];
+  if (!segId) die(`Usage: capcut bg-blur <project> <id> <1|2|3|4>  |  --off`);
+  let level: 1 | 2 | 3 | 4 | "off";
+  if (flags.off) level = "off";
+  else {
+    const n = parseInt(arg ?? "");
+    if (![1, 2, 3, 4].includes(n)) die(`bg-blur level must be 1, 2, 3, or 4 (or --off)`);
+    level = n as 1 | 2 | 3 | 4;
+  }
+  const result = setBgBlur(draft, segId, level);
+  saveDraft(filePath, draft);
+  out({ ok: true, ...result }, flags);
+}
+
+function cmdTextStyle(draft: Draft, filePath: string, positional: string[], flags: Flags): void {
+  const segId = positional[2];
+  if (!segId) die(`Usage: capcut text-style <project> <id> [flags]`);
+  const opts: TextStyleOptions = {
+    alpha: flags.alpha,
+    vertical: flags.vertical,
+    fixedWidth: flags.fixedWidth,
+    fixedHeight: flags.fixedHeight,
+    shadow: flags.shadow,
+    shadowAlpha: flags.shadowAlpha,
+    shadowAngle: flags.shadowAngle,
+    shadowColor: flags.shadowColor,
+    shadowDistance: flags.shadowDistance,
+    shadowSmoothing: flags.shadowSmoothing,
+    borderWidth: flags.borderWidth,
+    borderColor: flags.borderColor,
+    borderAlpha: flags.borderAlpha,
+    bgColor: flags.bgColor,
+    bgAlpha: flags.bgAlpha,
+    bgStyle: flags.bgStyle,
+    bgRoundRadius: flags.bgRoundRadius,
+    bgWidth: flags.bgWidth,
+    bgHeight: flags.bgHeight,
+    bgHOffset: flags.bgHOffset,
+    bgVOffset: flags.bgVOffset,
+  };
+  const result = setTextStyle(draft, segId, opts);
+  if (result.applied.length === 0) die(`No styling flags provided. See 'capcut --help'.`);
+  saveDraft(filePath, draft);
+  out({ ok: true, id: segId, material_id: result.materialId, applied: result.applied }, flags);
+}
+
+function cmdTextAnim(draft: Draft, filePath: string, positional: string[], flags: Flags): void {
+  const segId = positional[2];
+  const ns: Namespace = flags.jianying ? "jianying" : "capcut";
+  if (!segId) die(`Usage: capcut text-anim <project> <id> [--intro <slug>] [--outro <slug>] [--jianying]\nFeatured slugs: ${textAnimSlugs().join(", ")}`);
+  const opts: TextAnimOptions = {
+    intro: flags.intro,
+    outro: flags.outro,
+    introDurationUs: flags.introDuration ? parseTimeInput(flags.introDuration) : undefined,
+    outroDurationUs: flags.outroDuration ? parseTimeInput(flags.outroDuration) : undefined,
+  };
+  const result = addTextAnim(draft, segId, opts, ns);
+  saveDraft(filePath, draft);
+  out({ ok: true, ...result }, flags);
+}
+
+function cmdAddSticker(draft: Draft, filePath: string, positional: string[], flags: Flags): void {
+  const resId = positional[2];
+  const startStr = positional[3];
+  const durStr = positional[4];
+  if (!resId || !startStr || !durStr) die(`Usage: capcut add-sticker <project> <resource-id> <start> <duration> [flags]`);
+  const start = parseTimeInput(startStr);
+  const duration = parseTimeInput(durStr);
+  const result = addSticker(draft, {
+    resourceId: resId,
+    start, duration,
+    x: flags.x, y: flags.y,
+    scale: flags.scale,
+    rotation: flags.rotation,
+    trackName: flags.trackName,
+  });
+  saveDraft(filePath, draft);
+  out({ ok: true, ...result, start_us: start, duration_us: duration }, flags);
+}
+
+function cmdAddEffect(draft: Draft, filePath: string, positional: string[], flags: Flags): void {
+  const slug = positional[2];
+  const startStr = positional[3];
+  const durStr = positional[4];
+  const ns: Namespace = flags.jianying ? "jianying" : "capcut";
+  if (!slug || !startStr || !durStr) die(`Usage: capcut add-effect <project> <slug> <start> <duration> [--params <json-array>] [--jianying]\nFeatured slugs: ${effectSlugs().join(", ")}`);
+  const start = parseTimeInput(startStr);
+  const duration = parseTimeInput(durStr);
+  let params: number[] | undefined;
+  if (flags.params) {
+    const parsed = JSON.parse(flags.params);
+    if (!Array.isArray(parsed)) die(`--params must be a JSON array of numbers`);
+    params = parsed.map((v) => Number(v));
+  }
+  const result = addEffect(draft, { slug, start, duration, params, trackName: flags.trackName, namespace: ns });
+  saveDraft(filePath, draft);
+  out({ ok: true, ...result, start_us: start, duration_us: duration }, flags);
+}
+
+function cmdImageAnim(draft: Draft, filePath: string, positional: string[], flags: Flags): void {
+  const segId = positional[2];
+  const ns: Namespace = flags.jianying ? "jianying" : "capcut";
+  if (!segId) die(`Usage: capcut image-anim <project> <id> [--intro <slug>] [--outro <slug>] [--combo <slug>] [--jianying]\nFeatured slugs: ${imageAnimSlugs().join(", ")}`);
+  const opts: ImageAnimOptions = {
+    intro: flags.intro,
+    outro: flags.outro,
+    combo: flags.combo,
+    introDurationUs: flags.introDuration ? parseTimeInput(flags.introDuration) : undefined,
+    outroDurationUs: flags.outroDuration ? parseTimeInput(flags.outroDuration) : undefined,
+    comboDurationUs: flags.comboDuration ? parseTimeInput(flags.comboDuration) : undefined,
+  };
+  const result = addImageAnim(draft, segId, opts, ns);
+  saveDraft(filePath, draft);
+  out({ ok: true, ...result }, flags);
 }
 
 function cmdCut(draft: Draft, filePath: string, positional: string[], flags: Flags): void {
@@ -570,6 +1027,130 @@ function cmdApplyTemplate(draft: Draft, filePath: string, positional: string[], 
     track_id: result.trackId,
     start_us: start,
     duration_us: duration,
+  }, flags);
+}
+
+// --- Phase 4: multi-style text ranges ---
+
+function cmdTextRanges(draft: Draft, filePath: string, positional: string[], flags: Flags): void {
+  const segId = positional[2];
+  if (!segId) die(`Usage: capcut text-ranges <project> <id> --styles @path.json  (or --styles '<inline-json>')`);
+  if (!flags.styles) die(`Missing --styles. Accepts @path.json or inline JSON array.`);
+  let raw = flags.styles;
+  if (raw.startsWith("@")) {
+    raw = readFileSync(raw.slice(1), "utf-8");
+  }
+  let parsed: unknown;
+  try { parsed = JSON.parse(raw); } catch (e) {
+    die(`--styles is not valid JSON: ${e instanceof Error ? e.message : String(e)}`);
+  }
+  if (!Array.isArray(parsed)) die(`--styles must be a JSON array of {start,end,...} ranges`);
+  const ranges = parsed as TextRangeInput[];
+  const result = setTextRanges(draft, segId, ranges);
+  saveDraft(filePath, draft);
+  out({ ok: true, ...result }, flags);
+}
+
+// --- Phase 3: enums + import-srt ---
+
+function cmdEnums(flags: Flags): void {
+  if (!flags.enumCategory) {
+    const flagList = ENUM_FLAG_MAP.map(f => f.flag).join(" | ");
+    die(`Usage: capcut enums <flag> [--jianying] [-H]\nFlags: ${flagList}`);
+  }
+  const ns: Namespace = flags.jianying ? "jianying" : "capcut";
+  const entries = listEnum(flags.enumCategory, ns);
+  if (flags.human) {
+    if (entries.length === 0) { console.log(`No ${flags.enumCategory} in ${ns} namespace.`); return; }
+    console.log(`Slug                              Name                             Member`);
+    for (const e of entries) {
+      const display = (e.name ?? e.title ?? "") as string;
+      console.log(`${(e.slug || "(non-ascii)").padEnd(33)} ${display.slice(0, 32).padEnd(32)} ${e.member}`);
+    }
+    process.stderr.write(`\n${entries.length} ${flags.enumCategory} (${ns})\n`);
+  } else {
+    out(entries, flags);
+  }
+}
+
+function cmdImportSrt(draft: Draft, filePath: string, positional: string[], flags: Flags): void {
+  const srtArg = positional[2];
+  if (!srtArg) die(`Usage: capcut import-srt <project> <srt-path-or-->`);
+  let srtContent: string;
+  if (srtArg === "-") {
+    srtContent = readFileSync("/dev/stdin", "utf-8");
+  } else {
+    srtContent = readFileSync(srtArg, "utf-8");
+  }
+
+  const cues = parseSrt(srtContent);
+  if (cues.length === 0) die(`SRT produced 0 cues`);
+
+  const offsetUs = flags.timeOffset ? parseTimeInput(flags.timeOffset) : 0;
+
+  // Resolve the style-ref segment once, before writing anything, so a bad ref
+  // fails fast instead of halfway through a 200-cue import.
+  if (flags.styleRef) {
+    const ref = findSegment(draft, flags.styleRef);
+    if (!ref) die(`Style-ref segment not found: ${flags.styleRef}`);
+  }
+
+  const styleOpts: TextStyleOptions = {
+    alpha: flags.alpha,
+    vertical: flags.vertical,
+    fixedWidth: flags.fixedWidth,
+    fixedHeight: flags.fixedHeight,
+    shadow: flags.shadow,
+    shadowAlpha: flags.shadowAlpha,
+    shadowAngle: flags.shadowAngle,
+    shadowColor: flags.shadowColor,
+    shadowDistance: flags.shadowDistance,
+    shadowSmoothing: flags.shadowSmoothing,
+    borderWidth: flags.borderWidth,
+    borderColor: flags.borderColor,
+    borderAlpha: flags.borderAlpha,
+    bgColor: flags.bgColor,
+    bgAlpha: flags.bgAlpha,
+    bgStyle: flags.bgStyle,
+    bgRoundRadius: flags.bgRoundRadius,
+    bgWidth: flags.bgWidth,
+    bgHeight: flags.bgHeight,
+    bgHOffset: flags.bgHOffset,
+    bgVOffset: flags.bgVOffset,
+  };
+  const hasStyleFlags = Object.values(styleOpts).some(v => v !== undefined);
+
+  const created: Array<{ id: string; start_us: number; duration_us: number; text: string }> = [];
+  for (const cue of cues) {
+    const start = cue.startUs + offsetUs;
+    const duration = cue.endUs - cue.startUs;
+    if (start < 0) die(`Cue ${cue.index} has negative start after --time-offset (${start}us)`);
+    const opts: AddTextOptions = {
+      text: cue.text,
+      start,
+      duration,
+      fontSize: flags.fontSize,
+      color: flags.color,
+      alignment: flags.align,
+      x: flags.x,
+      y: flags.y,
+      trackName: flags.trackName ?? "subtitle",
+    };
+    const res = addText(draft, filePath, opts);
+    if (flags.styleRef) copyTextStyle(draft, flags.styleRef, res.materialId);
+    if (hasStyleFlags) setTextStyle(draft, res.segmentId, styleOpts);
+    created.push({ id: res.segmentId, start_us: start, duration_us: duration, text: cue.text });
+  }
+
+  saveDraft(filePath, draft);
+  out({
+    ok: true,
+    cues: created.length,
+    track_name: flags.trackName ?? "subtitle",
+    style_ref: flags.styleRef ?? null,
+    time_offset_us: offsetUs,
+    first: created[0],
+    last: created[created.length - 1],
   }, flags);
 }
 
@@ -649,7 +1230,7 @@ function cmdBatch(draft: Draft, filePath: string, flags: Flags): void {
 
 // --- Main ---
 
-function main(): void {
+async function main(): Promise<void> {
   const raw = process.argv.slice(2);
   if (raw.length === 0 || raw[0] === "--help" || raw[0] === "-h") {
     console.log(HELP);
@@ -659,6 +1240,12 @@ function main(): void {
   const { positional, flags } = parseFlags(raw);
   const cmd = positional[0];
   const projectPath = positional[1];
+
+  // `enums` is a pure lookup — no project needed.
+  if (cmd === "enums") {
+    cmdEnums(flags);
+    process.exit(0);
+  }
 
   // init doesn't need an existing project
   if (cmd === "init") {
@@ -733,12 +1320,12 @@ function main(): void {
       cmdMaterialDetail(draft, positional[2], flags);
       break;
     case "add-audio":
-      requireArgs(positional, 5, "capcut add-audio <project> <file> <start> <duration>");
-      cmdAddAudio(draft, filePath, positional, flags);
+      requireArgs(positional, 5, "capcut add-audio <project> <file-or-wikimedia-url> <start> <duration>");
+      await cmdAddAudio(draft, filePath, positional, flags);
       break;
     case "add-video":
-      requireArgs(positional, 5, "capcut add-video <project> <file> <start> <duration>");
-      cmdAddVideo(draft, filePath, positional, flags);
+      requireArgs(positional, 5, "capcut add-video <project> <file-or-wikimedia-url> <start> <duration>");
+      await cmdAddVideo(draft, filePath, positional, flags);
       break;
     case "add-text":
       requireArgs(positional, 5, "capcut add-text <project> <start> <duration> <text>");
@@ -747,6 +1334,42 @@ function main(): void {
     case "cut":
       requireArgs(positional, 4, "capcut cut <project> <start> <end> --out <path>");
       cmdCut(draft, filePath, positional, flags);
+      break;
+    case "keyframe":
+      requireArgs(positional, 3, "capcut keyframe <project> <id> <property> <time> <value>");
+      cmdKeyframe(draft, filePath, positional, flags);
+      break;
+    case "transition":
+      requireArgs(positional, 4, "capcut transition <project> <id> <slug> [--duration <s>]");
+      cmdTransition(draft, filePath, positional, flags);
+      break;
+    case "mask":
+      requireArgs(positional, 3, "capcut mask <project> <id> <slug> [flags]  |  --off");
+      cmdMask(draft, filePath, positional, flags);
+      break;
+    case "bg-blur":
+      requireArgs(positional, 3, "capcut bg-blur <project> <id> <1|2|3|4>  |  --off");
+      cmdBgBlur(draft, filePath, positional, flags);
+      break;
+    case "text-style":
+      requireArgs(positional, 3, "capcut text-style <project> <id> [flags]");
+      cmdTextStyle(draft, filePath, positional, flags);
+      break;
+    case "text-anim":
+      requireArgs(positional, 3, "capcut text-anim <project> <id> [--intro <slug>] [--outro <slug>]");
+      cmdTextAnim(draft, filePath, positional, flags);
+      break;
+    case "image-anim":
+      requireArgs(positional, 3, "capcut image-anim <project> <id> [--intro <slug>] [--outro <slug>] [--combo <slug>]");
+      cmdImageAnim(draft, filePath, positional, flags);
+      break;
+    case "add-sticker":
+      requireArgs(positional, 5, "capcut add-sticker <project> <resource-id> <start> <duration>");
+      cmdAddSticker(draft, filePath, positional, flags);
+      break;
+    case "add-effect":
+      requireArgs(positional, 5, "capcut add-effect <project> <slug> <start> <duration>");
+      cmdAddEffect(draft, filePath, positional, flags);
       break;
     case "save-template":
       requireArgs(positional, 4, "capcut save-template <project> <id> <name> --out <path>");
@@ -759,15 +1382,21 @@ function main(): void {
     case "batch":
       cmdBatch(draft, filePath, flags);
       break;
+    case "import-srt":
+      requireArgs(positional, 3, "capcut import-srt <project> <srt-path-or-->");
+      cmdImportSrt(draft, filePath, positional, flags);
+      break;
+    case "text-ranges":
+      requireArgs(positional, 3, "capcut text-ranges <project> <id> --styles @path.json");
+      cmdTextRanges(draft, filePath, positional, flags);
+      break;
     default:
       die(`Unknown command: ${cmd}. Run 'capcut --help' for usage.`);
   }
 }
 
-try {
-  main();
-} catch (e) {
+main().catch((e) => {
   const msg = e instanceof Error ? e.message : String(e);
   process.stderr.write(JSON.stringify({ error: msg }) + "\n");
   process.exit(1);
-}
+});

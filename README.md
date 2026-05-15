@@ -175,6 +175,92 @@ capcut apply-template ./new-project ~/.capcut-templates/end-card.json 9:55 5s
 capcut apply-template ./new-project ~/.capcut-templates/subscribe-cta.json 9:50 5s
 ```
 
+### Decorators
+
+Phase 1 / 2 / 4 — write to materials on existing segments:
+
+```bash
+capcut keyframe    ./project a1b2c3 uniform_scale 0s 1.0
+capcut keyframe    ./project a1b2c3 uniform_scale 3s 1.2
+capcut transition  ./project a1b2c3 dissolve --duration 0.4s
+capcut mask        ./project a1b2c3 heart --size 0.6 --feather 20
+capcut bg-blur     ./project a1b2c3 2
+capcut text-style  ./project c1c1c1 --shadow --border-width 0.1 --border-color "#000000"
+capcut text-anim   ./project c1c1c1 --intro typewriter --outro fade-out
+capcut image-anim  ./project a1b2c3 --intro fade-in --outro fade-out
+capcut add-sticker ./project 7089817320127663629 2s 4s --x 0.3 --y -0.3
+capcut add-effect  ./project vhs 0s 5s --params '[80]'
+capcut text-ranges ./project c1c1c1 --styles '[
+  {"start":0,"end":5,"font_color":"#FFD700","bold":true},
+  {"start":6,"end":14,"font_color":"#FFFFFF"}
+]'
+```
+
+See `skills/capcut-edit/references/api-reference.md` for every flag and value
+format.
+
+### Enum discovery (Phase 3)
+
+```bash
+capcut enums --transitions -H           # 116 CapCut transitions
+capcut enums --masks                    # JSON
+capcut enums --scene-effects --jianying # switch namespace (912 slugs)
+capcut enums --text-intros | jq '.[] | select(.slug | startswith("fade"))'
+```
+
+Categories: `--transitions`, `--masks`, `--image-intros`, `--image-outros`,
+`--image-combos`, `--text-intros`, `--text-outros`, `--text-loop-anims`,
+`--scene-effects`, `--character-effects`, `--audio-effects`, `--fonts`.
+
+### Wikimedia Commons (Phase 5)
+
+`add-video` and `add-audio` accept a Wikimedia URL anywhere they accept a file
+path. The CLI fetches through the Commons imageinfo API, license-checks, and
+streams the file into the draft's assets dir.
+
+```bash
+# pageimages API — the official "give me the image for this page" call
+capcut add-video ./project \
+  "https://en.wikipedia.org/w/api.php?action=query&titles=Barcelona&prop=pageimages&piprop=original&format=json" \
+  0s 5s
+
+# /wiki/File: page
+capcut add-audio ./project \
+  "https://commons.wikimedia.org/wiki/File:Wind_and_rain.ogg" \
+  0s 30s
+
+# Direct CDN (still license-checks)
+capcut add-video ./project \
+  "https://upload.wikimedia.org/wikipedia/commons/a/ab/Some_image.jpg" \
+  5s 5s
+
+# Bypass refusal on restrictive/unknown license (you take responsibility)
+capcut add-video ./project "https://en.wikipedia.org/wiki/File:Copyright_logo.svg" 10s 3s --force-license
+```
+
+Output JSON includes a `wikimedia` block: `file_title`, `license`,
+`license_class` (permissive / fair-use / restrictive / unknown), `artist`,
+`credit`, `description_url`, `width`, `height`, `mime`. **Attribution the
+CC-BY family requires** — use `artist` + `description_url` in your YouTube
+description.
+
+Non-Wikimedia HTTPS URLs are refused before any network call. Download
+separately and pass a local path.
+
+### Import SRT subtitles (Phase 3)
+
+```bash
+# From a file — one text segment per cue on a "captions" track
+capcut import-srt ./project subs.srt --track-name captions --time-offset -120ms
+
+# From stdin (Whisper output, etc.)
+faster-whisper --output-format srt < audio.wav \
+  | capcut import-srt ./project - --style-ref c1c1c1
+```
+
+`--style-ref <seg-id>` mirrors font/color/shadow/border/background from an
+existing text segment onto every new cue.
+
 ### Cut (long-form → short)
 
 Extract a time range from a project into a new file. Clips edge segments, rebases timing to zero, removes empty tracks, cleans up orphaned materials.

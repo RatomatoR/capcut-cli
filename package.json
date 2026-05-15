@@ -1,6 +1,6 @@
 {
   "name": "capcut-cli",
-  "version": "0.2.2",
+  "version": "0.3.0",
   "description": "CLI to create and edit CapCut projects — build drafts from scratch, add video/audio/text, subtitles, timing, speed, volume, templates, cut long-form to shorts. No API needed.",
   "type": "module",
   "bin": {
@@ -10,14 +10,16 @@
   "files": [
     "dist",
     "examples",
+    "templates",
     "README.md",
     "README.zh-CN.md",
     "LICENSE"
   ],
   "scripts": {
-    "build": "tsc",
-    "prepublishOnly": "tsc",
-    "dev": "node --import tsx src/index.ts"
+    "build": "tsc && node -e \"import('node:fs').then(fs=>fs.copyFileSync('src/enums.json','dist/enums.json'))\"",
+    "prepublishOnly": "npm run build",
+    "dev": "node --import tsx src/index.ts",
+    "extract-enums": "python3 scripts/extract-enums.py"
   },
   "keywords": [
     "capcut",
