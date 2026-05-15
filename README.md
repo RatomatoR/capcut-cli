@@ -6,6 +6,105 @@ Create and edit CapCut projects from the command line. Build drafts from scratch
 
 > **Looking for the complete viral-shorts workflow?** `capcut-cli` is the engine I use to ship YouTube Shorts at volume. The full pipeline — story selection, hook templates, the Claude skill that drives it — is packaged as the **[Viral Story Shorts Blueprint](https://renezander.gumroad.com/l/viral-youtube-shorts-blueprint?utm_source=capcut-cli&utm_medium=readme&utm_campaign=hero)**.
 
+## Workflow
+
+How `capcut-cli` fits into a typical viral-shorts pipeline. Steps 2 and 3 are LLM-driven (any model that returns JSON); steps 1, 4, and 5 are deterministic CLI calls. Step 6 stays human — every short-video platform forbids automated upload, so the publish click is yours.
+
+```mermaid
+flowchart LR
+    A[Long video<br/>or CapCut project] --> B[capcut cut<br/>→ 60s candidate]
+    B --> C[Claude / DeepSeek<br/>/ GLM / Kimi<br/>→ hook + script JSON]
+    C --> D[capcut-cli<br/>add-text · add-audio<br/>apply-template]
+    D --> E[CapCut / JianYing<br/>review + render MP4]
+    E --> F[Publish<br/>YouTube Shorts · Reels · TikTok]
+```
+
+## Comparison
+
+How `capcut-cli` differs from the other CapCut / JianYing tooling:
+
+| Capability | [`pyJianYingDraft`](https://github.com/GuanYixuan/pyJianYingDraft) (Python, JianYing) | [`CapCutAPI`](https://github.com/sun-guannan/CapCutAPI) (Python, HTTP server) | `cutcli` (Go, closed) | **`capcut-cli`** (Node, this repo) |
+|---|:---:|:---:|:---:|:---:|
+| Inspect drafts (`info` / `tracks` / `materials` / `segments` / `texts`) | partial | ❌ | ❌ | ✅ |
+| Create drafts from scratch | ✅ | ✅ | ✅ | ✅ |
+| Decorators (`keyframe` / `transition` / `mask` / `text-anim` / `image-anim`) | ✅ | ✅ | ✅ | ✅ (v0.3.0) |
+| SRT import → per-cue text segments | ❌ | ✅ | ❌ | ✅ (v0.3.0) |
+| Multi-style text (word-level highlight captions) | partial | ❌ | ❌ | ✅ (v0.3.0) |
+| Enum discovery for AI agents | ❌ | partial | ❌ | ✅ — 13 categories × 2 namespaces |
+| CapCut + JianYing namespaces in one binary | JianYing only | both | partial | both via `--jianying` |
+| Templates (save/apply) | partial | ❌ | ❌ | ✅ — 3 shipped templates |
+| Schema docs | partial | minimal | none | full ([`docs/draft-schema/`](./docs/draft-schema/)) |
+| Wikimedia Commons URLs with license gate | ❌ | ❌ | ❌ | ✅ (v0.3.0) |
+| Runtime deps | several Python deps | Flask + Python | none (Go binary) | **zero** (Node ≥ 18 built-ins only) |
+| AI-tool integration | none | HTTP | none | [Claude Code plugin](#claude-code-plugin) |
+| Install | `pip install -r requirements.txt` | clone + run server | binary download | `npm install -g capcut-cli` |
+| License | none | none | unclear | MIT |
+
+## Feature checklist
+
+Status of every feature shipped. ✅ = implemented, ⬜ = roadmap. Section anchors link to the relevant command docs further down.
+
+### Project I/O
+- ✅ [`init`](#create-build-projects-from-scratch) — create a new draft from scratch
+- ✅ [`info`](#overview-start-here) · [`tracks`](#overview-start-here) · [`materials`](#overview-start-here) — overview
+- ✅ [`segments`](#browse) · [`texts`](#browse) — list, filterable by track type
+- ✅ [`segment` / `material` &lt;id&gt;](#detail-drill-into-one-item) — progressive disclosure for AI agents
+- ✅ [`export-srt`](#browse) — dump captions to SRT
+- ✅ [`cut`](#cut-long-form--short) — extract a time range into a standalone short
+
+### Add content
+- ✅ [`add-video`](#create-build-projects-from-scratch) · [`add-audio`](#create-build-projects-from-scratch) · [`add-text`](#add) — local files
+- ✅ [`add-video`](#wikimedia-commons-phase-5) / [`add-audio`](#wikimedia-commons-phase-5) — Wikimedia Commons URLs with license gate
+- ✅ [`add-sticker`](#decorators) — sticker track + transform
+- ✅ [`add-effect`](#decorators) — scene effect on its own track (vhs, shake, cinematic, vignette, …)
+
+### Edit
+- ✅ [`set-text`](#edit) · [`shift`](#edit) · [`shift-all`](#edit) · [`speed`](#edit) · [`volume`](#edit) · [`opacity`](#edit) · [`trim`](#edit)
+- ✅ [`batch`](#batch) — multiple edits, one JSON parse, one file write
+
+### Decorators (v0.3.0)
+- ✅ [`keyframe`](#decorators) — position, scale, rotation, alpha, colour-adjust, volume (single + `--batch` JSONL on stdin)
+- ✅ [`transition`](#decorators) — 8 starter slugs + the full enum catalogue
+- ✅ [`mask`](#decorators) — linear / mirror / circle / rectangle / heart / star + geometry flags + `--off`
+- ✅ [`bg-blur`](#decorators) — levels 1–4 + `--off`
+- ✅ [`text-style`](#decorators) — alpha · shadow · border · bg-box (26 flags)
+- ✅ [`text-anim`](#decorators) · [`image-anim`](#decorators) — intro / outro / combo from CapCut's library
+- ✅ [`text-ranges`](#decorators) — multi-style text, byte-accurate (unlocks word-level highlight captions)
+
+### Templates
+- ✅ [`save-template`](#templates) · [`apply-template`](#templates) — extract any segment as reusable JSON; restamp with new timing / position / text
+- ✅ 3 templates ship in [`templates/`](./templates/): `gold-title`, `end-card`, `subscribe-cta`
+
+### Import & discovery
+- ✅ [`import-srt`](#import-srt-subtitles-phase-3) — one cue per text segment; file, stdin, or `--style-ref` mirror
+- ✅ [`enums`](#enum-discovery-phase-3) — 12 categories × 2 namespaces from a committed `enums.json` (no network)
+
+### Source materials
+- ✅ Local files: mp4, mov, m4v, mp3, wav, aac, png, jpg, gif (any extension CapCut accepts)
+- ✅ [Wikimedia Commons URLs](#wikimedia-commons-phase-5) — page URL, `/wiki/File:` URL, direct CDN URL, or `api.php?prop=pageimages` query. License classifier refuses restrictive without `--force-license`.
+
+### Cross-platform
+- ✅ CapCut **and** JianYing — same binary, `--jianying` flag switches the enum namespace
+- ✅ macOS · Windows · Linux — pure Node ≥ 18, no native modules
+
+### Output
+- ✅ JSON (default — pipeable to `jq`)
+- ✅ `-H` / `--human` table mode (human-readable)
+- ✅ `-q` / `--quiet` mode (exit code only)
+
+### Quality
+- ✅ 36-test `node:test` suite ([`test/`](./test/)) running against [`test/draft_content.json`](./test/draft_content.json)
+- ✅ Husky [pre-commit hook](./.husky/pre-commit) — Biome lint on staged files + full test run
+- ✅ Schema reference in [`docs/draft-schema/`](./docs/draft-schema/) (7 files, ~3,700 lines)
+- ✅ [Claude Code plugin](#claude-code-plugin) (`/plugin marketplace add https://github.com/renezander030/capcut-cli`)
+
+### Roadmap
+- ⬜ Audio fade-in / fade-out command (workaround: `volume` keyframes)
+- ⬜ Text bubble effects / 花字 (workaround: hand-set `bubble_*` fields on the text material)
+- ⬜ Filter-chain command (workaround: `add-effect` with filter slugs from `enums --filters`)
+- ⬜ Drag-and-drop GIF demos in this README
+- 🚫 HTTP server / cloud rendering / MCP server — explicitly out of scope per [`PLAN.md`](./PLAN.md)
+
 ## The problem
 
 CapCut stores projects as `draft_content.json` -- deeply nested, undocumented, with timing in microseconds and text buried inside escaped JSON-in-JSON. Every manual edit means: find the right segment ID, trace it to the material, figure out the content format, convert your timestamp, edit, pray you didn't break the structure. **15 seconds per change**, minimum.

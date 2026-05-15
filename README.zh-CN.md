@@ -18,6 +18,105 @@
 
 完整流程（选题 → 大模型写剧本 → 配音 → 拼草稿）走 **[病毒短视频蓝图教程页](https://renezander.com/zh-cn/guides/automate-xiaohongshu-capcut-cli/?utm_source=capcut-cli&utm_medium=readme&utm_campaign=sample-cn)** 看，里面有 4 步管线 + DeepSeek / GLM 提示词。
 
+## 使用思路
+
+`capcut-cli` 在整条短视频流水线里的位置。第 2、3 步是大模型驱动（任何能输出 JSON 的模型都行）；第 1、4、5 步是确定性的 CLI 调用。第 6 步必须人工 —— **小红书 / 抖音 / 视频号 / YouTube Shorts 都禁止机器人自动发布**，最后一次"点发布"由你来。
+
+```mermaid
+flowchart LR
+    A[长视频<br/>或剪映工程] --> B[capcut cut<br/>切出 60 秒片段]
+    B --> C[Claude / DeepSeek<br/>/ GLM / Kimi<br/>生成钩子 + 剧本 JSON]
+    C --> D[capcut-cli<br/>add-text · add-audio<br/>apply-template]
+    D --> E[剪映 / CapCut<br/>审核 + 渲染 MP4]
+    E --> F[发布<br/>小红书 · 抖音 · 视频号]
+```
+
+## 对比
+
+跟其他剪映 / CapCut 工具的差别：
+
+| 能力 | [`pyJianYingDraft`](https://github.com/GuanYixuan/pyJianYingDraft)（Python，仅剪映） | [`CapCutAPI`](https://github.com/sun-guannan/CapCutAPI)（Python + HTTP 服务） | `cutcli`（Go，闭源） | **`capcut-cli`**（Node，本仓库） |
+|---|:---:|:---:|:---:|:---:|
+| 草稿审查（`info` / `tracks` / `materials` / `segments` / `texts`） | 部分 | ❌ | ❌ | ✅ |
+| 从零创建草稿 | ✅ | ✅ | ✅ | ✅ |
+| 装饰命令（`keyframe` / `transition` / `mask` / `text-anim` / `image-anim`） | ✅ | ✅ | ✅ | ✅（v0.3.0） |
+| SRT 字幕导入 → 逐条文本片段 | ❌ | ✅ | ❌ | ✅（v0.3.0） |
+| 多样式文本（字级高亮字幕） | 部分 | ❌ | ❌ | ✅（v0.3.0） |
+| 大模型友好的枚举发现 | ❌ | 部分 | ❌ | ✅ — 13 类 × 2 命名空间 |
+| CapCut + 剪映 双命名空间 | 仅剪映 | 都支持 | 部分 | 都支持（`--jianying` 切换） |
+| 模板（save / apply） | 部分 | ❌ | ❌ | ✅ — 内置 3 个模板 |
+| Schema 文档 | 部分 | 简略 | 无 | 完整（[`docs/draft-schema/`](./docs/draft-schema/)） |
+| Wikimedia Commons URL + 版权检查 | ❌ | ❌ | ❌ | ✅（v0.3.0） |
+| 运行时依赖 | 多个 Python 包 | Flask + Python | 无（Go 二进制） | **零**（仅 Node ≥ 18 内置 API） |
+| AI 工具集成 | 无 | HTTP | 无 | Claude Code 插件 + 任意 JSON 输出大模型 |
+| 安装 | `pip install -r requirements.txt` | 克隆 + 起服务 | 下载二进制 | `npm install -g capcut-cli` |
+| 许可证 | 无 | 无 | 不明 | MIT |
+
+## 功能清单
+
+每个功能的实现状态。✅ = 已实现，⬜ = 路线图。锚点链接到下面的命令文档。
+
+### 工程 I/O
+- ✅ [`init`](#从零创建剪映--capcut-草稿) — 从零创建新草稿
+- ✅ [`info`](#常用命令) · `tracks` · `materials` — 工程概览
+- ✅ `segments` · `texts` — 列表查询，支持按轨道类型过滤
+- ✅ `segment` / `material <id>` — 渐进式深入（适合 AI agent）
+- ✅ `export-srt` — 把字幕导出为 SRT
+- ✅ [`cut`](#长视频切短--短视频流水线核心) — 切出指定时间段成为独立短片
+
+### 添加素材
+- ✅ `add-video` · `add-audio` · `add-text` — 本地文件
+- ✅ `add-video` / `add-audio` — Wikimedia Commons URL（带版权分类 + 拒绝门）
+- ✅ `add-sticker` — 贴纸轨 + 变换
+- ✅ `add-effect` — 独立特效轨上的场景特效（vhs / shake / cinematic / vignette …）
+
+### 编辑
+- ✅ `set-text` · `shift` · `shift-all` · `speed` · `volume` · `opacity` · `trim`
+- ✅ [`batch`](#批量编辑) — 一次 JSON 解析 + 一次写入，多条修改
+
+### 装饰命令（v0.3.0）
+- ✅ `keyframe` — 位置 / 缩放 / 旋转 / 透明度 / 调色 / 音量（单次 + 标准输入 JSONL `--batch`）
+- ✅ `transition` — 8 个起步 slug + 完整 enum 目录
+- ✅ `mask` — 线性 / 镜像 / 圆形 / 矩形 / 心形 / 星形 + 几何参数 + `--off`
+- ✅ `bg-blur` — 1–4 档背景模糊 + `--off`
+- ✅ `text-style` — 透明度 · 阴影 · 描边 · 背景框（26 个参数）
+- ✅ `text-anim` · `image-anim` — 入场 / 出场 / 组合动画（剪映原生库）
+- ✅ `text-ranges` — 多样式文本，字节级精确（解锁字级高亮字幕）
+
+### 模板
+- ✅ [`save-template` · `apply-template`](#模板复用--开箱即用) — 把任意片段抽成 JSON，复用时重写时长 / 位置 / 文本
+- ✅ 仓库自带 3 个模板（[`templates/`](./templates/)）：`gold-title` · `end-card` · `subscribe-cta`
+
+### 导入 & 发现
+- ✅ `import-srt` — SRT 一条 cue 一个文本片段；支持文件 / stdin / `--style-ref` 镜像样式
+- ✅ `enums` — 12 个分类 × 2 个命名空间，从仓库内 `enums.json` 读，**无需联网**
+
+### 素材来源
+- ✅ 本地文件：mp4 / mov / m4v / mp3 / wav / aac / png / jpg / gif（任何 CapCut 接受的扩展名）
+- ✅ Wikimedia Commons URL —— 页面 URL、`/wiki/File:` 形式、CDN 直链、或 `api.php?prop=pageimages` 接口都行。**许可证分类拒绝门：限制性许可需要 `--force-license` 才下载**
+
+### 跨平台
+- ✅ CapCut 和剪映 —— 同一个二进制，`--jianying` 切换 enum 命名空间
+- ✅ macOS · Windows · Linux —— 纯 Node ≥ 18，没有原生模块
+
+### 输出格式
+- ✅ JSON（默认 —— 管道给 `jq` 就行）
+- ✅ `-H` / `--human` 表格模式（人类可读）
+- ✅ `-q` / `--quiet` 静默模式（仅返回码）
+
+### 质量保障
+- ✅ 36 个 `node:test` 单测（[`test/`](./test/)），跑在 [`test/draft_content.json`](./test/draft_content.json) 之上
+- ✅ Husky [pre-commit 钩子](./.husky/pre-commit) —— Biome lint（仅暂存文件）+ 完整测试
+- ✅ Schema 参考文档（[`docs/draft-schema/`](./docs/draft-schema/)，7 个文件 ~3700 行）
+- ✅ Claude Code 插件（`/plugin marketplace add https://github.com/renezander030/capcut-cli`），详见英文 [README · Claude Code plugin](./README.md#claude-code-plugin)
+
+### 路线图
+- ⬜ 音频淡入 / 淡出命令（临时方案：用 `volume` 关键帧）
+- ⬜ 文本气泡 / 花字（临时方案：在文本素材上手动设置 `bubble_*` 字段）
+- ⬜ 滤镜链命令（临时方案：用 `add-effect` + `enums --filters` 取 slug）
+- ⬜ README 的拖拽 GIF 演示
+- 🚫 HTTP 服务 / 云渲染 / MCP 服务 —— 明确不做，详见 [`PLAN.md`](./PLAN.md)
+
 ## 解决什么问题
 
 CapCut / 剪映把项目存为 `draft_content.json` —— 嵌套很深、没有官方文档、时间单位是微秒、文字内容嵌套在转义过的 JSON 字符串里。每次手动修改都要：找到正确的 segment ID，关联到 material，搞清楚内容格式，转换时间戳，编辑，然后祈祷自己没把结构改坏。**最少 15 秒一次。**

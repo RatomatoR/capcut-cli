@@ -2,6 +2,16 @@
 
 All notable changes to capcut-cli are documented here. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); the project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.2] — 2026-05-15
+
+### Added — README polish for discoverability
+
+- **Workflow diagram** (Mermaid) at the top of both READMEs showing how `capcut-cli` fits into a viral-shorts pipeline (long video → cut → LLM hook → CLI edits → CapCut render → publish). GitHub renders Mermaid natively; no committed image. Mirrored in [`README.zh-CN.md`](./README.zh-CN.md) with 小红书 / 抖音 / 视频号 labels.
+- **Comparison table** vs `pyJianYingDraft` (Python, JianYing-only), `CapCutAPI` (Python + HTTP server), and `cutcli` (Go, closed-source). Shows the unique positioning: only `capcut-cli` is zero-dep Node + cross-namespace (CapCut + JianYing) + has a shipped schema reference + ships built-in templates.
+- **Feature checklist** — categorized list of every shipped command with ✅ / ⬜ / 🚫 status and anchor links to the relevant docs section. 10 categories: Project I/O, Add content, Edit, Decorators, Templates, Import & discovery, Source materials, Cross-platform, Output, Quality, Roadmap. Mirrors the structure that drove `pyJianYingDraft` to 3,266 stars.
+
+No code changes; CLI surface is bit-for-bit identical to v0.3.1.
+
 ## [0.3.1] — 2026-05-15
 
 ### Added
@@ -83,6 +93,7 @@ Five phases of new commands ported from the upstream Python project (sun-guannan
 
 - Long-form videos to shorts, end to end.
 
+[0.3.2]: https://github.com/renezander030/capcut-cli/compare/v0.3.1...v0.3.2
 [0.3.1]: https://github.com/renezander030/capcut-cli/compare/v0.3.0...v0.3.1
 [0.3.0]: https://github.com/renezander030/capcut-cli/compare/v0.2.2...v0.3.0
 [0.2.2]: https://github.com/renezander030/capcut-cli/compare/v0.2.1...v0.2.2
