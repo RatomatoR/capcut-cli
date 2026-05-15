@@ -192,8 +192,8 @@ capcut set-text ./project a1b2c3 "新文字" -q
 ## 下一步
 
 - **想要完整的短视频流水线（不只是 CLI）？** 拿 [病毒短视频蓝图 + AI Skill](https://renezander.com/zh-cn/guides/automate-xiaohongshu-capcut-cli/?utm_source=capcut-cli&utm_medium=readme&utm_campaign=footer-cn) —— DeepSeek / GLM / Kimi / Qwen 都能跑，专为小红书 + 抖音优化，支付宝 / 微信支付一键下单。
-- **作者**：我是 René Zander，专注 AI 内容自动化系统。更多中文教程：[renezander.com/zh-cn](https://renezander.com/zh-cn/?utm_source=capcut-cli&utm_medium=readme&utm_campaign=author-cn)
-- **企业定制 / 合作**：[renezander.com/zh-cn/contact](https://renezander.com/zh-cn/contact/?utm_source=capcut-cli&utm_medium=readme&utm_campaign=hire-cn)
+- **问题反馈 / 功能建议**：[`capcut-cli` GitHub Issues](https://github.com/renezander030/capcut-cli/issues)（公开追踪，中英文都接受）
+- **作者**：我是 René Zander，开源 + AI 内容自动化系统。本仓库的英文 README 在 [`README.md`](./README.md)。
 
 ## License
 
