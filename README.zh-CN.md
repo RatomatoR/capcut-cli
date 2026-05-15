@@ -10,9 +10,11 @@
 
 下面这条短片，就是用本套管线产出的成品（60 秒，9:16，可以直接发小红书 / 抖音 / 视频号）：
 
-<video src="https://github.com/renezander030/capcut-cli/raw/master/media/two-sisters-vietnam-short.mp4" controls width="360" poster="" preload="metadata">
-您的浏览器不支持内嵌播放器，<a href="https://github.com/renezander030/capcut-cli/raw/master/media/two-sisters-vietnam-short.mp4">点这里下载样片</a>。
+<video src="https://renezander.com/videos/two-sisters-vietnam-short.mp4" controls width="360" preload="metadata">
+您的浏览器不支持内嵌播放器。下载：<a href="https://github.com/renezander030/capcut-cli/raw/master/media/two-sisters-vietnam-short.mp4">GitHub</a> · <a href="https://renezander.com/videos/two-sisters-vietnam-short.mp4">renezander.com</a>
 </video>
+
+> 视频文件也在仓库里：[`media/two-sisters-vietnam-short.mp4`](./media/two-sisters-vietnam-short.mp4)。GitHub 内嵌播放需要正确的 MIME 类型，所以上面用 renezander.com 的 CDN（`Content-Type: video/mp4`）；仓库里这份是离线备份和源文件。
 
 完整流程（选题 → 大模型写剧本 → 配音 → 拼草稿）走 **[病毒短视频蓝图教程页](https://renezander.com/zh-cn/guides/automate-xiaohongshu-capcut-cli/?utm_source=capcut-cli&utm_medium=readme&utm_campaign=sample-cn)** 看，里面有 4 步管线 + DeepSeek / GLM 提示词。
 
