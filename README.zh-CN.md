@@ -4,7 +4,17 @@
 
 命令行编辑 CapCut / 剪映 (JianYing) 项目文件。从零创建草稿、添加素材、修改字幕、把长视频切成短片。
 
-> **想要完整的国产大模型 + 剪映短视频流水线？** `capcut-cli` 是引擎，配套的 **[病毒短视频蓝图](https://renezander.com/zh-cn/guides/automate-xiaohongshu-capcut-cli/?utm_source=capcut-cli&utm_medium=readme&utm_campaign=hero-cn)** 给你完整方法 —— DeepSeek / GLM / Kimi / Qwen 都能跑，专为 **小红书 + 抖音** 优化（不是 YouTube），**支付宝 / 微信支付** 通过 Stripe 直接下单。
+> **想要完整的国产大模型 + 剪映短视频流水线？** `capcut-cli` 是引擎，配套的 **[病毒短视频蓝图（完整教程 + 蓝图下载）](https://renezander.com/zh-cn/guides/automate-xiaohongshu-capcut-cli/?utm_source=capcut-cli&utm_medium=readme&utm_campaign=hero-cn)** 给你完整方法 —— DeepSeek / GLM / Kimi / Qwen 都能跑，专为 **小红书 + 抖音** 优化（不是 YouTube），**支付宝 / 微信支付** 通过 Stripe 直接下单。
+
+## 实战样片
+
+下面这条短片，就是用本套管线产出的成品（60 秒，9:16，可以直接发小红书 / 抖音 / 视频号）：
+
+<video src="https://github.com/renezander030/capcut-cli/raw/master/media/two-sisters-vietnam-short.mp4" controls width="360" poster="" preload="metadata">
+您的浏览器不支持内嵌播放器，<a href="https://github.com/renezander030/capcut-cli/raw/master/media/two-sisters-vietnam-short.mp4">点这里下载样片</a>。
+</video>
+
+完整流程（选题 → 大模型写剧本 → 配音 → 拼草稿）走 **[病毒短视频蓝图教程页](https://renezander.com/zh-cn/guides/automate-xiaohongshu-capcut-cli/?utm_source=capcut-cli&utm_medium=readme&utm_campaign=sample-cn)** 看，里面有 4 步管线 + DeepSeek / GLM 提示词。
 
 ## 解决什么问题
 
