@@ -1,10 +1,17 @@
 # capcut-cli
 
+[![npm version](https://img.shields.io/npm/v/capcut-cli.svg)](https://www.npmjs.com/package/capcut-cli)
+[![npm downloads](https://img.shields.io/npm/dm/capcut-cli.svg)](https://www.npmjs.com/package/capcut-cli)
+[![node](https://img.shields.io/node/v/capcut-cli.svg)](https://nodejs.org)
+[![license](https://img.shields.io/npm/l/capcut-cli.svg)](./LICENSE)
+
 English | [中文](./README.zh-CN.md)
 
-Create and edit CapCut projects from the command line. Build drafts from scratch, add media, modify subtitles, cut long-form to shorts.
+**The CapCut/JianYing toolkit that survives the next ByteDance update — and auto-captions with real caption objects.**
 
-> **Looking for the complete viral-shorts workflow?** `capcut-cli` is the engine I use to ship YouTube Shorts at volume. The full pipeline — story selection, hook templates, the Claude skill that drives it — is packaged as the **[Viral Story Shorts Blueprint](https://renezander.gumroad.com/l/viral-youtube-shorts-blueprint?utm_source=capcut-cli&utm_medium=readme&utm_campaign=hero)**.
+A pure CLI any LLM can drive: no MCP server, no HTTP daemon, no state. Inspect drafts, build from scratch, add media, modify subtitles, auto-caption with whisper, translate to N languages, cut long-form to shorts. Zero runtime deps, both CapCut and JianYing namespaces in one binary, JSON output by default.
+
+**New in v0.4** — `caption` (whisper → real caption objects, not the import-srt text-mimics), `migrate` (mask ↔ common_masks across CapCut/JianYing version jumps), `lint` (schema-aware checks: overlaps, line length, missing files), `version` (detect support status), `translate` (Anthropic-API multi-language draft clone), `add-sfx`, `chroma`, `serve` (stateless JSONL queue runner for n8n/Coze/Make), and `export --batch` (EXPERIMENTAL macOS UI-automated render queue).
 
 ## Workflow
 
@@ -23,22 +30,22 @@ flowchart LR
 
 How `capcut-cli` differs from the other CapCut / JianYing tooling:
 
-| Capability | [`pyJianYingDraft`](https://github.com/GuanYixuan/pyJianYingDraft) (Python, JianYing) | [`CapCutAPI`](https://github.com/sun-guannan/CapCutAPI) (Python, HTTP server) | `cutcli` (Go, closed) | **`capcut-cli`** (Node, this repo) |
-|---|:---:|:---:|:---:|:---:|
-| Inspect drafts (`info` / `tracks` / `materials` / `segments` / `texts`) | partial | ❌ | ❌ | ✅ |
-| Create drafts from scratch | ✅ | ✅ | ✅ | ✅ |
-| Decorators (`keyframe` / `transition` / `mask` / `text-anim` / `image-anim`) | ✅ | ✅ | ✅ | ✅ (v0.3.0) |
-| SRT import → per-cue text segments | ❌ | ✅ | ❌ | ✅ (v0.3.0) |
-| Multi-style text (word-level highlight captions) | partial | ❌ | ❌ | ✅ (v0.3.0) |
-| Enum discovery for AI agents | ❌ | partial | ❌ | ✅ — 13 categories × 2 namespaces |
-| CapCut + JianYing namespaces in one binary | JianYing only | both | partial | both via `--jianying` |
-| Templates (save/apply) | partial | ❌ | ❌ | ✅ — 3 shipped templates |
-| Schema docs | partial | minimal | none | full ([`docs/draft-schema/`](./docs/draft-schema/)) |
-| Wikimedia Commons URLs with license gate | ❌ | ❌ | ❌ | ✅ (v0.3.0) |
-| Runtime deps | several Python deps | Flask + Python | none (Go binary) | **zero** (Node ≥ 18 built-ins only) |
-| AI-tool integration | none | HTTP | none | [Claude Code plugin](#claude-code-plugin) |
-| Install | `pip install -r requirements.txt` | clone + run server | binary download | `npm install -g capcut-cli` |
-| License | none | none | unclear | MIT |
+| Capability | [`pyJianYingDraft`](https://github.com/GuanYixuan/pyJianYingDraft) (Python, JianYing) | [`pyCapCut`](https://github.com/GuanYixuan/pyCapCut) (Python, CapCut) | [`CapCutAPI`](https://github.com/sun-guannan/CapCutAPI) (Python, HTTP server) | `cutcli` (Go, closed) | **`capcut-cli`** (Node, this repo) |
+|---|:---:|:---:|:---:|:---:|:---:|
+| Inspect drafts (`info` / `tracks` / `materials` / `segments` / `texts`) | partial | partial | ❌ | ❌ | ✅ |
+| Create drafts from scratch | ✅ | ✅ | ✅ | ✅ | ✅ |
+| Decorators (`keyframe` / `transition` / `mask` / `text-anim` / `image-anim`) | ✅ | ✅ | ✅ | ✅ | ✅ (v0.3.0) |
+| SRT import → per-cue text segments | ❌ | ❌ | ✅ | ❌ | ✅ (v0.3.0) |
+| Multi-style text (word-level highlight captions) | partial | partial | ❌ | ❌ | ✅ (v0.3.0) |
+| Enum discovery for AI agents | ❌ | ❌ | partial | ❌ | ✅ — 13 categories × 2 namespaces |
+| CapCut + JianYing namespaces in one binary | JianYing only | CapCut only | both | partial | both via `--jianying` |
+| Templates (save/apply) | partial | partial | ❌ | ❌ | ✅ — 3 shipped templates |
+| Schema docs | partial | partial | minimal | none | full ([`docs/draft-schema/`](./docs/draft-schema/)) |
+| Wikimedia Commons URLs with license gate | ❌ | ❌ | ❌ | ❌ | ✅ (v0.3.0) |
+| Runtime deps | several Python deps | several Python deps | Flask + Python | none (Go binary) | **zero** (Node ≥ 18 built-ins only) |
+| AI-tool integration | none | none | HTTP | none | [Claude Code plugin](#claude-code-plugin) |
+| Install | `pip install -r requirements.txt` | `pip install pyCapCut` | clone + run server | binary download | `npm install -g capcut-cli` |
+| License | none | none | none | unclear | MIT |
 
 ## Feature checklist
 
@@ -92,18 +99,37 @@ Status of every feature shipped. ✅ = implemented, ⬜ = roadmap. Section ancho
 - ✅ `-H` / `--human` table mode (human-readable)
 - ✅ `-q` / `--quiet` mode (exit code only)
 
-### Quality
-- ✅ 36-test `node:test` suite ([`test/`](./test/)) running against [`test/draft_content.json`](./test/draft_content.json)
+### Quality (v0.4)
+- ✅ 60+ tests `node:test` suite ([`test/`](./test/)) running against [`test/draft_content.json`](./test/draft_content.json)
 - ✅ Husky [pre-commit hook](./.husky/pre-commit) — Biome lint on staged files + full test run
 - ✅ Schema reference in [`docs/draft-schema/`](./docs/draft-schema/) (7 files, ~3,700 lines)
+- ✅ [Version support matrix](./docs/version-support.md) — tested CapCut/JianYing versions, known-broken set, encryption status
 - ✅ [Claude Code plugin](#claude-code-plugin) (`/plugin marketplace add https://github.com/renezander030/capcut-cli`)
+
+### Version resilience (v0.4)
+- ✅ `version` — detect CapCut/JianYing version + schema flags (`mask_field`, `text_ranges`, `audio_fades`) + support status
+- ✅ `lint` — schema-aware checks: caption overlaps (error), line length, cue duration, missing material refs, missing local files. Exit codes 0/1/2 for CI
+- ✅ `migrate` — apply known migrations (`mask` ↔ `common_masks` across the JianYing 5.9 / CapCut 9.6 boundary)
+- ✅ `decrypt` — JianYing 6.0+ encryption detection + clear workaround UX (decryption algorithm intentionally not bundled)
+
+### Captions & translation (v0.4)
+- ✅ `caption` — whisper shell-out (openai-whisper / whisper.cpp / faster-whisper) → real caption-track segments with `sub_type` + `caption_template_info` (addresses pyJianYingDraft #148 — no more text-segment mimics)
+- ✅ `translate` — Anthropic-API multi-language draft clone, zero runtime deps (uses built-in `fetch`). `--dry-run` for safe inspection. Original stays untouched
+
+### Ecosystem unlocks (v0.4)
+- ✅ `add-sfx` — first-class sound effects on a dedicated track (15+ CapCut SFX slugs via `enums --audio-effects`)
+- ✅ `chroma` — green-screen / chroma key on video segments (`--color` + `--intensity`, or `--off`)
+- ✅ `serve` — stateless JSONL queue runner (read from stdin or `--queue` file, dispatch to existing CLI, write JSONL results). No daemon, no port, no shared state — unlocks n8n / Coze / Make / cron without becoming a service
+- ✅ `export --batch` — EXPERIMENTAL UI-automated render queue (macOS AppleScript; Windows path sketched). `--dry-run` for safe exploration on any OS
 
 ### Roadmap
 - ⬜ Audio fade-in / fade-out command (workaround: `volume` keyframes)
 - ⬜ Text bubble effects / 花字 (workaround: hand-set `bubble_*` fields on the text material)
 - ⬜ Filter-chain command (workaround: `add-effect` with filter slugs from `enums --filters`)
 - ⬜ Drag-and-drop GIF demos in this README
-- 🚫 HTTP server / cloud rendering / MCP server — explicitly out of scope per [`PLAN.md`](./PLAN.md)
+- ⬜ JianYing 6.0+ decryption (currently only detection — see `decrypt` workaround docs)
+- ⬜ Windows path for `export --batch` (currently only macOS via AppleScript)
+- 🚫 HTTP server / cloud rendering / MCP server — explicitly out of scope per [`PLAN.md`](./PLAN.md). `serve` ships as a stateless JSONL runner instead — no port, no daemon.
 
 ## The problem
 
@@ -142,6 +168,44 @@ Add the marketplace, then enable the plugin:
 ```
 
 This gives Claude Code the `/capcut-cli:capcut-edit` skill -- it learns every command, the progressive disclosure navigation pattern, and how to find your CapCut projects on macOS/Windows. Auto-installs the CLI on first enable.
+
+### Why a CLI, not an MCP server
+
+Other CapCut / JianYing tooling exposes an HTTP API or MCP server. `capcut-cli` deliberately does not:
+
+- **No state to corrupt.** Each command is JSON-in, JSON-out. The agent can interleave commands, retry safely, and exit any time. Versioning is `npm install -g capcut-cli@x.y.z`.
+- **No second tool to install.** If the user has Node ≥ 18 they already have the runtime; `npx capcut-cli` works without a global install. No daemon, no port, no auth surface.
+- **Works in every agent surface.** Claude Code via the [plugin](#claude-code-plugin) — also `bash`, `make`, GitHub Actions, cron, any wrapper that can `exec`. MCP ties you to one host; a CLI runs anywhere `sh` runs.
+
+The tradeoff is live streams — no progress events, no long-running render. That's intentional: every short-video platform requires a human render-and-publish step regardless (see [`PLAN.md`](./PLAN.md)).
+
+### Drive it from an LLM
+
+Real transcript — Claude Code with the `capcut-cli` plugin, no server in the loop:
+
+```text
+> Cut a 30-second teaser from this project starting at the climax around 4:12, add a hook title.
+
+I'll inspect first.
+
+→ capcut info ./project
+{ "duration_us": 612000000, "segments": 24, "materials": 18 }
+
+→ capcut segments ./project --track video
+[{"id":"f1e2d3...","start_us":252000000,"duration_us":48000000,"speed":1.0}, ...]
+
+Climax runs 4:12 → 5:00. Cutting a 30-second window centered there.
+
+→ capcut cut ./project 4:00 4:30 --out ./teaser.json
+{ "ok": true, "out": "./teaser.json", "duration_us": 30000000, "segments": 4 }
+
+→ capcut add-text ./teaser.json 0s 3s "WAIT FOR IT" --font-size 28 --color "#FFD700"
+{ "ok": true, "id": "a1b2c3...", "track": "text" }
+
+Teaser ready at ./teaser.json. Open in CapCut to review and render.
+```
+
+The agent navigates `info → segments → cut → add-text` without holding any state. **The CLI is the protocol** — no second-tier server to maintain, version, or authenticate against.
 
 ## Output modes
 

@@ -1,8 +1,17 @@
 # capcut-cli
 
+[![npm version](https://img.shields.io/npm/v/capcut-cli.svg)](https://www.npmjs.com/package/capcut-cli)
+[![npm downloads](https://img.shields.io/npm/dm/capcut-cli.svg)](https://www.npmjs.com/package/capcut-cli)
+[![node](https://img.shields.io/node/v/capcut-cli.svg)](https://nodejs.org)
+[![license](https://img.shields.io/npm/l/capcut-cli.svg)](./LICENSE)
+
 [English](./README.md) | 中文
 
-命令行编辑 CapCut / 剪映 (JianYing) 项目文件。从零创建草稿、添加素材、修改字幕、把长视频切成短片。
+**剪映 / CapCut 工具链，字节跳动下次更新它也不会坏 —— 而且是唯一一个能自动生成真字幕对象的 CLI。**
+
+任何能输出 JSON 的大模型都能驱动它：不用 MCP 服务，不用 HTTP 守护进程，无状态。命令行编辑工程文件、从零创建草稿、添加素材、修改字幕、用 whisper 自动加字幕、批量翻译多语言、把长视频切成短片。直接读写 `draft_content.json`，零运行时依赖，CapCut + 剪映双命名空间共用一个二进制。
+
+**v0.4 新增** —— `caption`（whisper → 真字幕对象，不是 import-srt 的文本伪装）、`migrate`（剪映 5.9 / CapCut 9.6 之间的 `mask` ↔ `common_masks` schema 迁移）、`lint`（字幕检查：重叠、行长、漏文件）、`version`（检测兼容状态）、`translate`（多语言草稿克隆，走 Anthropic API）、`add-sfx`、`chroma`、`serve`（无状态 JSONL 队列 —— 对接 n8n / Coze / 扣子 / Make）、`export --batch`（**实验性** macOS UI 自动化批量导出）。
 
 > **想要完整的国产大模型 + 剪映短视频流水线？** `capcut-cli` 是引擎，配套的 **[病毒短视频蓝图（完整教程 + 蓝图下载）](https://renezander.com/zh-cn/guides/automate-xiaohongshu-capcut-cli/?utm_source=capcut-cli&utm_medium=readme&utm_campaign=hero-cn)** 给你完整方法 —— DeepSeek / GLM / Kimi / Qwen 都能跑，专为 **小红书 + 抖音** 优化（不是 YouTube），**支付宝 / 微信支付** 通过 Stripe 直接下单。
 
@@ -35,22 +44,22 @@ flowchart LR
 
 跟其他剪映 / CapCut 工具的差别：
 
-| 能力 | [`pyJianYingDraft`](https://github.com/GuanYixuan/pyJianYingDraft)（Python，仅剪映） | [`CapCutAPI`](https://github.com/sun-guannan/CapCutAPI)（Python + HTTP 服务） | `cutcli`（Go，闭源） | **`capcut-cli`**（Node，本仓库） |
-|---|:---:|:---:|:---:|:---:|
-| 草稿审查（`info` / `tracks` / `materials` / `segments` / `texts`） | 部分 | ❌ | ❌ | ✅ |
-| 从零创建草稿 | ✅ | ✅ | ✅ | ✅ |
-| 装饰命令（`keyframe` / `transition` / `mask` / `text-anim` / `image-anim`） | ✅ | ✅ | ✅ | ✅（v0.3.0） |
-| SRT 字幕导入 → 逐条文本片段 | ❌ | ✅ | ❌ | ✅（v0.3.0） |
-| 多样式文本（字级高亮字幕） | 部分 | ❌ | ❌ | ✅（v0.3.0） |
-| 大模型友好的枚举发现 | ❌ | 部分 | ❌ | ✅ — 13 类 × 2 命名空间 |
-| CapCut + 剪映 双命名空间 | 仅剪映 | 都支持 | 部分 | 都支持（`--jianying` 切换） |
-| 模板（save / apply） | 部分 | ❌ | ❌ | ✅ — 内置 3 个模板 |
-| Schema 文档 | 部分 | 简略 | 无 | 完整（[`docs/draft-schema/`](./docs/draft-schema/)） |
-| Wikimedia Commons URL + 版权检查 | ❌ | ❌ | ❌ | ✅（v0.3.0） |
-| 运行时依赖 | 多个 Python 包 | Flask + Python | 无（Go 二进制） | **零**（仅 Node ≥ 18 内置 API） |
-| AI 工具集成 | 无 | HTTP | 无 | Claude Code 插件 + 任意 JSON 输出大模型 |
-| 安装 | `pip install -r requirements.txt` | 克隆 + 起服务 | 下载二进制 | `npm install -g capcut-cli` |
-| 许可证 | 无 | 无 | 不明 | MIT |
+| 能力 | [`pyJianYingDraft`](https://github.com/GuanYixuan/pyJianYingDraft)（Python，仅剪映） | [`pyCapCut`](https://github.com/GuanYixuan/pyCapCut)（Python，仅 CapCut） | [`CapCutAPI`](https://github.com/sun-guannan/CapCutAPI)（Python + HTTP 服务） | `cutcli`（Go，闭源） | **`capcut-cli`**（Node，本仓库） |
+|---|:---:|:---:|:---:|:---:|:---:|
+| 草稿审查（`info` / `tracks` / `materials` / `segments` / `texts`） | 部分 | 部分 | ❌ | ❌ | ✅ |
+| 从零创建草稿 | ✅ | ✅ | ✅ | ✅ | ✅ |
+| 装饰命令（`keyframe` / `transition` / `mask` / `text-anim` / `image-anim`） | ✅ | ✅ | ✅ | ✅ | ✅（v0.3.0） |
+| SRT 字幕导入 → 逐条文本片段 | ❌ | ❌ | ✅ | ❌ | ✅（v0.3.0） |
+| 多样式文本（字级高亮字幕） | 部分 | 部分 | ❌ | ❌ | ✅（v0.3.0） |
+| 大模型友好的枚举发现 | ❌ | ❌ | 部分 | ❌ | ✅ — 13 类 × 2 命名空间 |
+| CapCut + 剪映 双命名空间 | 仅剪映 | 仅 CapCut | 都支持 | 部分 | 都支持（`--jianying` 切换） |
+| 模板（save / apply） | 部分 | 部分 | ❌ | ❌ | ✅ — 内置 3 个模板 |
+| Schema 文档 | 部分 | 部分 | 简略 | 无 | 完整（[`docs/draft-schema/`](./docs/draft-schema/)） |
+| Wikimedia Commons URL + 版权检查 | ❌ | ❌ | ❌ | ❌ | ✅（v0.3.0） |
+| 运行时依赖 | 多个 Python 包 | 多个 Python 包 | Flask + Python | 无（Go 二进制） | **零**（仅 Node ≥ 18 内置 API） |
+| AI 工具集成 | 无 | 无 | HTTP | 无 | Claude Code 插件 + 任意 JSON 输出大模型 |
+| 安装 | `pip install -r requirements.txt` | `pip install pyCapCut` | 克隆 + 起服务 | 下载二进制 | `npm install -g capcut-cli` |
+| 许可证 | 无 | 无 | 无 | 不明 | MIT |
 
 ## 功能清单
 
@@ -144,6 +153,16 @@ $ capcut set-text ./project a1b2c3 "字幕已修正"
 - Claude / OpenAI Codex —— 海外用户可用，性能强但需科学上网
 
 > 海外创作者常用的 Claude Code Plugin (`/plugin marketplace add ...`) 也支持，但**不是前置条件**。详见英文 README。
+
+## 为什么是 CLI，不是 MCP 服务
+
+其他 CapCut / 剪映工具大多走 HTTP API 或 MCP 服务。`capcut-cli` 故意不走这条路：
+
+- **没有状态可以坏。** 每条命令都是 JSON 进、JSON 出。Agent 可以随意穿插命令、安全重试、随时退出。版本就是 `npm install -g capcut-cli@x.y.z`。
+- **不用装第二个工具。** 用户有 Node ≥ 18 就有运行时；`npx capcut-cli` 连全局安装都不用。没有守护进程、没有端口、没有鉴权层。
+- **任何 agent 环境都能跑。** Claude Code 走插件，`bash` / `make` / GitHub Actions / cron / 任何能 `exec` 的脚本也都能跑。MCP 把你锁在一个宿主里，CLI 在哪都能跑 `sh` 在哪就能跑。
+
+代价是没有实时流：没有进度事件，没有长任务渲染。这是有意的 —— 反正每个短视频平台都要求最后一步人工渲染并发布（详见 [`PLAN.md`](./PLAN.md)）。
 
 ## 安装
 
