@@ -1,6 +1,8 @@
 #!/usr/bin/env node
 
 import { readFileSync, writeFileSync } from "node:fs";
+import { captionDraft } from "./caption.js";
+import { removeChroma, setChroma } from "./chroma.js";
 import type {
   ImageAnimOptions,
   KeyframeInput,
@@ -25,6 +27,7 @@ import {
   textAnimSlugs,
   transitionSlugs,
 } from "./decorators.js";
+import { detectEncryption } from "./decrypt.js";
 import type { Draft, Segment, Track } from "./draft.js";
 import {
   extractText,
@@ -38,6 +41,7 @@ import {
   updateTextContent,
 } from "./draft.js";
 import { type Category, listEnum, type Namespace } from "./enums.js";
+import { exportBatch } from "./export-batch.js";
 import type { AddAudioOptions, AddTextOptions, AddVideoOptions, CutOptions, InitOptions } from "./factory.js";
 import {
   addAudio,
@@ -53,8 +57,14 @@ import {
   resolveAssetPath,
   saveTemplate,
 } from "./factory.js";
+import { DEFAULT_LINT_OPTIONS, type LintOptions, lintDraft, lintExitCode, summarize } from "./lint.js";
+import { migrateDraft } from "./migrate.js";
+import { serveQueue } from "./serve.js";
+import { addSfx } from "./sfx.js";
 import { parseSrt } from "./srt.js";
 import { formatDuration, formatTime, parseTimeInput, srtTime } from "./time.js";
+import { translateDraft } from "./translate.js";
+import { detectVersion } from "./version.js";
 
 const HELP = `capcut-cli -- fast edits to CapCut projects
 
@@ -73,6 +83,14 @@ Overview (start here):
   tracks     <project>                          List all tracks
   materials  <project>                          List all material types + counts
   materials  <project> --type <type>            List items of one material type
+  version    <project>                          Detect CapCut/JianYing version + schema flags + support status
+  lint       <project>                          Schema-aware checks (overlaps, line length, missing files)
+             Options:
+               --max-chars <n>     Caption line cap (default 42)
+               --max-cue-secs <n>  Caption duration cap (default 7)
+               --min-gap-ms <n>    Min gap between captions (default 0)
+               --no-check-paths    Skip local-file existence checks
+             Exit codes: 0 clean · 1 warnings · 2 errors
 
 Browse:
   segments   <project> [--track <type>]         List segments with timing
@@ -204,6 +222,55 @@ Discovery (Phase 3):
              List valid enum slugs (CapCut namespace by default).
              Add --jianying to switch namespace. Use -H for a table.
 
+Caption (v0.4 — real subtitle objects, fixes import-srt mimicry):
+  caption    <project> --audio <path> [options]
+  caption    <project> --from-segment <id> [options]
+             Auto-caption via whisper; emits real CapCut subtitle-track objects.
+             Options:
+               --whisper-cmd <cmd>  Path to whisper binary (default: "whisper")
+               --whisper-model <m>  Model name (default: "base")
+               --language <code>    ISO code or "auto" (default)
+               --track-name <s>     Caption track name (default: "captions")
+               --style-ref <seg-id> Mirror styling from existing text segment
+
+Translate (v0.4 — multi-language draft clone):
+  translate  <project> --to <lang> --out <path> [options]
+             Translate every text segment via Anthropic API, write a new draft.
+             Options:
+               --from <lang>        Source language (default: "auto")
+               --api-key <key>      Override ANTHROPIC_API_KEY env var
+               --model <id>         Model (default: claude-haiku-4-5-20251001)
+               --dry-run            List what would be translated, no API call
+
+Migrate (v0.4 — survive JianYing/CapCut version jumps):
+  migrate    <project> --from <ver> --to <ver>
+             Apply known schema migrations. Implemented: mask <-> common_masks
+             across the JianYing 5.9 / CapCut 9.6 boundary.
+
+Sound effects + chroma (v0.5):
+  add-sfx    <project> <slug> <start> <duration> [options]
+             First-class SFX on a dedicated track. Slugs: capcut enums --audio-effects
+             Options: --track-name --volume
+  chroma     <project> <id> --color <#RRGGBB> [--intensity N]
+  chroma     <project> <id> --off
+             Apply chroma key (green-screen) to a video segment.
+             --intensity: how aggressively to key out the color (0-1, default 0.5).
+
+Render queue (v0.4 — experimental):
+  export     <drafts-dir> --batch [options]
+             EXPERIMENTAL UI-automated render queue. macOS only currently.
+             Options: --dry-run, --app capcut|jianying
+
+Encryption (v0.6 — detection scaffold):
+  decrypt    <project>
+             Detect JianYing 6.0+ encryption and report next steps.
+             (Decryption algorithm not bundled; clear error UX + workaround docs.)
+
+Stateless queue runner (v0.5):
+  serve      [--queue <path>] [--fail-fast]
+             Read {cmd, project, args} JSONL from stdin or --queue, dispatch
+             each to the CLI, write JSONL results. No daemon, no port, no state.
+
 Subtitles (Phase 3):
   import-srt <project> <srt-path-or--> [options]
              Parse an SRT file and create one text segment per cue.
@@ -301,6 +368,32 @@ interface Flags {
   styles?: string;
   // wikimedia
   forceLicense?: boolean;
+  // lint
+  maxChars?: number;
+  maxCueSecs?: number;
+  minGapMs?: number;
+  noCheckPaths?: boolean;
+  // caption
+  audio?: string;
+  fromSegment?: string;
+  whisperCmd?: string;
+  whisperModel?: string;
+  language?: string;
+  // translate
+  to?: string;
+  from?: string;
+  apiKey?: string;
+  model?: string;
+  dryRun?: boolean;
+  // migrate
+  // (uses --from / --to from translate)
+  // chroma
+  intensity?: number;
+  // export
+  app?: string;
+  // serve
+  queue?: string;
+  failFast?: boolean;
 }
 
 // Map CLI enum flags -> enums.json category key. Order matters for HELP text.
@@ -443,6 +536,42 @@ function parseFlags(args: string[]): { positional: string[]; flags: Flags } {
       flags.styles = args[++i];
     } else if (a === "--force-license") {
       flags.forceLicense = true;
+    } else if (a === "--max-chars" && i + 1 < args.length) {
+      flags.maxChars = parseInt(args[++i]);
+    } else if (a === "--max-cue-secs" && i + 1 < args.length) {
+      flags.maxCueSecs = parseFloat(args[++i]);
+    } else if (a === "--min-gap-ms" && i + 1 < args.length) {
+      flags.minGapMs = parseFloat(args[++i]);
+    } else if (a === "--no-check-paths") {
+      flags.noCheckPaths = true;
+    } else if (a === "--audio" && i + 1 < args.length) {
+      flags.audio = args[++i];
+    } else if (a === "--from-segment" && i + 1 < args.length) {
+      flags.fromSegment = args[++i];
+    } else if (a === "--whisper-cmd" && i + 1 < args.length) {
+      flags.whisperCmd = args[++i];
+    } else if (a === "--whisper-model" && i + 1 < args.length) {
+      flags.whisperModel = args[++i];
+    } else if (a === "--language" && i + 1 < args.length) {
+      flags.language = args[++i];
+    } else if (a === "--to" && i + 1 < args.length) {
+      flags.to = args[++i];
+    } else if (a === "--from" && i + 1 < args.length) {
+      flags.from = args[++i];
+    } else if (a === "--api-key" && i + 1 < args.length) {
+      flags.apiKey = args[++i];
+    } else if (a === "--model" && i + 1 < args.length) {
+      flags.model = args[++i];
+    } else if (a === "--dry-run") {
+      flags.dryRun = true;
+    } else if (a === "--intensity" && i + 1 < args.length) {
+      flags.intensity = parseFloat(args[++i]);
+    } else if (a === "--app" && i + 1 < args.length) {
+      flags.app = args[++i];
+    } else if (a === "--queue" && i + 1 < args.length) {
+      flags.queue = args[++i];
+    } else if (a === "--fail-fast") {
+      flags.failFast = true;
     } else {
       const hit = ENUM_FLAG_MAP.find((f) => f.flag === a);
       if (hit) {
@@ -1352,6 +1481,179 @@ function cmdImportSrt(draft: Draft, filePath: string, positional: string[], flag
   );
 }
 
+// --- Version & lint ---
+
+function cmdVersion(draft: Draft, flags: Flags): void {
+  const v = detectVersion(draft);
+  if (flags.human) {
+    console.log(`App:          ${v.app}${v.app_source !== "unknown" ? ` (${v.app_source})` : ""}`);
+    console.log(`Version:      ${v.app_version ?? "(unknown)"}`);
+    console.log(`OS:           ${v.os ?? "(unknown)"}`);
+    console.log(`Support:      ${v.support.status}`);
+    console.log(`Mask field:   ${v.schema.mask_field}`);
+    console.log(`Text-ranges:  ${v.schema.has_text_ranges ? "yes" : "no"}`);
+    console.log(`Audio fades:  ${v.schema.has_audio_fades ? "yes" : "no"}`);
+    if (v.support.notes.length > 0) {
+      console.log("");
+      for (const n of v.support.notes) console.log(`  - ${n}`);
+    }
+  } else {
+    out(v, flags);
+  }
+}
+
+function cmdLint(draft: Draft, flags: Flags): { exitCode: number } {
+  const opts: LintOptions = {
+    maxCharsPerLine: flags.maxChars ?? DEFAULT_LINT_OPTIONS.maxCharsPerLine,
+    maxCueDurationUs:
+      flags.maxCueSecs !== undefined ? flags.maxCueSecs * 1_000_000 : DEFAULT_LINT_OPTIONS.maxCueDurationUs,
+    minGapBetweenCaptionsUs:
+      flags.minGapMs !== undefined ? flags.minGapMs * 1000 : DEFAULT_LINT_OPTIONS.minGapBetweenCaptionsUs,
+    checkLocalPaths: flags.noCheckPaths ? false : DEFAULT_LINT_OPTIONS.checkLocalPaths,
+  };
+  const issues = lintDraft(draft, opts);
+  const summary = summarize(issues);
+  const exitCode = lintExitCode(summary);
+  if (flags.human) {
+    if (issues.length === 0) {
+      console.log("OK — no issues found");
+    } else {
+      for (const i of issues) {
+        const loc = i.location?.segment_id ? ` [${i.location.segment_id.slice(0, 8)}]` : "";
+        console.log(`${i.severity.toUpperCase().padEnd(7)} ${i.code.padEnd(22)}${loc}  ${i.message}`);
+      }
+      console.log("");
+      console.log(`${summary.errors} errors · ${summary.warnings} warnings · ${summary.info} info`);
+    }
+  } else {
+    out({ ok: summary.errors === 0, summary, issues }, flags);
+  }
+  return { exitCode };
+}
+
+// --- Caption / translate / migrate / sfx / chroma / export / decrypt / serve ---
+
+function cmdCaption(draft: Draft, filePath: string, flags: Flags): void {
+  if (!flags.audio && !flags.fromSegment) {
+    die("Missing --audio <path> or --from-segment <id>. One is required.");
+  }
+  const result = captionDraft(draft, {
+    audio: flags.audio,
+    fromSegment: flags.fromSegment,
+    whisperCmd: flags.whisperCmd,
+    whisperModel: flags.whisperModel,
+    language: flags.language,
+    trackName: flags.trackName,
+    styleRef: flags.styleRef,
+  });
+  saveDraft(filePath, draft);
+  out(result, flags);
+}
+
+async function cmdTranslate(draft: Draft, _filePath: string, flags: Flags): Promise<void> {
+  if (!flags.to) die("Missing --to <lang>. Usage: capcut translate <project> --to <lang> --out <path>");
+  if (!flags.out)
+    die("Missing --out <path>. The translated draft is written to a NEW file; the original is left untouched.");
+  const result = await translateDraft(draft, {
+    to: flags.to,
+    from: flags.from,
+    apiKey: flags.apiKey,
+    model: flags.model,
+    dryRun: flags.dryRun,
+    outPath: flags.out,
+  });
+  out(result, flags);
+}
+
+function cmdMigrate(draft: Draft, filePath: string, flags: Flags): void {
+  if (!flags.from || !flags.to) die("Usage: capcut migrate <project> --from <ver> --to <ver>");
+  const result = migrateDraft(draft, flags.from, flags.to);
+  saveDraft(filePath, draft);
+  out(result, flags);
+}
+
+function cmdAddSfx(draft: Draft, filePath: string, positional: string[], flags: Flags): void {
+  const slug = positional[2];
+  const startStr = positional[3];
+  const durStr = positional[4];
+  const start = parseTimeInput(startStr);
+  const duration = parseTimeInput(durStr);
+  const ns = flags.jianying ? "jianying" : "capcut";
+  const result = addSfx(draft, {
+    slug,
+    start,
+    duration,
+    trackName: flags.trackName,
+    namespace: ns,
+    volume: flags.volume,
+  });
+  saveDraft(filePath, draft);
+  out({ ok: true, ...result, start_us: start, duration_us: duration }, flags);
+}
+
+function cmdChroma(draft: Draft, filePath: string, positional: string[], flags: Flags): void {
+  const segId = positional[2];
+  if (!segId) die("Usage: capcut chroma <project> <id> --color <#RRGGBB> [--intensity N] [--shadow N]  |  --off");
+  if (flags.off) {
+    const result = removeChroma(draft, segId);
+    saveDraft(filePath, draft);
+    out(result, flags);
+    return;
+  }
+  if (!flags.color) die("Missing --color <#RRGGBB>. Pick the green-screen color to key out.");
+  const result = setChroma(draft, segId, {
+    color: flags.color,
+    intensity: flags.intensity,
+  });
+  saveDraft(filePath, draft);
+  out(result, flags);
+}
+
+function cmdExport(positional: string[], flags: Flags): void {
+  const draftsDir = positional[1];
+  if (!draftsDir) die("Usage: capcut export <drafts-dir> --batch [--dry-run] [--app capcut|jianying]");
+  if (!flags.batch) die("`capcut export` currently only supports --batch mode. Pass --batch to confirm.");
+  const result = exportBatch({
+    draftsDir,
+    dryRun: flags.dryRun,
+    app: flags.app === "jianying" ? "jianying" : "capcut",
+  });
+  out(result, flags);
+}
+
+function cmdDecrypt(positional: string[], flags: Flags): void {
+  const projectArg = positional[1];
+  if (!projectArg) die("Usage: capcut decrypt <draft_content.json path>");
+  // We can't use loadDraft here — the file may be unparseable. Detect raw.
+  const report = detectEncryption(projectArg);
+  if (flags.human) {
+    console.log(`File:      ${report.filePath}`);
+    console.log(`Size:      ${report.size} bytes`);
+    console.log(`Encrypted: ${report.encrypted ? "YES" : "no"}`);
+    console.log(`Reason:    ${report.reason}`);
+    if (report.fix) {
+      console.log("");
+      console.log("Next steps:");
+      for (const line of report.fix.split("\n")) console.log(`  ${line}`);
+    }
+  } else {
+    out(report, flags);
+  }
+  if (report.encrypted) process.exit(2);
+}
+
+async function cmdServe(flags: Flags): Promise<void> {
+  // Resolve our own dist path so the spawned child uses the same install.
+  const selfPath = new URL(import.meta.url).pathname;
+  const result = await serveQueue({
+    queuePath: flags.queue,
+    cliPath: selfPath,
+    failFast: flags.failFast,
+  });
+  // Write a final summary line at end (JSON only, stderr to avoid mixing with per-job results)
+  process.stderr.write(JSON.stringify({ summary: result }) + "\n");
+}
+
 // --- Batch ---
 
 interface BatchOp {
@@ -1445,6 +1747,24 @@ async function main(): Promise<void> {
     process.exit(0);
   }
 
+  // `serve` reads jobs from stdin/queue file — no project needed.
+  if (cmd === "serve") {
+    await cmdServe(flags);
+    process.exit(0);
+  }
+
+  // `decrypt` operates on a raw file (which may be unparseable) — skip loadDraft.
+  if (cmd === "decrypt") {
+    cmdDecrypt(positional, flags);
+    process.exit(0);
+  }
+
+  // `export` iterates a directory of drafts — projectPath is the directory itself, not a single draft.
+  if (cmd === "export") {
+    cmdExport(positional, flags);
+    process.exit(0);
+  }
+
   // init doesn't need an existing project
   if (cmd === "init") {
     const name = projectPath; // positional[1] is the name for init
@@ -1467,6 +1787,14 @@ async function main(): Promise<void> {
     case "info":
       cmdInfo(draft, flags);
       break;
+    case "version":
+      cmdVersion(draft, flags);
+      break;
+    case "lint": {
+      const { exitCode } = cmdLint(draft, flags);
+      process.exit(exitCode);
+      break;
+    }
     case "tracks":
       cmdTracks(draft, flags);
       break;
@@ -1588,6 +1916,23 @@ async function main(): Promise<void> {
     case "text-ranges":
       requireArgs(positional, 3, "capcut text-ranges <project> <id> --styles @path.json");
       cmdTextRanges(draft, filePath, positional, flags);
+      break;
+    case "caption":
+      cmdCaption(draft, filePath, flags);
+      break;
+    case "translate":
+      await cmdTranslate(draft, filePath, flags);
+      break;
+    case "migrate":
+      cmdMigrate(draft, filePath, flags);
+      break;
+    case "add-sfx":
+      requireArgs(positional, 5, "capcut add-sfx <project> <slug> <start> <duration>");
+      cmdAddSfx(draft, filePath, positional, flags);
+      break;
+    case "chroma":
+      requireArgs(positional, 3, "capcut chroma <project> <id> --color <#RRGGBB>  |  --off");
+      cmdChroma(draft, filePath, positional, flags);
       break;
     default:
       die(`Unknown command: ${cmd}. Run 'capcut --help' for usage.`);
