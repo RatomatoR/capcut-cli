@@ -122,7 +122,7 @@ flowchart LR
 ### 路线图
 - ⬜ 音频淡入 / 淡出命令（临时方案：用 `volume` 关键帧）
 - ⬜ 文本气泡 / 花字（临时方案：在文本素材上手动设置 `bubble_*` 字段）
-- ⬜ 滤镜链命令（临时方案：用 `add-effect` + `enums --filters` 取 slug）
+- ⬜ 滤镜链命令 + `enums --filters` 发现命令（暂无临时方案 —— `add-effect` 处理的是场景特效，不是色调滤镜）
 - ⬜ README 的拖拽 GIF 演示
 - ⬜ 剪映 6.0+ 解密（目前只能检测 —— 详见 `decrypt` 命令的提示文案）
 - ⬜ `export --batch` 的 Windows 路径（目前只有 macOS 走 AppleScript）

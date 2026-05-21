@@ -125,7 +125,7 @@ Status of every feature shipped. ✅ = implemented, ⬜ = roadmap. Section ancho
 ### Roadmap
 - ⬜ Audio fade-in / fade-out command (workaround: `volume` keyframes)
 - ⬜ Text bubble effects / 花字 (workaround: hand-set `bubble_*` fields on the text material)
-- ⬜ Filter-chain command (workaround: `add-effect` with filter slugs from `enums --filters`)
+- ⬜ Filter-chain command + `enums --filters` discovery flag (no workaround — `add-effect` handles VFX/scene effects, not colour filters)
 - ⬜ Drag-and-drop GIF demos in this README
 - ⬜ JianYing 6.0+ decryption (currently only detection — see `decrypt` workaround docs)
 - ⬜ Windows path for `export --batch` (currently only macOS via AppleScript)
