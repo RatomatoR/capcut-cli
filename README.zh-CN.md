@@ -7,11 +7,11 @@
 
 [English](./README.md) | 中文
 
-**剪映 / CapCut 工具链，字节跳动下次更新它也不会坏 —— 而且是唯一一个能自动生成真字幕对象的 CLI。**
+**剪映 / CapCut 工具链，扛得住字节跳动下次改版 —— 自动加的字幕也是真字幕对象（不是 import-srt 那种文本伪装）。**
 
-任何能输出 JSON 的大模型都能驱动它：不用 MCP 服务，不用 HTTP 守护进程，无状态。命令行编辑工程文件、从零创建草稿、添加素材、修改字幕、用 whisper 自动加字幕、批量翻译多语言、把长视频切成短片。直接读写 `draft_content.json`，零运行时依赖，CapCut + 剪映双命名空间共用一个二进制。
+任何能输出 JSON 的大模型都能驱动它：不用 MCP 服务，不用 HTTP 守护进程，无状态。命令行查看工程、从零搭草稿、加素材、改字幕、用 whisper 自动打字幕、一键克隆成多语言版本、把长视频切成短片。直接读写 `draft_content.json`，零运行时依赖，CapCut + 剪映两个命名空间共用一个二进制。
 
-**v0.4 新增** —— `caption`（whisper → 真字幕对象，不是 import-srt 的文本伪装）、`migrate`（剪映 5.9 / CapCut 9.6 之间的 `mask` ↔ `common_masks` schema 迁移）、`lint`（字幕检查：重叠、行长、漏文件）、`version`（检测兼容状态）、`translate`（多语言草稿克隆，走 Anthropic API）、`add-sfx`、`chroma`、`serve`（无状态 JSONL 队列 —— 对接 n8n / Coze / 扣子 / Make）、`export --batch`（**实验性** macOS UI 自动化批量导出）。
+**v0.4 新增** —— `caption`（whisper → 真字幕对象，不再是 import-srt 那种文本伪装）、`migrate`（剪映 5.9 / CapCut 9.6 之间的 `mask` ↔ `common_masks` schema 迁移）、`lint`（字幕检查：重叠、行长、缺失素材文件）、`version`（检测兼容状态）、`translate`（多语言草稿克隆，走 Anthropic API）、`add-sfx`、`chroma`、`serve`（无状态 JSONL 队列 —— 对接 n8n / Coze / 扣子 / Make）、`export --batch`（**实验性** macOS UI 自动化批量导出）。
 
 > **想要完整的国产大模型 + 剪映短视频流水线？** `capcut-cli` 是引擎，配套的 **[病毒短视频蓝图（完整教程 + 蓝图下载）](https://renezander.com/zh-cn/guides/automate-xiaohongshu-capcut-cli/?utm_source=capcut-cli&utm_medium=readme&utm_campaign=hero-cn)** 给你完整方法 —— DeepSeek / GLM / Kimi / Qwen 都能跑，专为 **小红书 + 抖音** 优化（不是 YouTube），**支付宝 / 微信支付** 通过 Stripe 直接下单。
 
@@ -158,11 +158,11 @@ $ capcut set-text ./project a1b2c3 "字幕已修正"
 
 其他 CapCut / 剪映工具大多走 HTTP API 或 MCP 服务。`capcut-cli` 故意不走这条路：
 
-- **没有状态可以坏。** 每条命令都是 JSON 进、JSON 出。Agent 可以随意穿插命令、安全重试、随时退出。版本就是 `npm install -g capcut-cli@x.y.z`。
-- **不用装第二个工具。** 用户有 Node ≥ 18 就有运行时；`npx capcut-cli` 连全局安装都不用。没有守护进程、没有端口、没有鉴权层。
-- **任何 agent 环境都能跑。** Claude Code 走插件，`bash` / `make` / GitHub Actions / cron / 任何能 `exec` 的脚本也都能跑。MCP 把你锁在一个宿主里，CLI 在哪都能跑 `sh` 在哪就能跑。
+- **没有状态可坏。** 每条命令都是 JSON 进、JSON 出。Agent 可以随意穿插命令、安全重试、随时退出。版本就是 `npm install -g capcut-cli@x.y.z`。
+- **不用装第二个工具。** 用户有 Node ≥ 18 就有运行时；`npx capcut-cli` 连全局安装都不用。没有守护进程，没有端口，没有鉴权层。
+- **任何 agent 环境都能跑。** Claude Code 走插件，`bash` / `make` / GitHub Actions / cron / 任何能 `exec` 的脚本也都能跑。MCP 把你锁死在一个宿主里；凡是能跑 `sh` 的地方，这个 CLI 都能跑。
 
-代价是没有实时流：没有进度事件，没有长任务渲染。这是有意的 —— 反正每个短视频平台都要求最后一步人工渲染并发布（详见 [`PLAN.md`](./PLAN.md)）。
+代价是没有实时反馈：没有进度事件，没有长任务渲染。这是有意的 —— 反正每个短视频平台都要求最后一步由人工渲染并发布（详见 [`PLAN.md`](./PLAN.md)）。
 
 ## 安装
 
