@@ -124,7 +124,9 @@ flowchart LR
 - ⬜ 文本气泡 / 花字（临时方案：在文本素材上手动设置 `bubble_*` 字段）
 - ⬜ 滤镜链命令（临时方案：用 `add-effect` + `enums --filters` 取 slug）
 - ⬜ README 的拖拽 GIF 演示
-- 🚫 HTTP 服务 / 云渲染 / MCP 服务 —— 明确不做，详见 [`PLAN.md`](./PLAN.md)
+- ⬜ 剪映 6.0+ 解密（目前只能检测 —— 详见 `decrypt` 命令的提示文案）
+- ⬜ `export --batch` 的 Windows 路径（目前只有 macOS 走 AppleScript）
+- 🚫 HTTP 服务 / 云渲染 / MCP 服务 —— 明确不做，详见 [`PLAN.md`](./PLAN.md)。`serve` 命令走的是无状态 JSONL 队列：没有端口，没有守护进程。
 
 ## 解决什么问题
 
