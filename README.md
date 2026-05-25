@@ -20,7 +20,7 @@ Open for community vote on **[Discussion #1](https://github.com/renezander030/ca
 - ✅ `audio-fade <project> <id> --in <s> --fade-out <s>` — fade-in / fade-out on audio segments (proper `audio_fades` objects, not volume keyframes) **shipped in v0.5**
 - `bubble-text <project> <id> --bubble <slug>` / 花字 — bubble / decorative text effects + `enums --bubbles` discovery
 - `add-filter <project> <slug> <start> <duration>` + `enums --filters` — colour filter chain (separate from VFX/scene effects)
-- `add-cover <project> <image-path>` / 封面 — set the JianYing/CapCut cover frame from the shell
+- ✅ `add-cover <project> <image-path>` / 封面 — set the JianYing/CapCut cover frame from the shell **shipped in v0.5**
 - `import-ass <project> <ass-path>` — ASS subtitle import alongside existing `import-srt`
 - ✅ `mix-mode <project> <id> <mode>` — blend modes per video segment (multiply, screen, overlay, …) **shipped in v0.5**
 
@@ -132,6 +132,7 @@ Status of every feature shipped. ✅ = implemented, ⬜ = roadmap. Section ancho
 ### v0.5 — new commands (in progress)
 - ✅ `mix-mode` — set blend mode on a video segment (normal · multiply · screen · overlay · soft-light · hard-light · color-dodge · color-burn · darken · lighten · difference · exclusion)
 - ✅ `audio-fade` — fade-in / fade-out on an audio segment via `materials.audio_fades[]` (real fade material, not `volume` keyframes)
+- ✅ `add-cover` — set the draft's cover frame (thumbnail) to a local image (PNG/JPG); `--time <ms>` defaults to 0
 
 ### Ecosystem unlocks (v0.4)
 - ✅ `add-sfx` — first-class sound effects on a dedicated track (15+ CapCut SFX slugs via `enums --audio-effects`)

@@ -58,6 +58,7 @@ import {
   resolveAssetPath,
   saveTemplate,
   setAudioFade,
+  setCover,
   setMixMode,
 } from "./factory.js";
 import { DEFAULT_LINT_OPTIONS, type LintOptions, lintDraft, lintExitCode, summarize } from "./lint.js";
@@ -192,6 +193,11 @@ Animate:
                zoom-out (intros); fade-out, blur-out, smoke (outros).
 
 Tracks (Phase 2):
+  add-cover  <project> <image-path> [--time <ms>]
+             Set the draft's cover frame (thumbnail) to an image. Writes a
+             cover object on the draft root with {path, type, time, time_ms,
+             custom_cover_id}. CapCut/JianYing re-renders the thumbnail on
+             next open. --time defaults to 0 (start of timeline).
   audio-fade <project> <segment-id> [--in <sec>] [--fade-out <sec>]
              Apply audio fade-in / fade-out on an audio segment. Writes
              a materials.audio_fades[] entry referenced from the segment.
@@ -360,6 +366,8 @@ interface Flags {
   // audio-fade
   fadeIn?: string;
   fadeOut?: string;
+  // add-cover
+  time?: string;
   // text-anim / image-anim
   intro?: string;
   outro?: string;
@@ -549,6 +557,8 @@ function parseFlags(args: string[]): { positional: string[]; flags: Flags } {
       flags.fadeIn = args[++i];
     } else if (a === "--fade-out" && i + 1 < args.length) {
       flags.fadeOut = args[++i];
+    } else if (a === "--time" && i + 1 < args.length) {
+      flags.time = args[++i];
     } else if (a === "--jianying") {
       flags.jianying = true;
     } else if (a === "--styles" && i + 1 < args.length) {
@@ -1309,6 +1319,16 @@ function cmdImageAnim(draft: Draft, filePath: string, positional: string[], flag
   out({ ok: true, ...result }, flags);
 }
 
+function cmdAddCover(draft: Draft, filePath: string, positional: string[], flags: Flags): void {
+  const imagePath = positional[2];
+  if (!imagePath) die(`Usage: capcut add-cover <project> <image-path> [--time <ms>]`);
+  const timeMs = flags.time ? parseInt(flags.time, 10) : 0;
+  if (!Number.isFinite(timeMs) || timeMs < 0) die(`--time must be a non-negative integer (milliseconds)`);
+  const result = setCover(draft, imagePath, timeMs);
+  saveDraft(filePath, draft);
+  out({ ok: true, ...result }, flags);
+}
+
 function cmdAudioFade(draft: Draft, filePath: string, positional: string[], flags: Flags): void {
   const segId = positional[2];
   if (!segId) die(`Usage: capcut audio-fade <project> <segment-id> [--in <sec>] [--fade-out <sec>]`);
@@ -1950,6 +1970,10 @@ async function main(): Promise<void> {
     case "audio-fade":
       requireArgs(positional, 3, "capcut audio-fade <project> <segment-id> [--in <sec>] [--fade-out <sec>]");
       cmdAudioFade(draft, filePath, positional, flags);
+      break;
+    case "add-cover":
+      requireArgs(positional, 3, "capcut add-cover <project> <image-path> [--time <ms>]");
+      cmdAddCover(draft, filePath, positional, flags);
       break;
     case "add-effect":
       requireArgs(positional, 5, "capcut add-effect <project> <slug> <start> <duration>");

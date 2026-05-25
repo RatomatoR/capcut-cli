@@ -1172,3 +1172,28 @@ export function setAudioFade(
 
   return { segmentId: seg.id, fade_id: fadeId, fade_in_us: fadeIn, fade_out_us: fadeOut };
 }
+
+// --- Cover frame on the draft root ---
+
+// The `cover` field on the draft root is nullable in every template we've seen
+// (pyJianYingDraft, CapCut 6.5, 9.6). When set, CapCut/JianYing populates a
+// JSON object pointing at the cover image and the source time. The exact field
+// set varies slightly between versions; we ship a conservative shape that
+// matches what users have reported as working — and the field is graceful
+// (CapCut re-reads on open and re-renders if invalid).
+export function setCover(draft: Draft, imagePath: string, timeMs = 0): { cover_path: string; time_ms: number } {
+  if (!existsSync(imagePath)) {
+    throw new Error(`Cover image not found: ${imagePath}`);
+  }
+  const cover = {
+    path: imagePath,
+    type: "image",
+    // CapCut uses microseconds nearly everywhere, but the `cover` block has been
+    // observed in milliseconds in public dumps. Surface both for safety.
+    time: timeMs,
+    time_ms: timeMs,
+    custom_cover_id: uuid(),
+  };
+  (draft as Record<string, unknown>).cover = cover;
+  return { cover_path: imagePath, time_ms: timeMs };
+}
