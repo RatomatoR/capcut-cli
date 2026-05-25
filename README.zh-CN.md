@@ -13,7 +13,7 @@
 
 **v0.4 新增** —— `caption`（whisper → 真字幕对象，不再是 import-srt 那种文本伪装）、`migrate`（剪映 5.9 / CapCut 9.6 之间的 `mask` ↔ `common_masks` schema 迁移）、`lint`（字幕检查：重叠、行长、缺失素材文件）、`version`（检测兼容状态）、`translate`（多语言草稿克隆，走 Anthropic API）、`add-sfx`、`chroma`、`serve`（无状态 JSONL 队列 —— 对接 n8n / Coze / 扣子 / Make）、`export --batch`（**实验性** macOS UI 自动化批量导出）。
 
-## 🚀 v0.5 投票决定下一步
+## v0.5 投票决定下一步
 
 下面是 v0.5 候选功能，欢迎到 **[Discussion #1](https://github.com/renezander030/capcut-cli/discussions/1)** 给你想要的功能 👍 —— 我会按票数把前 3-5 个打包进一个 v0.5 release（目标 2 周内出）。
 

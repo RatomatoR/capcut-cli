@@ -13,7 +13,7 @@ A pure CLI any LLM can drive: no MCP server, no HTTP daemon, no state. Inspect d
 
 **New in v0.4** — `caption` (whisper → real caption objects, not the import-srt text-mimics), `migrate` (mask ↔ common_masks across CapCut/JianYing version jumps), `lint` (schema-aware checks: overlaps, line length, missing files), `version` (detect support status), `translate` (Anthropic-API multi-language draft clone), `add-sfx`, `chroma`, `serve` (stateless JSONL queue runner for n8n/Coze/Make), and `export --batch` (EXPERIMENTAL macOS UI-automated render queue).
 
-## 🚀 v0.5 — vote on what ships next
+## v0.5 — vote on what ships next
 
 Open for community vote on **[Discussion #1](https://github.com/renezander030/capcut-cli/discussions/1)**. 👍 the comments for the features you want most — I ship the top 3-5 as a single v0.5 release within ~2 weeks.
 
