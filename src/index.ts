@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 
-import { readFileSync, writeFileSync } from "node:fs";
+import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { captionDraft } from "./caption.js";
 import { removeChroma, setChroma } from "./chroma.js";
 import type {
@@ -1080,7 +1080,7 @@ function cmdKeyframe(draft: Draft, filePath: string, positional: string[], flags
   const inputs: KeyframeInput[] = [];
 
   if (flags.batch) {
-    const raw = readFileSync("/dev/stdin", "utf-8").trim();
+    const raw = readFileSync(0, "utf-8").trim();
     if (!raw) die("No input on stdin for --batch");
     for (const line of raw.split("\n")) {
       const trimmed = line.trim();
@@ -1402,7 +1402,7 @@ function cmdImportSrt(draft: Draft, filePath: string, positional: string[], flag
   if (!srtArg) die(`Usage: capcut import-srt <project> <srt-path-or-->`);
   let srtContent: string;
   if (srtArg === "-") {
-    srtContent = readFileSync("/dev/stdin", "utf-8");
+    srtContent = readFileSync(0, "utf-8");
   } else {
     srtContent = readFileSync(srtArg, "utf-8");
   }
@@ -1706,7 +1706,7 @@ function execBatchOp(draft: Draft, filePath: string, op: BatchOp, flags: Flags):
 }
 
 function cmdBatch(draft: Draft, filePath: string, flags: Flags): void {
-  const input = readFileSync("/dev/stdin", "utf-8").trim();
+  const input = readFileSync(0, "utf-8").trim();
   if (!input) die("No input on stdin");
   const lines = input.split("\n");
   let ok = 0;
@@ -1770,7 +1770,13 @@ async function main(): Promise<void> {
     const name = projectPath; // positional[1] is the name for init
     if (!name) die("Missing name. Usage: capcut init <name> [--template <dir>] [--drafts <dir>]");
     const cliDir = new URL(".", import.meta.url).pathname.replace(/\/dist\/$/, "");
-    const templateDir = flags.template ?? cliDir + "/../CapCutAPI/template";
+    // Default template resolution: user --template > ../CapCutAPI/template > bundled _init template
+    const externalTemplate = cliDir + "/../CapCutAPI/template";
+    const bundledTemplate = cliDir + "/templates/_init";
+    let templateDir = flags.template ?? externalTemplate;
+    if (!flags.template && !existsSync(templateDir) && existsSync(bundledTemplate)) {
+      templateDir = bundledTemplate;
+    }
     const draftsDir =
       flags.drafts ?? (process.env.HOME || "~") + "/Movies/CapCut/User Data/Projects/com.lveditor.draft";
     const result = initDraft({ name, templateDir, draftsDir });
