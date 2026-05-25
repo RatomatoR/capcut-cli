@@ -1077,3 +1077,52 @@ export function addEffect(
 
   return { segmentId: segId, materialId: matId, trackId: track.id, name: meta.name };
 }
+
+// --- Mix mode (blend mode) on video segments ---
+
+// CapCut blend-mode slugs → on-disk `mix_mode` enum string. The "normal" value
+// clears the field, which matches CapCut's "Normal" choice in the blend picker.
+export const MIX_MODES: Record<string, string> = {
+  normal: "Normal",
+  multiply: "Multiply",
+  screen: "Screen",
+  overlay: "Overlay",
+  "soft-light": "Soft Light",
+  "hard-light": "Hard Light",
+  "color-dodge": "Color Dodge",
+  "color-burn": "Color Burn",
+  darken: "Darken",
+  lighten: "Lighten",
+  difference: "Difference",
+  exclusion: "Exclusion",
+};
+
+export function mixModeSlugs(): string[] {
+  return Object.keys(MIX_MODES);
+}
+
+export function setMixMode(
+  draft: Draft,
+  segmentId: string,
+  mode: string,
+): { segmentId: string; material_id: string; mix_mode: string } {
+  const slug = mode.toLowerCase();
+  if (!(slug in MIX_MODES)) {
+    throw new Error(`Unknown blend mode: ${mode}. Valid: ${mixModeSlugs().join(", ")}`);
+  }
+  const found = findSegment(draft, segmentId);
+  if (!found) throw new Error(`Segment not found: ${segmentId}`);
+  const seg = found.segment;
+  // Mix mode lives on the *video material*, not the segment. Look up by material_id.
+  const videos = (draft.materials.videos ?? []) as Array<Record<string, unknown> & { id: string; type?: string }>;
+  const mat = videos.find((v) => v.id === seg.material_id);
+  if (!mat) {
+    throw new Error(`mix-mode only applies to video/photo segments (no video material for ${segmentId})`);
+  }
+  if (mat.type !== "video" && mat.type !== "photo") {
+    throw new Error(`mix-mode only applies to video/photo materials (got type=${mat.type})`);
+  }
+  const value = MIX_MODES[slug];
+  mat.mix_mode = value;
+  return { segmentId: seg.id, material_id: mat.id, mix_mode: value };
+}

@@ -22,7 +22,7 @@ Open for community vote on **[Discussion #1](https://github.com/renezander030/ca
 - `add-filter <project> <slug> <start> <duration>` + `enums --filters` — colour filter chain (separate from VFX/scene effects)
 - `add-cover <project> <image-path>` / 封面 — set the JianYing/CapCut cover frame from the shell
 - `import-ass <project> <ass-path>` — ASS subtitle import alongside existing `import-srt`
-- `mix-mode <project> <id> <mode>` — blend modes per video segment (multiply, screen, overlay, …)
+- ✅ `mix-mode <project> <id> <mode>` — blend modes per video segment (multiply, screen, overlay, …) **shipped in v0.5**
 
 > Voting closes when v0.5 ships. If your feature is missing, drop a comment on Discussion #1.
 
@@ -128,6 +128,9 @@ Status of every feature shipped. ✅ = implemented, ⬜ = roadmap. Section ancho
 ### Captions & translation (v0.4)
 - ✅ `caption` — whisper shell-out (openai-whisper / whisper.cpp / faster-whisper) → real caption-track segments with `sub_type` + `caption_template_info` (addresses pyJianYingDraft #148 — no more text-segment mimics)
 - ✅ `translate` — Anthropic-API multi-language draft clone, zero runtime deps (uses built-in `fetch`). `--dry-run` for safe inspection. Original stays untouched
+
+### v0.5 — new commands (in progress)
+- ✅ `mix-mode` — set blend mode on a video segment (normal · multiply · screen · overlay · soft-light · hard-light · color-dodge · color-burn · darken · lighten · difference · exclusion)
 
 ### Ecosystem unlocks (v0.4)
 - ✅ `add-sfx` — first-class sound effects on a dedicated track (15+ CapCut SFX slugs via `enums --audio-effects`)

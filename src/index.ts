@@ -54,8 +54,10 @@ import {
   cutProject,
   effectSlugs,
   initDraft,
+  mixModeSlugs,
   resolveAssetPath,
   saveTemplate,
+  setMixMode,
 } from "./factory.js";
 import { DEFAULT_LINT_OPTIONS, type LintOptions, lintDraft, lintExitCode, summarize } from "./lint.js";
 import { migrateDraft } from "./migrate.js";
@@ -189,6 +191,10 @@ Animate:
                zoom-out (intros); fade-out, blur-out, smoke (outros).
 
 Tracks (Phase 2):
+  mix-mode   <project> <segment-id> <mode>
+             Set blend mode on a video segment. Modes: normal, multiply,
+             screen, overlay, soft-light, hard-light, color-dodge, color-burn,
+             darken, lighten, difference, exclusion.
   add-sticker <project> <resource-id> <start> <duration> [options]
              Creates a sticker segment on a sticker track. Options:
                --x <n> --y <n>       Position (-1 to 1)
@@ -1290,6 +1296,15 @@ function cmdImageAnim(draft: Draft, filePath: string, positional: string[], flag
   out({ ok: true, ...result }, flags);
 }
 
+function cmdMixMode(draft: Draft, filePath: string, positional: string[], flags: Flags): void {
+  const segId = positional[2];
+  const mode = positional[3];
+  if (!segId || !mode) die(`Usage: capcut mix-mode <project> <segment-id> <mode>\nModes: ${mixModeSlugs().join(", ")}`);
+  const result = setMixMode(draft, segId, mode);
+  saveDraft(filePath, draft);
+  out({ ok: true, ...result }, flags);
+}
+
 function cmdCut(draft: Draft, filePath: string, positional: string[], flags: Flags): void {
   if (!flags.out) die("Missing --out <path>. Usage: capcut cut <project> <start> <end> --out <path>");
   const start = parseTimeInput(positional[2]);
@@ -1899,6 +1914,10 @@ async function main(): Promise<void> {
     case "add-sticker":
       requireArgs(positional, 5, "capcut add-sticker <project> <resource-id> <start> <duration>");
       cmdAddSticker(draft, filePath, positional, flags);
+      break;
+    case "mix-mode":
+      requireArgs(positional, 4, "capcut mix-mode <project> <segment-id> <mode>");
+      cmdMixMode(draft, filePath, positional, flags);
       break;
     case "add-effect":
       requireArgs(positional, 5, "capcut add-effect <project> <slug> <start> <duration>");
