@@ -19,7 +19,7 @@ Open for community vote on **[Discussion #1](https://github.com/renezander030/ca
 
 - ✅ `audio-fade <project> <id> --in <s> --fade-out <s>` — fade-in / fade-out on audio segments (proper `audio_fades` objects, not volume keyframes) **shipped in v0.5**
 - `bubble-text <project> <id> --bubble <slug>` / 花字 — bubble / decorative text effects + `enums --bubbles` discovery
-- `add-filter <project> <slug> <start> <duration>` + `enums --filters` — colour filter chain (separate from VFX/scene effects)
+- ✅ `add-filter <project> <slug> <start> <duration>` + `enums --filters` — colour filter chain (separate from VFX/scene effects) **shipped in v0.5**
 - ✅ `add-cover <project> <image-path>` / 封面 — set the JianYing/CapCut cover frame from the shell **shipped in v0.5**
 - `import-ass <project> <ass-path>` — ASS subtitle import alongside existing `import-srt`
 - ✅ `mix-mode <project> <id> <mode>` — blend modes per video segment (multiply, screen, overlay, …) **shipped in v0.5**
@@ -133,6 +133,7 @@ Status of every feature shipped. ✅ = implemented, ⬜ = roadmap. Section ancho
 - ✅ `mix-mode` — set blend mode on a video segment (normal · multiply · screen · overlay · soft-light · hard-light · color-dodge · color-burn · darken · lighten · difference · exclusion)
 - ✅ `audio-fade` — fade-in / fade-out on an audio segment via `materials.audio_fades[]` (real fade material, not `volume` keyframes)
 - ✅ `add-cover` — set the draft's cover frame (thumbnail) to a local image (PNG/JPG); `--time <ms>` defaults to 0
+- ✅ `add-filter` — colour-filter track separate from `add-effect`; 10-slug starter catalogue (capcut) or 468 slugs via `enums --filters --jianying`
 
 ### Ecosystem unlocks (v0.4)
 - ✅ `add-sfx` — first-class sound effects on a dedicated track (15+ CapCut SFX slugs via `enums --audio-effects`)
@@ -142,7 +143,6 @@ Status of every feature shipped. ✅ = implemented, ⬜ = roadmap. Section ancho
 
 ### Roadmap
 - ⬜ Text bubble effects / 花字 (workaround: hand-set `bubble_*` fields on the text material)
-- ⬜ Filter-chain command + `enums --filters` discovery flag (no workaround — `add-effect` handles VFX/scene effects, not colour filters)
 - ⬜ Drag-and-drop GIF demos in this README
 - ⬜ JianYing 6.0+ decryption (currently only detection — see `decrypt` workaround docs)
 - ⬜ Windows path for `export --batch` (currently only macOS via AppleScript)

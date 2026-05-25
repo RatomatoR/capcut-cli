@@ -46,6 +46,7 @@ import type { AddAudioOptions, AddTextOptions, AddVideoOptions, CutOptions, Init
 import {
   addAudio,
   addEffect,
+  addFilter,
   addSticker,
   addText,
   addVideo,
@@ -53,6 +54,8 @@ import {
   copyTextStyle,
   cutProject,
   effectSlugs,
+  filterCatalogue,
+  filterSlugs,
   initDraft,
   mixModeSlugs,
   resolveAssetPath,
@@ -193,6 +196,13 @@ Animate:
                zoom-out (intros); fade-out, blur-out, smoke (outros).
 
 Tracks (Phase 2):
+  add-filter <project> <slug> <start> <duration> [options]
+             Colour filter on a dedicated filter track. Slugs (capcut):
+               vintage, warm, cool, bw, sepia, vivid, contrast, faded,
+               dramatic, soft (+ enums --filters --jianying for 468 more).
+             Options:
+               --track-name <s>      Filter track name (default: "filter")
+               --jianying            Use the JianYing namespace
   add-cover  <project> <image-path> [--time <ms>]
              Set the draft's cover frame (thumbnail) to an image. Writes a
              cover object on the draft root with {path, type, time, time_ms,
@@ -433,6 +443,7 @@ const ENUM_FLAG_MAP: Array<{ flag: string; category: Category }> = [
   { flag: "--character-effects", category: "character_effects" },
   { flag: "--audio-effects", category: "audio_effects" },
   { flag: "--fonts", category: "fonts" },
+  { flag: "--filters", category: "filters" },
 ];
 
 function parseFlags(args: string[]): { positional: string[]; flags: Flags } {
@@ -1319,6 +1330,28 @@ function cmdImageAnim(draft: Draft, filePath: string, positional: string[], flag
   out({ ok: true, ...result }, flags);
 }
 
+function cmdAddFilter(draft: Draft, filePath: string, positional: string[], flags: Flags): void {
+  const slug = positional[2];
+  const startStr = positional[3];
+  const durStr = positional[4];
+  const ns: Namespace = flags.jianying ? "jianying" : "capcut";
+  if (!slug || !startStr || !durStr)
+    die(
+      `Usage: capcut add-filter <project> <slug> <start> <duration> [--track-name <name>] [--jianying]\nFeatured slugs: ${filterSlugs(ns).join(", ")}`,
+    );
+  const start = parseTimeInput(startStr);
+  const duration = parseTimeInput(durStr);
+  const result = addFilter(draft, {
+    slug,
+    start,
+    duration,
+    trackName: flags.trackName,
+    namespace: ns,
+  });
+  saveDraft(filePath, draft);
+  out({ ok: true, ...result, start_us: start, duration_us: duration }, flags);
+}
+
 function cmdAddCover(draft: Draft, filePath: string, positional: string[], flags: Flags): void {
   const imagePath = positional[2];
   if (!imagePath) die(`Usage: capcut add-cover <project> <image-path> [--time <ms>]`);
@@ -1443,7 +1476,12 @@ function cmdEnums(flags: Flags): void {
     die(`Usage: capcut enums <flag> [--jianying] [-H]\nFlags: ${flagList}`);
   }
   const ns: Namespace = flags.jianying ? "jianying" : "capcut";
-  const entries = listEnum(flags.enumCategory, ns);
+  let entries = listEnum(flags.enumCategory, ns);
+  // Capcut namespace lacks filters in the generated enums.json; merge the
+  // starter catalogue from src/factory.ts so `enums --filters` is useful.
+  if (flags.enumCategory === "filters" && ns === "capcut") {
+    entries = [...filterCatalogue(), ...entries];
+  }
   if (flags.human) {
     if (entries.length === 0) {
       console.log(`No ${flags.enumCategory} in ${ns} namespace.`);
@@ -1974,6 +2012,10 @@ async function main(): Promise<void> {
     case "add-cover":
       requireArgs(positional, 3, "capcut add-cover <project> <image-path> [--time <ms>]");
       cmdAddCover(draft, filePath, positional, flags);
+      break;
+    case "add-filter":
+      requireArgs(positional, 5, "capcut add-filter <project> <slug> <start> <duration>");
+      cmdAddFilter(draft, filePath, positional, flags);
       break;
     case "add-effect":
       requireArgs(positional, 5, "capcut add-effect <project> <slug> <start> <duration>");

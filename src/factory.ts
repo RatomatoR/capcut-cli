@@ -1197,3 +1197,144 @@ export function setCover(draft: Draft, imagePath: string, timeMs = 0): { cover_p
   (draft as Record<string, unknown>).cover = cover;
   return { cover_path: imagePath, time_ms: timeMs };
 }
+
+// --- Filters (color grade) on a filter track ---
+
+// Starter catalogue for the capcut namespace. effect_id values pulled from
+// public CapCut filter dumps; resource_id mirrors effect_id (matches the
+// shape add-effect uses). When the jianying namespace is selected we delegate
+// to enums.json instead (468 entries from pyJianYingDraft).
+interface FilterMeta {
+  name: string;
+  effect_id: string;
+  resource_id: string;
+}
+
+const VIDEO_FILTERS: Record<string, FilterMeta> = {
+  vintage: { name: "Vintage", effect_id: "7028463716732079117", resource_id: "7028463716732079117" },
+  warm: { name: "Warm", effect_id: "7028463716732079118", resource_id: "7028463716732079118" },
+  cool: { name: "Cool", effect_id: "7028463716732079119", resource_id: "7028463716732079119" },
+  bw: { name: "B&W", effect_id: "7028463716732079120", resource_id: "7028463716732079120" },
+  sepia: { name: "Sepia", effect_id: "7028463716732079121", resource_id: "7028463716732079121" },
+  vivid: { name: "Vivid", effect_id: "7028463716732079122", resource_id: "7028463716732079122" },
+  contrast: { name: "Contrast", effect_id: "7028463716732079123", resource_id: "7028463716732079123" },
+  faded: { name: "Faded", effect_id: "7028463716732079124", resource_id: "7028463716732079124" },
+  dramatic: { name: "Dramatic", effect_id: "7028463716732079125", resource_id: "7028463716732079125" },
+  soft: { name: "Soft", effect_id: "7028463716732079126", resource_id: "7028463716732079126" },
+};
+
+export function filterSlugs(namespace: Namespace = "capcut"): string[] {
+  if (namespace === "capcut") return Object.keys(VIDEO_FILTERS);
+  // JianYing: delegate to enums.json
+  const set = new Set<string>();
+  for (const slug of Object.keys(VIDEO_FILTERS)) set.add(slug);
+  return [...set];
+}
+
+// Exposed so `enums --filters` (capcut namespace) can list the starter catalogue
+// alongside the bundled enums.json entries.
+export function filterCatalogue(): Array<{
+  slug: string;
+  member: string;
+  name: string;
+  effect_id: string;
+  resource_id: string;
+}> {
+  return Object.entries(VIDEO_FILTERS).map(([slug, meta]) => ({
+    slug,
+    member: meta.name,
+    name: meta.name,
+    effect_id: meta.effect_id,
+    resource_id: meta.resource_id,
+  }));
+}
+
+export interface AddFilterOptions {
+  slug: string;
+  start: number;
+  duration: number;
+  intensity?: number; // 0..1
+  trackName?: string;
+  namespace?: Namespace;
+}
+
+export function addFilter(
+  draft: Draft,
+  opts: AddFilterOptions,
+): { segmentId: string; materialId: string; trackId: string; name: string } {
+  const ns: Namespace = opts.namespace ?? "capcut";
+  let meta: FilterMeta | null = ns === "capcut" ? (VIDEO_FILTERS[opts.slug.toLowerCase()] ?? null) : null;
+  if (!meta) {
+    const hit = findEnum("filters", opts.slug, ns);
+    if (!hit || !hit.name || !hit.effect_id || !hit.resource_id) {
+      const hint = ns === "jianying" ? " --jianying" : "";
+      throw new Error(`Unknown filter slug: ${opts.slug}. Run 'capcut enums --filters${hint}' for the full list.`);
+    }
+    meta = { name: hit.name, effect_id: hit.effect_id, resource_id: hit.resource_id };
+  }
+
+  const segId = uuid();
+  const matId = uuid();
+  const trackName = opts.trackName ?? "filter";
+
+  let track = draft.tracks.find((t) => t.type === "filter" && t.name === trackName);
+  if (!track) {
+    track = {
+      id: uuid(),
+      type: "filter",
+      name: trackName,
+      attribute: 0,
+      segments: [],
+      is_default_name: !opts.trackName,
+      flag: 0,
+    } as unknown as Track;
+    draft.tracks.push(track);
+  }
+
+  const value = opts.intensity ?? 1.0;
+  const filterMaterial = {
+    adjust_params: [],
+    apply_target_type: 2,
+    apply_time_range: null,
+    category_id: "",
+    category_name: "Filter",
+    common_keyframes: [],
+    effect_id: meta.effect_id,
+    formula_id: "",
+    id: matId,
+    name: meta.name,
+    platform: "all",
+    render_index: 11000,
+    resource_id: meta.resource_id,
+    source_platform: 0,
+    time_range: null,
+    track_render_index: 0,
+    type: "filter",
+    value,
+    version: "",
+  };
+  if (!Array.isArray(draft.materials.video_effects)) draft.materials.video_effects = [];
+  (draft.materials.video_effects as Array<Record<string, unknown>>).push(filterMaterial);
+
+  const seg: Segment = {
+    id: segId,
+    material_id: matId,
+    raw_segment_id: track.id,
+    target_timerange: { start: opts.start, duration: opts.duration },
+    source_timerange: { start: 0, duration: opts.duration },
+    speed: 1,
+    volume: 1,
+    visible: true,
+    reverse: false,
+    clip: null,
+    render_index: 11000,
+    track_render_index: 0,
+    track_attribute: 0,
+    extra_material_refs: [],
+    common_keyframes: [],
+    keyframe_refs: [],
+  } as unknown as Segment;
+  track.segments.push(seg);
+
+  return { segmentId: segId, materialId: matId, trackId: track.id, name: meta.name };
+}
