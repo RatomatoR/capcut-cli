@@ -21,7 +21,7 @@ Open for community vote on **[Discussion #1](https://github.com/renezander030/ca
 - ✅ `bubble-text <project> <id> --bubble <slug>` / 花字 — bubble / decorative text effects + `enums --bubbles` discovery **shipped in v0.5**
 - ✅ `add-filter <project> <slug> <start> <duration>` + `enums --filters` — colour filter chain (separate from VFX/scene effects) **shipped in v0.5**
 - ✅ `add-cover <project> <image-path>` / 封面 — set the JianYing/CapCut cover frame from the shell **shipped in v0.5**
-- `import-ass <project> <ass-path>` — ASS subtitle import alongside existing `import-srt`
+- ✅ `import-ass <project> <ass-path>` — ASS subtitle import alongside existing `import-srt` **shipped in v0.5**
 - ✅ `mix-mode <project> <id> <mode>` — blend modes per video segment (multiply, screen, overlay, …) **shipped in v0.5**
 
 > Voting closes when v0.5 ships. If your feature is missing, drop a comment on Discussion #1.
@@ -135,6 +135,7 @@ Status of every feature shipped. ✅ = implemented, ⬜ = roadmap. Section ancho
 - ✅ `add-cover` — set the draft's cover frame (thumbnail) to a local image (PNG/JPG); `--time <ms>` defaults to 0
 - ✅ `add-filter` — colour-filter track separate from `add-effect`; 10-slug starter catalogue (capcut) or 468 slugs via `enums --filters --jianying`
 - ✅ `bubble-text` — speech-bubble shape on a text segment (7-slug starter catalogue + `enums --bubbles`, or `--effect-id`/`--resource-id` for your own ids)
+- ✅ `import-ass` — ASS / SSA subtitle import alongside `import-srt`; shares `--track-name` / `--style-ref` / `--time-offset` and the full text-style flag set
 
 ### Ecosystem unlocks (v0.4)
 - ✅ `add-sfx` — first-class sound effects on a dedicated track (15+ CapCut SFX slugs via `enums --audio-effects`)

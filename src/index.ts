@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
+import { parseAss } from "./ass.js";
 import { captionDraft } from "./caption.js";
 import { removeChroma, setChroma } from "./chroma.js";
 import type {
@@ -311,6 +312,11 @@ Stateless queue runner (v0.5):
              each to the CLI, write JSONL results. No daemon, no port, no state.
 
 Subtitles (Phase 3):
+  import-ass <project> <ass-path-or--> [options]
+             Parse an ASS / SSA file ([Events] section, Dialogue lines)
+             and create one text segment per cue. Inline override codes
+             ({\\b1\\an8}, \\N) are stripped from the displayed text.
+             Same flags as import-srt below.
   import-srt <project> <srt-path-or--> [options]
              Parse an SRT file and create one text segment per cue.
              Options:
@@ -1551,19 +1557,13 @@ function cmdEnums(flags: Flags): void {
   }
 }
 
-function cmdImportSrt(draft: Draft, filePath: string, positional: string[], flags: Flags): void {
-  const srtArg = positional[2];
-  if (!srtArg) die(`Usage: capcut import-srt <project> <srt-path-or-->`);
-  let srtContent: string;
-  if (srtArg === "-") {
-    srtContent = readFileSync(0, "utf-8");
-  } else {
-    srtContent = readFileSync(srtArg, "utf-8");
-  }
-
-  const cues = parseSrt(srtContent);
-  if (cues.length === 0) die(`SRT produced 0 cues`);
-
+function importCuesToDraft(
+  draft: Draft,
+  filePath: string,
+  cues: Array<{ index: number; startUs: number; endUs: number; text: string }>,
+  flags: Flags,
+  label: string,
+): void {
   const offsetUs = flags.timeOffset ? parseTimeInput(flags.timeOffset) : 0;
 
   // Resolve the style-ref segment once, before writing anything, so a bad ref
@@ -1624,6 +1624,7 @@ function cmdImportSrt(draft: Draft, filePath: string, positional: string[], flag
   out(
     {
       ok: true,
+      format: label,
       cues: created.length,
       track_name: flags.trackName ?? "subtitle",
       style_ref: flags.styleRef ?? null,
@@ -1633,6 +1634,24 @@ function cmdImportSrt(draft: Draft, filePath: string, positional: string[], flag
     },
     flags,
   );
+}
+
+function cmdImportSrt(draft: Draft, filePath: string, positional: string[], flags: Flags): void {
+  const srtArg = positional[2];
+  if (!srtArg) die(`Usage: capcut import-srt <project> <srt-path-or-->`);
+  const srtContent = srtArg === "-" ? readFileSync(0, "utf-8") : readFileSync(srtArg, "utf-8");
+  const cues = parseSrt(srtContent);
+  if (cues.length === 0) die(`SRT produced 0 cues`);
+  importCuesToDraft(draft, filePath, cues, flags, "srt");
+}
+
+function cmdImportAss(draft: Draft, filePath: string, positional: string[], flags: Flags): void {
+  const assArg = positional[2];
+  if (!assArg) die(`Usage: capcut import-ass <project> <ass-path-or-->`);
+  const assContent = assArg === "-" ? readFileSync(0, "utf-8") : readFileSync(assArg, "utf-8");
+  const cues = parseAss(assContent);
+  if (cues.length === 0) die(`ASS produced 0 cues`);
+  importCuesToDraft(draft, filePath, cues, flags, "ass");
 }
 
 // --- Version & lint ---
@@ -2092,6 +2111,10 @@ async function main(): Promise<void> {
     case "import-srt":
       requireArgs(positional, 3, "capcut import-srt <project> <srt-path-or-->");
       cmdImportSrt(draft, filePath, positional, flags);
+      break;
+    case "import-ass":
+      requireArgs(positional, 3, "capcut import-ass <project> <ass-path-or-->");
+      cmdImportAss(draft, filePath, positional, flags);
       break;
     case "text-ranges":
       requireArgs(positional, 3, "capcut text-ranges <project> <id> --styles @path.json");
