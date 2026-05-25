@@ -1126,3 +1126,49 @@ export function setMixMode(
   mat.mix_mode = value;
   return { segmentId: seg.id, material_id: mat.id, mix_mode: value };
 }
+
+// --- Audio fade-in / fade-out ---
+
+// Writes a `materials.audio_fades[]` entry shaped like pyJianYingDraft's
+// AudioFade.export_json: { id, fade_in_duration, fade_out_duration, fade_type, type }.
+// The audio segment references the fade material via extra_material_refs.
+// At least one of fadeInUs / fadeOutUs must be > 0. Re-applying replaces the
+// existing fade on the same segment instead of stacking.
+export function setAudioFade(
+  draft: Draft,
+  segmentId: string,
+  opts: { fadeInUs?: number; fadeOutUs?: number },
+): { segmentId: string; fade_id: string; fade_in_us: number; fade_out_us: number } {
+  const fadeIn = opts.fadeInUs ?? 0;
+  const fadeOut = opts.fadeOutUs ?? 0;
+  if (fadeIn <= 0 && fadeOut <= 0) {
+    throw new Error(`audio-fade requires at least one of --in or --out (> 0)`);
+  }
+  const found = findSegment(draft, segmentId);
+  if (!found) throw new Error(`Segment not found: ${segmentId}`);
+  if (found.track.type !== "audio") {
+    throw new Error(`audio-fade only applies to audio segments (track type: ${found.track.type})`);
+  }
+  const seg = found.segment;
+
+  if (!Array.isArray((draft.materials as Record<string, unknown>).audio_fades)) {
+    (draft.materials as Record<string, unknown>).audio_fades = [];
+  }
+  const fades = (draft.materials as unknown as { audio_fades: Array<Record<string, unknown> & { id: string }> })
+    .audio_fades;
+
+  // Drop any existing fade ref on this segment so re-applying replaces instead of stacks.
+  seg.extra_material_refs = (seg.extra_material_refs || []).filter((r) => !fades.some((f) => f.id === r));
+
+  const fadeId = uuid();
+  fades.push({
+    id: fadeId,
+    fade_in_duration: fadeIn,
+    fade_out_duration: fadeOut,
+    fade_type: 0,
+    type: "audio_fade",
+  });
+  (seg.extra_material_refs ||= []).push(fadeId);
+
+  return { segmentId: seg.id, fade_id: fadeId, fade_in_us: fadeIn, fade_out_us: fadeOut };
+}

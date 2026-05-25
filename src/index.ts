@@ -57,6 +57,7 @@ import {
   mixModeSlugs,
   resolveAssetPath,
   saveTemplate,
+  setAudioFade,
   setMixMode,
 } from "./factory.js";
 import { DEFAULT_LINT_OPTIONS, type LintOptions, lintDraft, lintExitCode, summarize } from "./lint.js";
@@ -191,6 +192,11 @@ Animate:
                zoom-out (intros); fade-out, blur-out, smoke (outros).
 
 Tracks (Phase 2):
+  audio-fade <project> <segment-id> [--in <sec>] [--fade-out <sec>]
+             Apply audio fade-in / fade-out on an audio segment. Writes
+             a materials.audio_fades[] entry referenced from the segment.
+             At least one of --in or --fade-out (>0) is required.
+             Note: --out is the global output-path flag; use --fade-out here.
   mix-mode   <project> <segment-id> <mode>
              Set blend mode on a video segment. Modes: normal, multiply,
              screen, overlay, soft-light, hard-light, color-dodge, color-burn,
@@ -351,6 +357,9 @@ interface Flags {
   bgHeight?: number;
   bgHOffset?: number;
   bgVOffset?: number;
+  // audio-fade
+  fadeIn?: string;
+  fadeOut?: string;
   // text-anim / image-anim
   intro?: string;
   outro?: string;
@@ -536,6 +545,10 @@ function parseFlags(args: string[]): { positional: string[]; flags: Flags } {
       flags.timeOffset = args[++i];
     } else if (a === "--font" && i + 1 < args.length) {
       flags.font = args[++i];
+    } else if ((a === "--in" || a === "--fade-in") && i + 1 < args.length) {
+      flags.fadeIn = args[++i];
+    } else if (a === "--fade-out" && i + 1 < args.length) {
+      flags.fadeOut = args[++i];
     } else if (a === "--jianying") {
       flags.jianying = true;
     } else if (a === "--styles" && i + 1 < args.length) {
@@ -1296,6 +1309,21 @@ function cmdImageAnim(draft: Draft, filePath: string, positional: string[], flag
   out({ ok: true, ...result }, flags);
 }
 
+function cmdAudioFade(draft: Draft, filePath: string, positional: string[], flags: Flags): void {
+  const segId = positional[2];
+  if (!segId) die(`Usage: capcut audio-fade <project> <segment-id> [--in <sec>] [--fade-out <sec>]`);
+  // --out collides with the global output-path flag; users should pass --fade-out
+  // for fade-out duration. --in is unambiguous.
+  const fadeInUs = flags.fadeIn ? Math.round(parseFloat(flags.fadeIn) * 1_000_000) : 0;
+  const fadeOutUs = flags.fadeOut ? Math.round(parseFloat(flags.fadeOut) * 1_000_000) : 0;
+  if (fadeInUs <= 0 && fadeOutUs <= 0) {
+    die(`audio-fade requires at least one of --in <sec> or --fade-out <sec>`);
+  }
+  const result = setAudioFade(draft, segId, { fadeInUs, fadeOutUs });
+  saveDraft(filePath, draft);
+  out({ ok: true, ...result }, flags);
+}
+
 function cmdMixMode(draft: Draft, filePath: string, positional: string[], flags: Flags): void {
   const segId = positional[2];
   const mode = positional[3];
@@ -1918,6 +1946,10 @@ async function main(): Promise<void> {
     case "mix-mode":
       requireArgs(positional, 4, "capcut mix-mode <project> <segment-id> <mode>");
       cmdMixMode(draft, filePath, positional, flags);
+      break;
+    case "audio-fade":
+      requireArgs(positional, 3, "capcut audio-fade <project> <segment-id> [--in <sec>] [--fade-out <sec>]");
+      cmdAudioFade(draft, filePath, positional, flags);
       break;
     case "add-effect":
       requireArgs(positional, 5, "capcut add-effect <project> <slug> <start> <duration>");

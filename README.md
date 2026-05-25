@@ -17,7 +17,7 @@ A pure CLI any LLM can drive: no MCP server, no HTTP daemon, no state. Inspect d
 
 Open for community vote on **[Discussion #1](https://github.com/renezander030/capcut-cli/discussions/1)**. 👍 the comments for the features you want most — I ship the top 3-5 as a single v0.5 release within ~2 weeks.
 
-- `audio-fade <project> <id> --in <s> --out <s>` — fade-in / fade-out on audio segments (proper `audio_fades` objects, not volume keyframes)
+- ✅ `audio-fade <project> <id> --in <s> --fade-out <s>` — fade-in / fade-out on audio segments (proper `audio_fades` objects, not volume keyframes) **shipped in v0.5**
 - `bubble-text <project> <id> --bubble <slug>` / 花字 — bubble / decorative text effects + `enums --bubbles` discovery
 - `add-filter <project> <slug> <start> <duration>` + `enums --filters` — colour filter chain (separate from VFX/scene effects)
 - `add-cover <project> <image-path>` / 封面 — set the JianYing/CapCut cover frame from the shell
@@ -131,6 +131,7 @@ Status of every feature shipped. ✅ = implemented, ⬜ = roadmap. Section ancho
 
 ### v0.5 — new commands (in progress)
 - ✅ `mix-mode` — set blend mode on a video segment (normal · multiply · screen · overlay · soft-light · hard-light · color-dodge · color-burn · darken · lighten · difference · exclusion)
+- ✅ `audio-fade` — fade-in / fade-out on an audio segment via `materials.audio_fades[]` (real fade material, not `volume` keyframes)
 
 ### Ecosystem unlocks (v0.4)
 - ✅ `add-sfx` — first-class sound effects on a dedicated track (15+ CapCut SFX slugs via `enums --audio-effects`)
@@ -139,7 +140,6 @@ Status of every feature shipped. ✅ = implemented, ⬜ = roadmap. Section ancho
 - ✅ `export --batch` — EXPERIMENTAL UI-automated render queue (macOS AppleScript; Windows path sketched). `--dry-run` for safe exploration on any OS
 
 ### Roadmap
-- ⬜ Audio fade-in / fade-out command (workaround: `volume` keyframes)
 - ⬜ Text bubble effects / 花字 (workaround: hand-set `bubble_*` fields on the text material)
 - ⬜ Filter-chain command + `enums --filters` discovery flag (no workaround — `add-effect` handles VFX/scene effects, not colour filters)
 - ⬜ Drag-and-drop GIF demos in this README
