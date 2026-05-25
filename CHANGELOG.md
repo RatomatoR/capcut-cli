@@ -2,6 +2,29 @@
 
 All notable changes to capcut-cli are documented here. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); the project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.5.0] — 2026-05-25
+
+Six new commands voted in from [Discussion #1](https://github.com/renezander030/capcut-cli/discussions/1), shipped as a single release. All keep the zero-dep, JSON-by-default, pipeable design.
+
+### Added
+
+- **`capcut mix-mode <project> <segment-id> <mode>`** — set blend mode on a video segment. Writes `mix_mode` on the video material (not the segment) since CapCut keys blend modes off `materials.videos[]`. 12 modes: `normal`, `multiply`, `screen`, `overlay`, `soft-light`, `hard-light`, `color-dodge`, `color-burn`, `darken`, `lighten`, `difference`, `exclusion`. Rejects non-video/photo segments.
+- **`capcut audio-fade <project> <segment-id> [--in <sec>] [--fade-out <sec>]`** — fade-in / fade-out on an audio segment via a real `materials.audio_fades[]` entry (`{id, fade_in_duration, fade_out_duration, fade_type, type:audio_fade}`), referenced from `segment.extra_material_refs`. Re-applying replaces the existing fade instead of stacking. Rejects on non-audio segments. (Note: `--out` collides with the global output-path flag, so this command uses `--fade-out`.)
+- **`capcut add-cover <project> <image-path> [--time <ms>]`** — set the draft's cover frame (thumbnail) to a local image. Writes a populated object on the draft root's `cover` field (was `null` in every template). Shape includes `path`, `type:image`, `time`, `time_ms` (both — CapCut versions disagree on the unit), and a `custom_cover_id` uuid. Validates the image path exists. `--time` defaults to 0.
+- **`capcut add-filter <project> <slug> <start> <duration>`** + **`capcut enums --filters`** — colour-filter track separate from `add-effect`. Same `materials.video_effects[]` storage but `type:filter` and `category_name:Filter` so CapCut shows it in the filter rail. 10-slug starter catalogue for the CapCut namespace (`vintage`, `warm`, `cool`, `bw`, `sepia`, `vivid`, `contrast`, `faded`, `dramatic`, `soft`); JianYing namespace delegates to the 468 entries in `enums.json` via `--jianying`.
+- **`capcut bubble-text <project> <text-segment-id> --bubble <slug>`** + **`capcut enums --bubbles`** — speech-bubble shape on a text segment. Writes a `materials.filters[]` entry (`type:text_shape`, matching pyJianYingDraft's `TextBubble.export_json`) plus stamps `bubble_effect_id` / `bubble_resource_id` on the text material — some CapCut versions read from the material directly, others from `filters[]`. 7-slug starter catalogue (`rectangle`, `rounded`, `cloud`, `oval`, `star`, `heart`, `burst`) plus `--effect-id` / `--resource-id` passthrough for users with custom ids.
+- **`capcut import-ass <project> <ass-path-or-->`** — ASS / SSA subtitle import alongside `import-srt`. Zero-dep parser (`src/ass.ts`) reads `[Events]` / `Dialogue` lines, honours the `Format` header, strips inline overrides (`{\\b1\\an8}`) and `\\N` line breaks. Time format `H:MM:SS.cc` (centiseconds → microseconds). Shares the cue-to-segments pipeline with `import-srt` — same `--track-name`, `--style-ref`, `--time-offset`, and text-style flag surface.
+
+### Fixed
+
+- **`readFileSync("/dev/stdin", ...)` → `readFileSync(0, ...)`** in three call sites (`keyframe --batch`, `import-srt`, `serve` queue). Fixes `ENXIO: no such device or address` when the CLI was invoked with a piped stdin via `child_process.spawn`. The `/dev/stdin` device node fails to open in that mode on Linux; fd-0 always works.
+- **`capcut init` falls back to a bundled template** at `templates/_init/` when the upstream `../CapCutAPI/template` directory isn't present. Previously broke on every machine that didn't have the Python project cloned alongside.
+
+### Misc
+
+- Test suite grew from 60 → 91 passing tests across 53 suites (six new test files, one per shipped command).
+- Husky pre-commit gate stayed green throughout the v0.5 cycle — every feature commit includes its tests and passes before being pushed.
+
 ## [0.3.2] — 2026-05-15
 
 ### Added — README polish for discoverability
