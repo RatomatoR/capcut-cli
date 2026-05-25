@@ -882,3 +882,115 @@ export function setTextRanges(
 
   return { segmentId: seg.id, material_id: text.id, styles: styles.length, text_length: maxCodeUnits };
 }
+
+// --- Bubble (speech-bubble) effect on a text segment ---
+// Bubble materials live in materials.filters[] alongside colour filters
+// (pyJianYingDraft groups them under the same array — see script_file.py:368).
+// Shape: { id, type:"text_shape", effect_id, resource_id, apply_target_type:0, value:1.0 }
+// Segment references the bubble via extra_material_refs.
+
+interface BubbleMeta {
+  name: string;
+  effect_id: string;
+  resource_id: string;
+}
+
+const BUBBLES: Record<string, BubbleMeta> = {
+  // Starter catalogue. The exact effect_id / resource_id pairs are CapCut-version-
+  // specific; the slugs below are common bubble shapes. Override via
+  // --effect-id / --resource-id when you have ids from your own draft.
+  rectangle: { name: "Rectangle", effect_id: "7137268628230638087", resource_id: "7137268628230638087" },
+  rounded: { name: "Rounded Rectangle", effect_id: "7137268898998568967", resource_id: "7137268898998568967" },
+  cloud: { name: "Cloud", effect_id: "7137269184932778510", resource_id: "7137269184932778510" },
+  oval: { name: "Oval", effect_id: "7137269466232116231", resource_id: "7137269466232116231" },
+  star: { name: "Star", effect_id: "7137269743886750214", resource_id: "7137269743886750214" },
+  heart: { name: "Heart", effect_id: "7137270031716044302", resource_id: "7137270031716044302" },
+  burst: { name: "Burst", effect_id: "7137270320304885262", resource_id: "7137270320304885262" },
+};
+
+export function bubbleSlugs(): string[] {
+  return Object.keys(BUBBLES);
+}
+
+export function bubbleCatalogue(): Array<{
+  slug: string;
+  member: string;
+  name: string;
+  effect_id: string;
+  resource_id: string;
+}> {
+  return Object.entries(BUBBLES).map(([slug, meta]) => ({
+    slug,
+    member: meta.name,
+    name: meta.name,
+    effect_id: meta.effect_id,
+    resource_id: meta.resource_id,
+  }));
+}
+
+export interface BubbleOptions {
+  slug?: string;
+  effectId?: string;
+  resourceId?: string;
+}
+
+export function setBubble(
+  draft: Draft,
+  segmentId: string,
+  opts: BubbleOptions,
+): { segmentId: string; bubble_id: string; effect_id: string; resource_id: string } {
+  const found = findSegment(draft, segmentId);
+  if (!found) throw new Error(`Segment not found: ${segmentId}`);
+  if (found.track.type !== "text") {
+    throw new Error(`bubble-text only applies to text segments (track type: ${found.track.type})`);
+  }
+  const seg = found.segment;
+  const text = findMaterial(draft.materials.texts as MaterialText[], seg.material_id);
+  if (!text) throw new Error(`Text material not found for segment ${segmentId}`);
+
+  let effectId = opts.effectId;
+  let resourceId = opts.resourceId;
+  if ((!effectId || !resourceId) && opts.slug) {
+    const meta = BUBBLES[opts.slug.toLowerCase()];
+    if (!meta) {
+      throw new Error(
+        `Unknown bubble slug: ${opts.slug}. Run 'capcut enums --bubbles' or pass --effect-id / --resource-id directly.`,
+      );
+    }
+    effectId = effectId ?? meta.effect_id;
+    resourceId = resourceId ?? meta.resource_id;
+  }
+  if (!effectId || !resourceId) {
+    throw new Error(`bubble-text requires either --bubble <slug> or both --effect-id and --resource-id`);
+  }
+
+  // Drop existing bubble refs on this segment (we replace, don't stack).
+  if (!Array.isArray((draft.materials as Record<string, unknown>).filters)) {
+    (draft.materials as Record<string, unknown>).filters = [];
+  }
+  const filters = (
+    draft.materials as unknown as { filters: Array<Record<string, unknown> & { id: string; type?: string }> }
+  ).filters;
+  seg.extra_material_refs = (seg.extra_material_refs || []).filter(
+    (r) => !filters.some((f) => f.id === r && f.type === "text_shape"),
+  );
+
+  const bubbleId = randomUUID().replace(/-/g, "");
+  filters.push({
+    id: bubbleId,
+    apply_target_type: 0,
+    effect_id: effectId,
+    resource_id: resourceId,
+    type: "text_shape",
+    value: 1.0,
+  });
+  (seg.extra_material_refs ||= []).push(bubbleId);
+
+  // Also stamp the bubble_* fields on the text material itself (some CapCut
+  // versions read from there in addition to the filters[] entry).
+  const t = text as unknown as Record<string, unknown>;
+  t.bubble_effect_id = effectId;
+  t.bubble_resource_id = resourceId;
+
+  return { segmentId: seg.id, bubble_id: bubbleId, effect_id: effectId, resource_id: resourceId };
+}

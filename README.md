@@ -18,7 +18,7 @@ A pure CLI any LLM can drive: no MCP server, no HTTP daemon, no state. Inspect d
 Open for community vote on **[Discussion #1](https://github.com/renezander030/capcut-cli/discussions/1)**. 👍 the comments for the features you want most — I ship the top 3-5 as a single v0.5 release within ~2 weeks.
 
 - ✅ `audio-fade <project> <id> --in <s> --fade-out <s>` — fade-in / fade-out on audio segments (proper `audio_fades` objects, not volume keyframes) **shipped in v0.5**
-- `bubble-text <project> <id> --bubble <slug>` / 花字 — bubble / decorative text effects + `enums --bubbles` discovery
+- ✅ `bubble-text <project> <id> --bubble <slug>` / 花字 — bubble / decorative text effects + `enums --bubbles` discovery **shipped in v0.5**
 - ✅ `add-filter <project> <slug> <start> <duration>` + `enums --filters` — colour filter chain (separate from VFX/scene effects) **shipped in v0.5**
 - ✅ `add-cover <project> <image-path>` / 封面 — set the JianYing/CapCut cover frame from the shell **shipped in v0.5**
 - `import-ass <project> <ass-path>` — ASS subtitle import alongside existing `import-srt`
@@ -134,6 +134,7 @@ Status of every feature shipped. ✅ = implemented, ⬜ = roadmap. Section ancho
 - ✅ `audio-fade` — fade-in / fade-out on an audio segment via `materials.audio_fades[]` (real fade material, not `volume` keyframes)
 - ✅ `add-cover` — set the draft's cover frame (thumbnail) to a local image (PNG/JPG); `--time <ms>` defaults to 0
 - ✅ `add-filter` — colour-filter track separate from `add-effect`; 10-slug starter catalogue (capcut) or 468 slugs via `enums --filters --jianying`
+- ✅ `bubble-text` — speech-bubble shape on a text segment (7-slug starter catalogue + `enums --bubbles`, or `--effect-id`/`--resource-id` for your own ids)
 
 ### Ecosystem unlocks (v0.4)
 - ✅ `add-sfx` — first-class sound effects on a dedicated track (15+ CapCut SFX slugs via `enums --audio-effects`)
@@ -142,7 +143,6 @@ Status of every feature shipped. ✅ = implemented, ⬜ = roadmap. Section ancho
 - ✅ `export --batch` — EXPERIMENTAL UI-automated render queue (macOS AppleScript; Windows path sketched). `--dry-run` for safe exploration on any OS
 
 ### Roadmap
-- ⬜ Text bubble effects / 花字 (workaround: hand-set `bubble_*` fields on the text material)
 - ⬜ Drag-and-drop GIF demos in this README
 - ⬜ JianYing 6.0+ decryption (currently only detection — see `decrypt` workaround docs)
 - ⬜ Windows path for `export --batch` (currently only macOS via AppleScript)

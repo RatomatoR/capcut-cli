@@ -17,11 +17,14 @@ import {
   addMask,
   addTextAnim,
   addTransition,
+  bubbleCatalogue,
+  bubbleSlugs,
   imageAnimSlugs,
   keyframeProperties,
   maskSlugs,
   parseKeyframeValue,
   setBgBlur,
+  setBubble,
   setTextRanges,
   setTextStyle,
   textAnimSlugs,
@@ -196,6 +199,14 @@ Animate:
                zoom-out (intros); fade-out, blur-out, smoke (outros).
 
 Tracks (Phase 2):
+  bubble-text <project> <text-segment-id> --bubble <slug>
+             Apply a speech-bubble shape to an existing text segment. Writes
+             a materials.filters[] entry (type:text_shape) referenced from
+             the segment, plus stamps bubble_effect_id / bubble_resource_id
+             on the text material. Slugs: rectangle, rounded, cloud, oval,
+             star, heart, burst (or pass --effect-id / --resource-id
+             explicitly from your own CapCut draft).
+             Discovery: capcut enums --bubbles
   add-filter <project> <slug> <start> <duration> [options]
              Colour filter on a dedicated filter track. Slugs (capcut):
                vintage, warm, cool, bw, sepia, vivid, contrast, faded,
@@ -378,6 +389,10 @@ interface Flags {
   fadeOut?: string;
   // add-cover
   time?: string;
+  // bubble-text
+  bubble?: string;
+  effectId?: string;
+  bubbles?: boolean;
   // text-anim / image-anim
   intro?: string;
   outro?: string;
@@ -570,6 +585,12 @@ function parseFlags(args: string[]): { positional: string[]; flags: Flags } {
       flags.fadeOut = args[++i];
     } else if (a === "--time" && i + 1 < args.length) {
       flags.time = args[++i];
+    } else if (a === "--bubble" && i + 1 < args.length) {
+      flags.bubble = args[++i];
+    } else if (a === "--effect-id" && i + 1 < args.length) {
+      flags.effectId = args[++i];
+    } else if (a === "--bubbles") {
+      flags.bubbles = true;
     } else if (a === "--jianying") {
       flags.jianying = true;
     } else if (a === "--styles" && i + 1 < args.length) {
@@ -1330,6 +1351,24 @@ function cmdImageAnim(draft: Draft, filePath: string, positional: string[], flag
   out({ ok: true, ...result }, flags);
 }
 
+function cmdBubbleText(draft: Draft, filePath: string, positional: string[], flags: Flags): void {
+  const segId = positional[2];
+  if (!segId)
+    die(
+      `Usage: capcut bubble-text <project> <text-segment-id> --bubble <slug>  [or  --effect-id <id> --resource-id <id>]\nSlugs: ${bubbleSlugs().join(", ")}`,
+    );
+  if (!flags.bubble && (!flags.effectId || !flags.resourceId)) {
+    die(`bubble-text requires either --bubble <slug> or both --effect-id and --resource-id`);
+  }
+  const result = setBubble(draft, segId, {
+    slug: flags.bubble,
+    effectId: flags.effectId,
+    resourceId: flags.resourceId,
+  });
+  saveDraft(filePath, draft);
+  out({ ok: true, ...result }, flags);
+}
+
 function cmdAddFilter(draft: Draft, filePath: string, positional: string[], flags: Flags): void {
   const slug = positional[2];
   const startStr = positional[3];
@@ -1471,8 +1510,22 @@ function cmdTextRanges(draft: Draft, filePath: string, positional: string[], fla
 // --- Phase 3: enums + import-srt ---
 
 function cmdEnums(flags: Flags): void {
+  // bubbles ships as a starter catalogue in src/decorators.ts (no enums.json entry).
+  if (flags.bubbles) {
+    const entries = bubbleCatalogue();
+    if (flags.human) {
+      console.log(`Slug                              Name                             Member`);
+      for (const e of entries) {
+        console.log(`${(e.slug || "(non-ascii)").padEnd(33)} ${e.name.slice(0, 32).padEnd(32)} ${e.member}`);
+      }
+      process.stderr.write(`\n${entries.length} bubbles (capcut)\n`);
+    } else {
+      out(entries, flags);
+    }
+    return;
+  }
   if (!flags.enumCategory) {
-    const flagList = ENUM_FLAG_MAP.map((f) => f.flag).join(" | ");
+    const flagList = `${ENUM_FLAG_MAP.map((f) => f.flag).join(" | ")} | --bubbles`;
     die(`Usage: capcut enums <flag> [--jianying] [-H]\nFlags: ${flagList}`);
   }
   const ns: Namespace = flags.jianying ? "jianying" : "capcut";
@@ -2016,6 +2069,10 @@ async function main(): Promise<void> {
     case "add-filter":
       requireArgs(positional, 5, "capcut add-filter <project> <slug> <start> <duration>");
       cmdAddFilter(draft, filePath, positional, flags);
+      break;
+    case "bubble-text":
+      requireArgs(positional, 3, "capcut bubble-text <project> <text-segment-id> --bubble <slug>");
+      cmdBubbleText(draft, filePath, positional, flags);
       break;
     case "add-effect":
       requireArgs(positional, 5, "capcut add-effect <project> <slug> <start> <duration>");
