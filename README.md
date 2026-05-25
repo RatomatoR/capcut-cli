@@ -13,6 +13,19 @@ A pure CLI any LLM can drive: no MCP server, no HTTP daemon, no state. Inspect d
 
 **New in v0.4** — `caption` (whisper → real caption objects, not the import-srt text-mimics), `migrate` (mask ↔ common_masks across CapCut/JianYing version jumps), `lint` (schema-aware checks: overlaps, line length, missing files), `version` (detect support status), `translate` (Anthropic-API multi-language draft clone), `add-sfx`, `chroma`, `serve` (stateless JSONL queue runner for n8n/Coze/Make), and `export --batch` (EXPERIMENTAL macOS UI-automated render queue).
 
+## 🚀 v0.5 — vote on what ships next
+
+Open for community vote on **[Discussion #1](https://github.com/renezander030/capcut-cli/discussions/1)**. 👍 the comments for the features you want most — I ship the top 3-5 as a single v0.5 release within ~2 weeks.
+
+- `audio-fade <project> <id> --in <s> --out <s>` — fade-in / fade-out on audio segments (proper `audio_fades` objects, not volume keyframes)
+- `bubble-text <project> <id> --bubble <slug>` / 花字 — bubble / decorative text effects + `enums --bubbles` discovery
+- `add-filter <project> <slug> <start> <duration>` + `enums --filters` — colour filter chain (separate from VFX/scene effects)
+- `add-cover <project> <image-path>` / 封面 — set the JianYing/CapCut cover frame from the shell
+- `import-ass <project> <ass-path>` — ASS subtitle import alongside existing `import-srt`
+- `mix-mode <project> <id> <mode>` — blend modes per video segment (multiply, screen, overlay, …)
+
+> Voting closes when v0.5 ships. If your feature is missing, drop a comment on Discussion #1.
+
 ## Workflow
 
 How `capcut-cli` fits into a typical viral-shorts pipeline. Steps 2 and 3 are LLM-driven (any model that returns JSON); steps 1, 4, and 5 are deterministic CLI calls. Step 6 stays human — every short-video platform forbids automated upload, so the publish click is yours.

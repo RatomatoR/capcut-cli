@@ -13,6 +13,19 @@
 
 **v0.4 新增** —— `caption`（whisper → 真字幕对象，不再是 import-srt 那种文本伪装）、`migrate`（剪映 5.9 / CapCut 9.6 之间的 `mask` ↔ `common_masks` schema 迁移）、`lint`（字幕检查：重叠、行长、缺失素材文件）、`version`（检测兼容状态）、`translate`（多语言草稿克隆，走 Anthropic API）、`add-sfx`、`chroma`、`serve`（无状态 JSONL 队列 —— 对接 n8n / Coze / 扣子 / Make）、`export --batch`（**实验性** macOS UI 自动化批量导出）。
 
+## 🚀 v0.5 投票决定下一步
+
+下面是 v0.5 候选功能，欢迎到 **[Discussion #1](https://github.com/renezander030/capcut-cli/discussions/1)** 给你想要的功能 👍 —— 我会按票数把前 3-5 个打包进一个 v0.5 release（目标 2 周内出）。
+
+- `audio-fade <project> <id> --in <秒> --out <秒>` —— 音频淡入淡出（写真正的 `audio_fades` 对象，不再用音量关键帧凑）
+- `bubble-text <project> <id> --bubble <slug>` / 花字 —— 文本气泡 / 花字特效 + `enums --bubbles` 枚举发现
+- `add-filter <project> <slug> <start> <duration>` + `enums --filters` —— 调色滤镜链（跟 VFX / 场景特效分开）
+- `add-cover <project> <image-path>` / 封面 —— 命令行设置剪映 / CapCut 草稿封面
+- `import-ass <project> <ass-path>` —— ASS 字幕导入（跟现有 `import-srt` 并存）
+- `mix-mode <project> <id> <模式>` —— 视频片段混合模式（正片叠底 / 滤色 / 叠加 …）
+
+> 投票截止到 v0.5 发布为止。如果你想要的功能不在列表里，去 Discussion #1 留言。
+
 > **想要完整的国产大模型 + 剪映短视频流水线？** `capcut-cli` 是引擎，配套的 **[病毒短视频蓝图（完整教程 + 蓝图下载）](https://renezander.com/zh-cn/guides/automate-xiaohongshu-capcut-cli/?utm_source=capcut-cli&utm_medium=readme&utm_campaign=hero-cn)** 给你完整方法 —— DeepSeek / GLM / Kimi / Qwen 都能跑，专为 **小红书 + 抖音** 优化（不是 YouTube），**支付宝 / 微信支付** 通过 Stripe 直接下单。
 
 ## 实战样片
