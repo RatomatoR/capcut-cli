@@ -1,11 +1,20 @@
 {
   "name": "capcut-cli",
-  "version": "0.5.0",
+  "version": "0.6.0",
   "description": "CLI to create and edit CapCut projects — build drafts from scratch, add video/audio/text, subtitles, timing, speed, volume, templates, cut long-form to shorts. No API needed.",
   "type": "module",
   "bin": {
     "capcut": "dist/index.js",
     "capcut-cli": "dist/index.js"
+  },
+  "main": "./dist/lib.js",
+  "types": "./dist/lib.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/lib.d.ts",
+      "import": "./dist/lib.js"
+    },
+    "./package.json": "./package.json"
   },
   "files": [
     "dist",
