@@ -12,6 +12,10 @@
 
 [English](./README.md) | 中文
 
+> **免责声明：** 本项目为独立的、社区维护的项目，与 CapCut、剪映或字节跳动有限公司（ByteDance Ltd.）**无任何隶属、赞助或背书关系**。"CapCut" 与 "剪映" 为字节跳动有限公司的商标，所有产品名称、徽标与品牌均归各自所有者所有，此处仅用于标识（指称性使用）目的。
+
+_一个独立的、社区维护的 CapCut / 剪映草稿文件命令行工具。_
+
 **任何大模型 Agent 都能驱动的剪映 / CapCut 命令行 —— 零依赖、无服务、CapCut + 剪映共用一个二进制。**
 
 每个命令都直接读写 `draft_content.json`：JSON 进、JSON 出，不用 MCP 服务，不用 HTTP 守护进程，无状态。任何模型（Claude、DeepSeek、GLM、Kimi）都能在流水线里直接调用这个确定性边界。命令行查看工程、从零搭草稿、加素材、改字幕、用 whisper 自动打字幕、一键克隆成多语言版本、把长视频切成短片。因为链路里没有任何私有 API，所以扛得住字节跳动下次改版 —— 而且 `caption` 写的是真字幕对象，不是别的工具那种文本伪装。
@@ -342,6 +346,10 @@ capcut set-text ./project a1b2c3 "新文字" -q
 - **想要完整的短视频流水线（不只是 CLI）？** 拿 [病毒短视频蓝图 + AI Skill](https://renezander.com/zh-cn/guides/automate-xiaohongshu-capcut-cli/?utm_source=capcut-cli&utm_medium=readme&utm_campaign=footer-cn) —— DeepSeek / GLM / Kimi / Qwen 都能跑，专为小红书 + 抖音优化，支付宝 / 微信支付一键下单。
 - **问题反馈 / 功能建议**：[`capcut-cli` GitHub Issues](https://github.com/renezander030/capcut-cli/issues)（公开追踪，中英文都接受）
 - **作者**：我是 René Zander，开源 + AI 内容自动化系统。本仓库的英文 README 在 [`README.md`](./README.md)。
+
+## 商标声明
+
+CapCut™ 与剪映™ 为字节跳动有限公司（ByteDance Ltd.）的商标。本项目为非官方项目，与字节跳动无隶属或背书关系；相关商标仅用于指称性描述以说明互操作性。
 
 ## License
 
