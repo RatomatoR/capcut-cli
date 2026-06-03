@@ -2,6 +2,23 @@
 
 All notable changes to capcut-cli are documented here. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); the project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.9.0] — 2026-06-03
+
+Ten new commands/capabilities across inspection, maintenance, composition, and agent-integration. No breaking changes; still zero-dep, JSON-by-default, pipeable.
+
+### Added
+
+- **`describe`** — emits the full command surface as JSON (name, version, global flags, every command + summary) so LLM/agent callers get a tool spec instead of scraping `--help`. A test enforces that every command has a summary, so nothing ships undescribed.
+- **`prune`** — removes materials no segment references. The referenced set is the union of every segment's `material_id` **and** `extra_material_refs[]`, so masks/effects/animations/fades referenced indirectly are never wrongly deleted. Pairs with `--dry-run`.
+- **`relink`** — repairs broken media paths. `--dir <folder>` repoints each missing material to a same-basename file in the folder; `--from <p> --to <q>` prefix-replaces paths. Reports relinked / still-missing / present counts. Pairs with `--dry-run`.
+- **`timeline`** — shows the track/segment layout. JSON default returns lanes with computed columns; `-H` renders ASCII bars (`--cols N`, default 60). Makes layout/track-order issues diagnosable without opening CapCut.
+- **`projects`** — lists CapCut/JianYing draft folders on disk (scans the per-OS default dirs or `--drafts <dir>`), with an optional name-substring filter and `--names` to read each draft's title. No more pasting 40-char UUID paths.
+- **Multi-step undo** — every write now also keeps a rolling snapshot history under `<draftdir>/.capcut-cli-history/` (capped at 20). `restore --step N` rolls back N writes (step 1 == the `.bak`); `restore --list` shows the history. Plain `restore` is unchanged.
+- **`diff`** — compare two drafts: segments added/removed/changed (start/duration/material/speed/volume), and materials added/removed/**changed** (a text edit mutates the material in place, so this is where `set-text` shows up). Read-only.
+- **`concat`** — append one draft onto another's timeline: B's segments are time-shifted by A's duration, and any B material/segment id that collides with A is reassigned a fresh uuid (with references rewritten) so the merge stays valid. Writes to `--out` or in place.
+- **`config`** — defaults (`drafts` dir, `jianying`, `cols`) can be set in a `.capcutrc` (cwd, then home; CLI flags win). `capcut config` prints the resolved file and effective values.
+- **Windows `export --batch`** — the Windows path now ships: PowerShell opens each draft and sends CapCut's export shortcut (Ctrl+E). Same experimental UI-automation caveat as macOS. (Live render is host-dependent; the script generation is unit-tested.)
+
 ## [0.8.0] — 2026-06-03
 
 Safety, discoverability, and a long-overdue track-order fix. No breaking changes; everything stays zero-dep, JSON-by-default, and pipeable.
