@@ -2,6 +2,12 @@
 
 All notable changes to capcut-cli are documented here. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); the project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Fixed
+
+- **Track order scrambled on import** ([#21](https://github.com/renezander030/capcut-cli/issues/21)) — tracks were written in the order edit commands ran, but CapCut lays out the timeline from the tracks-array order, not from per-segment `render_index`, so building a draft incrementally produced a jumbled timeline. `saveDraft` now normalizes the tracks array to the canonical bottom→top layer order (`video → audio → sticker → effect → filter → text`) on every save; the sort is stable so same-type tracks keep their authored order. Also exported as `sortTracks` from the library entry point.
+
 ## [0.6.0] — 2026-05-29
 
 Distribution and integration release. No breaking changes to existing commands; everything stays zero-dep, JSON-by-default, and pipeable.
