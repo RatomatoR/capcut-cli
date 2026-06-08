@@ -2,6 +2,15 @@
 
 All notable changes to capcut-cli are documented here. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); the project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.10.0] — 2026-06-08
+
+Two commands that close the two biggest gaps in a headless CapCut workflow: seeing the result, and authoring a whole draft in one shot. No breaking changes; still zero npm-dep and JSON-by-default. Both shell out to `ffmpeg` only when actually rendering, the same opt-in external-binary pattern `caption` uses for whisper.
+
+### Added
+
+- **`render`** — a low-res **ffmpeg proxy preview** of a draft, so you can watch an edit without opening CapCut. Flattens the main video track (per-segment source trim + speed), scales to a proxy size (`--scale`, default 0.5), mixes every audio-track segment, and optionally burns the text segments in with `--burn-captions`. It is explicitly a preview, **not** CapCut's final render (no multi-track video compositing, no effects/transitions). The ffmpeg command is built by a pure, deterministic `buildRenderPlan` that is unit-tested without invoking ffmpeg; `--dry-run` prints that plan instead of executing (and needs no ffmpeg). Read-only — never mutates the draft.
+- **`compile`** — builds a whole draft from a declarative **JSON spec** (the inverse of `describe`): instead of chaining dozens of mutating `add-*` commands, an agent emits one spec and `compile` constructs the draft atomically via the same proven factory functions the imperative commands use. Times are in seconds (converted to CapCut's microseconds); media paths resolve relative to the spec file. The full spec is validated — and every media file checked to exist — **before** anything is written, so a bad spec fails clean. Writes both `draft_content.json` and `draft_info.json` so every downstream command reads the same data.
+
 ## [0.9.0] — 2026-06-03
 
 Ten new commands/capabilities across inspection, maintenance, composition, and agent-integration. No breaking changes; still zero-dep, JSON-by-default, pipeable.
