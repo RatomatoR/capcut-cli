@@ -51,6 +51,8 @@ How `capcut-cli` differs from the other CapCut / JianYing tooling:
 |---|:---:|:---:|:---:|:---:|:---:|
 | Inspect drafts (`info` / `tracks` / `materials` / `segments` / `texts`) | partial | partial | ❌ | ❌ | ✅ |
 | Create drafts from scratch | ✅ | ✅ | ✅ | ✅ | ✅ |
+| Declarative spec → draft (one `compile`, not 30 imperative calls) | ❌ | ❌ | ❌ | ❌ | ✅ (v0.10.0) |
+| Preview an edit without opening CapCut (local ffmpeg proxy) | ❌ | ❌ | ❌ | ❌ | ✅ (v0.10.0) |
 | Decorators (`keyframe` / `transition` / `mask` / `text-anim` / `image-anim`) | ✅ | ✅ | ✅ | ✅ | ✅ (v0.3.0) |
 | SRT import → per-cue text segments | ❌ | ❌ | ✅ | ❌ | ✅ (v0.3.0) |
 | Multi-style text (word-level highlight captions) | partial | partial | ❌ | ❌ | ✅ (v0.3.0) |
