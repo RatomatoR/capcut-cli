@@ -69,7 +69,8 @@ How `capcut-cli` differs from the other CapCut / JianYing tooling:
 A capability map; see [Commands](#commands) for syntax.
 
 - **Inspect** — `info` · `tracks` · `materials` · `segments` · `texts`; `segment`/`material <id>` for progressive-disclosure drill-down; `timeline` (ASCII layout); `export-srt`.
-- **Build & add** — `init` a draft, then `add-video` · `add-audio` · `add-text` from local files or [Wikimedia Commons URLs](#wikimedia-commons-phase-5) (license-gated); `add-sticker`, `add-effect`.
+- **Preview** — `render` builds a low-res **ffmpeg proxy** of the timeline (trim + per-segment speed + audio mix, `--burn-captions`) so you can watch an edit without opening CapCut. A preview, not CapCut's final render; `--dry-run` prints the ffmpeg plan.
+- **Build & add** — `init` a draft (or `compile` a whole one from a declarative JSON spec — the inverse of `describe`), then `add-video` · `add-audio` · `add-text` from local files or [Wikimedia Commons URLs](#wikimedia-commons-phase-5) (license-gated); `add-sticker`, `add-effect`.
 - **Edit** — `set-text` · `shift` · `shift-all` · `speed` · `volume` · `opacity` · `trim`; `batch` (many edits, one write); `--dry-run` preview, and `restore` undo (latest `.bak` or `--step N` through snapshot history).
 - **Maintain & compose** — `prune` (drop unreferenced materials) · `relink` (repair broken media paths via `--dir` or `--from`/`--to`) · `projects` (list drafts on disk by name) · `diff` (compare two drafts) · `concat` (stitch drafts into one timeline, id-safe).
 - **Decorate** — `keyframe` · `transition` · `mask` · `bg-blur` · `text-style` · `text-anim` · `image-anim` · `text-ranges` (word-level highlight captions); `mix-mode` · `audio-fade` · `add-filter` · `bubble-text` · `add-cover` · `add-sfx` · `chroma`.
@@ -295,6 +296,39 @@ capcut add-text ./my-short 0s 5s "My Short" --font-size 24 --color "#FFD700"
 `init` creates a valid `draft_content.json` from a built-in template. `add-video` and `add-audio` copy the file into the draft's assets directory so CapCut can find it. Open the project in CapCut and everything links up.
 
 Options for `add-video` / `add-audio`: `--volume <0-1>`, `--template <path>` (custom draft template).
+
+Or describe the whole draft once and `compile` it — the inverse of `describe`, and far more robust for an agent than chaining 30 mutating commands:
+
+```bash
+capcut compile ./short.json --out ./my-short      # spec -> a complete, valid draft
+```
+
+```jsonc
+// short.json — times in seconds; media paths resolve relative to this file
+{
+  "name": "My Short", "width": 1080, "height": 1920, "fps": 30, "ratio": "9:16",
+  "tracks": [
+    { "type": "video", "items": [
+      { "path": "clip1.mp4", "start": 0, "duration": 3 },
+      { "path": "clip2.mp4", "start": 3, "duration": 4 }
+    ] },
+    { "type": "audio", "items": [ { "path": "music.mp3", "start": 0, "duration": 7, "volume": 0.4 } ] },
+    { "type": "text",  "items": [ { "text": "Hook line", "start": 0, "duration": 2, "fontSize": 18, "color": "#FFD700", "y": -0.6 } ] }
+  ]
+}
+```
+
+The whole spec is validated — and every media file checked to exist — **before** anything is written, so a malformed spec fails clean instead of leaving a half-built draft.
+
+### Preview (watch an edit without opening CapCut)
+
+```bash
+capcut render ./my-short                          # -> ./my-short/preview.mp4
+capcut render ./my-short --out p.mp4 --burn-captions --scale 0.5
+capcut render ./my-short --dry-run                # print the ffmpeg plan, run nothing
+```
+
+`render` shells out to **ffmpeg** to build a low-res proxy of the timeline: it flattens the main video track (per-segment source trim + speed), mixes every audio-track segment, and with `--burn-captions` draws the text segments in. It is a *preview*, not CapCut's final render — no multi-track video compositing, no effects/transitions. Read-only: it never touches the draft. Needs `ffmpeg` on `PATH` (or `--ffmpeg-cmd <path>`); `--dry-run` prints the planned ffmpeg invocation and needs no ffmpeg at all.
 
 ### Add
 

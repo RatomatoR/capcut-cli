@@ -7,6 +7,7 @@ import { fileURLToPath } from "node:url";
 import { parseAss } from "./ass.js";
 import { captionDraft } from "./caption.js";
 import { removeChroma, setChroma } from "./chroma.js";
+import { type CompileSpec, compileDraft, parseSpec } from "./compile.js";
 import type {
   ImageAnimOptions,
   KeyframeInput,
@@ -78,6 +79,7 @@ import {
 } from "./factory.js";
 import { DEFAULT_LINT_OPTIONS, type LintOptions, lintDraft, lintExitCode, summarize } from "./lint.js";
 import { migrateDraft } from "./migrate.js";
+import { buildRenderPlan, renderDraft } from "./render.js";
 import { serveQueue } from "./serve.js";
 import { addSfx } from "./sfx.js";
 import { parseSrt } from "./srt.js";
@@ -148,6 +150,8 @@ export const COMMANDS = [
   "decrypt",
   "export",
   "init",
+  "compile",
+  "render",
 ] as const;
 
 const GLOBAL_FLAGS = ["--jianying", "-H", "--human", "-q", "--quiet", "-v", "--version", "--dry-run"] as const;
@@ -194,6 +198,23 @@ Create:
              Create a new empty draft from template. Defaults:
                --template   ../CapCutAPI/template (relative to capcut-cli)
                --drafts     ~/Movies/CapCut/User Data/Projects/com.lveditor.draft
+  compile    <spec.json> [--out <draftdir>] [--drafts <dir>]
+             Build a whole draft from a declarative JSON spec (the inverse of
+             describe). Times are in seconds. Media paths resolve relative to
+             the spec file. Validates the full spec before writing anything.
+
+Preview:
+  render     <project> [--out <file.mp4>] [options]
+             Render a low-res ffmpeg PROXY preview of the timeline so you can
+             watch an edit without opening CapCut. Flattens the main video
+             track (trim + per-segment speed) and mixes audio segments; it is
+             NOT CapCut's final render (no multi-track compositing/effects).
+             Options:
+               --scale <f>        Proxy scale of canvas dims (default 0.5)
+               --fps <n>          Output fps (default draft fps)
+               --burn-captions    Draw text-track segments onto the video
+               --ffmpeg-cmd <p>   ffmpeg binary (default ffmpeg)
+               --dry-run          Print the ffmpeg plan; do not execute
 
 Add:
   add-audio  <project> <file-or-wikimedia-url> <start> <duration> [options]
@@ -551,6 +572,9 @@ interface Flags {
   list?: boolean;
   cols?: number;
   names?: boolean;
+  fps?: number;
+  ffmpegCmd?: string;
+  burnCaptions?: boolean;
 }
 
 // Map CLI enum flags -> enums.json category key. Order matters for HELP text.
@@ -793,6 +817,12 @@ function parseFlags(args: string[]): { positional: string[]; flags: Flags } {
       flags.cols = parseInt(args[++i], 10);
     } else if (a === "--names") {
       flags.names = true;
+    } else if (a === "--fps" && i + 1 < args.length) {
+      flags.fps = parseFloat(args[++i]);
+    } else if (a === "--ffmpeg-cmd" && i + 1 < args.length) {
+      flags.ffmpegCmd = args[++i];
+    } else if (a === "--burn-captions") {
+      flags.burnCaptions = true;
     } else {
       const hit = ENUM_FLAG_MAP.find((f) => f.flag === a);
       if (hit) {
@@ -2398,6 +2428,8 @@ const SUMMARIES: Record<string, string> = {
   decrypt: "Detect JianYing 6.0+ encryption and explain the workaround.",
   export: "EXPERIMENTAL UI-automated render queue (macOS).",
   init: "Create a new empty draft from a template.",
+  compile: "Build a draft from a declarative JSON spec (the inverse of describe).",
+  render: "Render a low-res ffmpeg proxy preview (trim+speed+audio, --burn-captions); not CapCut's final render.",
 };
 
 const GLOBAL_FLAG_DOCS: Array<{ flag: string; description: string }> = [
@@ -2624,6 +2656,66 @@ function cmdConcat(positional: string[], flags: Flags): void {
   }
 }
 
+// `compile` reads a declarative JSON spec and builds a whole draft via the same
+// factory functions the imperative add-* commands use. Resolves the bundled
+// _init template the same way `init` does.
+function cmdCompile(positional: string[], flags: Flags): void {
+  const specPath = positional[1];
+  if (!specPath) die("Usage: capcut compile <spec.json> [--out <draftdir>] [--drafts <dir>]");
+  if (!existsSync(specPath)) die(`Spec file not found: ${specPath}`);
+
+  let spec: CompileSpec;
+  try {
+    spec = parseSpec(readFileSync(specPath, "utf-8"));
+  } catch (e) {
+    die((e as Error).message);
+  }
+
+  const cliDir = new URL(".", import.meta.url).pathname.replace(/\/dist\/$/, "");
+  const externalTemplate = `${cliDir}/../CapCutAPI/template`;
+  const bundledTemplate = `${cliDir}/templates/_init`;
+  let templateDir = flags.template ?? externalTemplate;
+  if (!flags.template && !existsSync(templateDir) && existsSync(bundledTemplate)) {
+    templateDir = bundledTemplate;
+  }
+
+  // Target draft directory: --out wins; else <drafts>/<spec.name>; else cwd/<spec.name>.
+  const name = spec.name ?? "compiled-draft";
+  const draftsDir = flags.drafts ?? `${process.env.HOME || "~"}/Movies/CapCut/User Data/Projects/com.lveditor.draft`;
+  const outDir = flags.out ? path.resolve(flags.out) : path.resolve(draftsDir, name);
+
+  const result = compileDraft(spec, {
+    templateDir,
+    outDir,
+    specDir: path.dirname(path.resolve(specPath)),
+  });
+  out(result, flags);
+  if (!flags.quiet) process.stderr.write(`Compiled: ${result.draft_path}\n`);
+}
+
+// `render` produces a low-res ffmpeg proxy preview of the timeline. Read-only:
+// it never mutates the draft. With --dry-run it returns the ffmpeg plan without
+// executing, so the filter graph is inspectable (and the path is ffmpeg-free).
+function cmdRender(draft: Draft, filePath: string, flags: Flags): void {
+  const opts = {
+    out: flags.out,
+    scale: flags.scale,
+    fps: flags.fps,
+    ffmpegCmd: flags.ffmpegCmd,
+    burnCaptions: flags.burnCaptions,
+    dryRun: isDryRun(),
+  };
+  if (opts.dryRun) {
+    // Build-only: surface the plan; no ffmpeg needed.
+    const plan = buildRenderPlan(draft, { ...opts, out: opts.out ?? path.join(path.dirname(filePath), "preview.mp4") });
+    out({ ok: true, executed: false, ...plan }, flags);
+    return;
+  }
+  const result = renderDraft(draft, filePath, opts);
+  out(result, flags);
+  if (!flags.quiet) process.stderr.write(`Rendered: ${result.output}\n`);
+}
+
 // --- Main ---
 
 async function main(): Promise<void> {
@@ -2757,6 +2849,12 @@ async function main(): Promise<void> {
     process.exit(0);
   }
 
+  // `compile` builds a brand-new draft from a declarative spec — no existing project.
+  if (cmd === "compile") {
+    cmdCompile(positional, flags);
+    process.exit(0);
+  }
+
   if (!projectPath) die("Missing project path. Run 'capcut --help' for usage.");
 
   const { draft, filePath } = loadDraft(projectPath);
@@ -2773,6 +2871,9 @@ async function main(): Promise<void> {
       break;
     case "timeline":
       cmdTimeline(draft, flags);
+      break;
+    case "render":
+      cmdRender(draft, filePath, flags);
       break;
     case "version":
       cmdVersion(draft, flags);
