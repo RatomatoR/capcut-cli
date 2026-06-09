@@ -1953,8 +1953,18 @@ async function main(): Promise<void> {
     const draftsDir =
       flags.drafts ?? (process.env.HOME || "~") + "/Movies/CapCut/User Data/Projects/com.lveditor.draft";
     const result = initDraft({ name, templateDir, draftsDir });
-    out({ ok: true, name, draft_path: result.draftPath, file_path: result.filePath }, flags);
-    if (!flags.quiet) process.stderr.write(`Created: ${result.draftPath}\n`);
+    out(
+      { ok: true, name, draft_path: result.draftPath, file_path: result.filePath, registered: result.registered },
+      flags,
+    );
+    if (!flags.quiet) {
+      process.stderr.write(`Created: ${result.draftPath}\n`);
+      if (result.registered) {
+        process.stderr.write(`Registered in CapCut's project list — restart CapCut to see it.\n`);
+      } else {
+        process.stderr.write(`Note: could not update root_meta_info.json, so CapCut may not list this draft.\n`);
+      }
+    }
     process.exit(0);
   }
 

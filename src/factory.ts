@@ -47,9 +47,10 @@ export interface InitOptions {
   name: string;
   templateDir: string; // path to template directory
   draftsDir: string; // path to CapCut drafts directory
+  now?: number; // epoch ms — injectable clock for tests; defaults to Date.now()
 }
 
-export function initDraft(opts: InitOptions): { draftPath: string; filePath: string } {
+export function initDraft(opts: InitOptions): { draftPath: string; filePath: string; registered: boolean } {
   const draftPath = resolve(opts.draftsDir, opts.name);
   if (existsSync(draftPath)) {
     throw new Error(`Draft already exists: ${draftPath}. Delete it first or use a different name.`);
@@ -61,16 +62,146 @@ export function initDraft(opts: InitOptions): { draftPath: string; filePath: str
   for (const c of candidates) {
     const fp = resolve(draftPath, c);
     if (existsSync(fp)) {
-      // Update the draft name
+      // Update the draft name + id
       const raw = readFileSync(fp, "utf-8");
       const draft = JSON.parse(raw) as Draft;
       draft.name = opts.name;
-      draft.id = uuid();
+      const draftId = uuid();
+      draft.id = draftId;
       writeFileSync(fp, JSON.stringify(draft, null, 0), "utf-8");
-      return { draftPath, filePath: fp };
+
+      // CapCut's GUI does not scan the Projects folder — it lists drafts from a
+      // central index, root_meta_info.json, at the root of com.lveditor.draft/.
+      // Without an entry there a freshly created folder stays invisible. Register
+      // it (and write the per-folder draft_meta_info.json sidecar) so the new draft
+      // shows up. Best-effort: a failure here must not fail draft creation.
+      const nowMs = opts.now ?? Date.now();
+      let registered = false;
+      try {
+        registered = registerDraftInIndex({
+          draftsDir: opts.draftsDir,
+          draftPath,
+          filePath: fp,
+          draftId,
+          name: opts.name,
+          nowMs,
+        });
+      } catch {
+        registered = false;
+      }
+      return { draftPath, filePath: fp, registered };
     }
   }
   throw new Error(`No draft_info.json or draft_content.json found in template: ${opts.templateDir}`);
+}
+
+interface RegisterOptions {
+  draftsDir: string;
+  draftPath: string;
+  filePath: string;
+  draftId: string;
+  name: string;
+  nowMs: number;
+}
+
+/**
+ * A single draft's entry inside root_meta_info.json's draft store. The field set
+ * mirrors what CapCut writes; when an existing store is found we clone the shape
+ * of a real entry instead (so the result matches the installed CapCut version)
+ * and only override the identifying fields below.
+ */
+function buildDraftEntry(opts: RegisterOptions): Record<string, unknown> {
+  const tmMicros = opts.nowMs * 1000; // CapCut timestamps are microseconds
+  return {
+    draft_cover: "draft_cover.jpg",
+    draft_fold_path: opts.draftPath,
+    draft_id: opts.draftId,
+    draft_is_ai_shorts: false,
+    draft_is_invisible: false,
+    draft_json_file: opts.filePath,
+    draft_name: opts.name,
+    draft_new_version: "",
+    draft_root_path: opts.draftsDir,
+    draft_timeline_materials_size: 0,
+    tm_draft_create: tmMicros,
+    tm_draft_modified: tmMicros,
+    tm_draft_removed: 0,
+    tm_duration: 0,
+  };
+}
+
+const IDENTIFYING_FIELDS = (opts: RegisterOptions): Record<string, unknown> => ({
+  draft_fold_path: opts.draftPath,
+  draft_id: opts.draftId,
+  draft_json_file: opts.filePath,
+  draft_name: opts.name,
+  draft_root_path: opts.draftsDir,
+  tm_draft_create: opts.nowMs * 1000,
+  tm_draft_modified: opts.nowMs * 1000,
+  tm_draft_removed: 0,
+  tm_duration: 0,
+});
+
+/** Find the array property that holds the per-draft entries (e.g. all_draft_store). */
+function findDraftStoreKey(obj: Record<string, unknown>): string | null {
+  for (const [k, v] of Object.entries(obj)) {
+    if (Array.isArray(v) && v.some((e) => e && typeof e === "object" && ("draft_fold_path" in e || "draft_id" in e))) {
+      return k;
+    }
+  }
+  // Fall back to a plausibly-named empty store so we extend rather than invent.
+  for (const [k, v] of Object.entries(obj)) {
+    if (Array.isArray(v) && /all_draft_store|draft_store/i.test(k)) return k;
+  }
+  return null;
+}
+
+/**
+ * Add the new draft to root_meta_info.json (creating the file if absent) and write
+ * a per-folder draft_meta_info.json sidecar. Merges into the existing index — never
+ * clobbers other drafts — and backs the index up to .bak before writing.
+ * Returns true if the draft was registered in the root index.
+ */
+export function registerDraftInIndex(opts: RegisterOptions): boolean {
+  // Per-folder sidecar (documented metadata file; CapCut reads it when opening).
+  const metaPath = resolve(opts.draftPath, "draft_meta_info.json");
+  if (!existsSync(metaPath)) {
+    writeFileSync(metaPath, JSON.stringify(buildDraftEntry(opts), null, 0), "utf-8");
+  }
+
+  const indexPath = resolve(opts.draftsDir, "root_meta_info.json");
+
+  if (!existsSync(indexPath)) {
+    // No index yet (fresh CapCut / custom --drafts dir): create a minimal one.
+    writeFileSync(indexPath, JSON.stringify({ all_draft_store: [buildDraftEntry(opts)] }, null, 0), "utf-8");
+    return true;
+  }
+
+  const raw = readFileSync(indexPath, "utf-8");
+  let index: Record<string, unknown>;
+  try {
+    index = JSON.parse(raw) as Record<string, unknown>;
+  } catch {
+    return false; // unreadable index — leave it untouched rather than corrupt it
+  }
+
+  const storeKey = findDraftStoreKey(index) ?? "all_draft_store";
+  const store = (Array.isArray(index[storeKey]) ? index[storeKey] : []) as Array<Record<string, unknown>>;
+
+  // Drop any stale entry pointing at the same folder, then append a fresh one.
+  const filtered = store.filter((e) => e?.draft_fold_path !== opts.draftPath);
+  const template = filtered[0] ?? store[0];
+  const entry =
+    template && typeof template === "object"
+      ? { ...structuredClone(template), ...IDENTIFYING_FIELDS(opts) }
+      : buildDraftEntry(opts);
+  filtered.push(entry);
+  index[storeKey] = filtered;
+
+  // Back up the user's index (it lists ALL their projects) before overwriting.
+  writeFileSync(indexPath + ".bak", raw, "utf-8");
+  writeFileSync(indexPath, JSON.stringify(index, null, 0), "utf-8");
+  return true;
 }
 
 // --- Companion materials (CapCut 6.5+ creates these per-segment) ---

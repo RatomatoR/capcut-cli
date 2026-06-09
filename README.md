@@ -291,7 +291,7 @@ capcut add-audio ./my-short ./music.mp3 0s 30s --volume 0.3
 capcut add-text ./my-short 0s 5s "My Short" --font-size 24 --color "#FFD700"
 ```
 
-`init` creates a valid `draft_content.json` from a built-in template. `add-video` and `add-audio` copy the file into the draft's assets directory so CapCut can find it. Open the project in CapCut and everything links up.
+`init` creates a valid `draft_content.json` from a built-in template **and registers the draft in CapCut's `root_meta_info.json` index** so it shows up in the project list (restart CapCut once to see it — the GUI reads that index, not the folder). `add-video` and `add-audio` copy the file into the draft's assets directory so CapCut can find it. Open the project in CapCut and everything links up.
 
 Options for `add-video` / `add-audio`: `--volume <0-1>`, `--template <path>` (custom draft template).
 
