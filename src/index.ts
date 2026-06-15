@@ -79,6 +79,7 @@ import {
 } from "./factory.js";
 import { DEFAULT_LINT_OPTIONS, type LintOptions, lintDraft, lintExitCode, summarize } from "./lint.js";
 import { migrateDraft } from "./migrate.js";
+import { probeVideoDimensions } from "./probe.js";
 import { buildRenderPlan, renderDraft } from "./render.js";
 import { serveQueue } from "./serve.js";
 import { addSfx } from "./sfx.js";
@@ -196,7 +197,7 @@ Detail (drill into one item):
 Create:
   init       <name> [--template <dir>] [--drafts <dir>]
              Create a new empty draft from template. Defaults:
-               --template   ../CapCutAPI/template (relative to capcut-cli)
+               --template   bundled minimal template (no external repo needed)
                --drafts     ~/Movies/CapCut/User Data/Projects/com.lveditor.draft
   compile    <spec.json> [--out <draftdir>] [--drafts <dir>]
              Build a whole draft from a declarative JSON spec (the inverse of
@@ -231,6 +232,10 @@ Add:
              add-audio). Type auto-detected from extension.
              Options:
                --track-name <s>   Track name (default: "video")
+               --width <n>        Source width in px (default: auto-probed via
+                                  ffprobe, else 1920)
+               --height <n>       Source height in px (default: auto-probed via
+                                  ffprobe, else 1080)
                --force-license    Bypass refusal on restrictive/unknown license
 
   add-text   <project> <start> <duration> <text> [options]
@@ -470,6 +475,8 @@ interface Flags {
   x?: number;
   y?: number;
   trackName?: string;
+  width?: number;
+  height?: number;
   volume?: number;
   template?: string;
   drafts?: string;
@@ -659,6 +666,10 @@ function parseFlags(args: string[]): { positional: string[]; flags: Flags } {
       flags.y = parseFloat(args[++i]);
     } else if (a === "--track-name" && i + 1 < args.length) {
       flags.trackName = args[++i];
+    } else if (a === "--width" && i + 1 < args.length) {
+      flags.width = parseFloat(args[++i]);
+    } else if (a === "--height" && i + 1 < args.length) {
+      flags.height = parseFloat(args[++i]);
     } else if (a === "--volume" && i + 1 < args.length) {
       flags.volume = parseFloat(args[++i]);
     } else if (a === "--template" && i + 1 < args.length) {
@@ -1262,11 +1273,34 @@ async function cmdAddVideo(draft: Draft, filePath: string, positional: string[],
   const absPath = localPath.startsWith("/") ? localPath : `${process.cwd()}/${localPath}`;
   const start = parseTimeInput(startStr);
   const duration = parseTimeInput(durationStr);
+
+  // Resolve the source dimensions. Explicit --width/--height always win; otherwise
+  // probe the file with ffprobe (best-effort) so portrait sources are not forced
+  // into the 1920x1080 landscape default. If neither is available, addVideo falls
+  // back to 1920x1080 and we surface a warning so the user can override.
+  let width = flags.width;
+  let height = flags.height;
+  let dimensionSource = width && height ? "flags" : "default";
+  let dimensionWarning: string | undefined;
+  if (!(width && height)) {
+    const probed = probeVideoDimensions(absPath);
+    if (probed) {
+      width = probed.width;
+      height = probed.height;
+      dimensionSource = "ffprobe";
+    } else {
+      dimensionWarning =
+        "Could not detect dimensions (ffprobe unavailable or failed); defaulted to 1920x1080. Pass --width/--height to override.";
+    }
+  }
+
   const opts: AddVideoOptions = {
     path: absPath,
     start,
     duration,
     trackName: flags.trackName,
+    width,
+    height,
   };
   const result = addVideo(draft, filePath, opts);
   saveDraft(filePath, draft);
@@ -1278,6 +1312,9 @@ async function cmdAddVideo(draft: Draft, filePath: string, positional: string[],
     path: absPath,
     start_us: start,
     duration_us: duration,
+    width: width ?? 1920,
+    height: height ?? 1080,
+    dimension_source: dimensionSource,
   };
   if (asset) {
     payload.wikimedia = {
@@ -1292,7 +1329,8 @@ async function cmdAddVideo(draft: Draft, filePath: string, positional: string[],
       mime: asset.mime,
     };
   }
-  if (warning) payload.warning = warning;
+  const warnings = [warning, dimensionWarning].filter(Boolean);
+  if (warnings.length) payload.warning = warnings.join(" ");
   out(payload, flags);
 }
 
