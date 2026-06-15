@@ -1,5 +1,5 @@
-import { existsSync, readFileSync, statSync, writeFileSync } from "node:fs";
-import { resolve } from "node:path";
+import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { basename, dirname, join, resolve } from "node:path";
 
 export interface Timerange {
   start: number;
@@ -111,12 +111,101 @@ export function loadDraft(path: string): { draft: Draft; filePath: string } {
   return { draft, filePath };
 }
 
+// Canonical bottom->top layer order CapCut expects in the tracks array.
+// Derived from a real CapCut-authored draft: [video, audio, text].
+// Tracks are pushed in command-call order as content is added, so without
+// this normalization the array order (which drives CapCut's timeline layout)
+// ends up scrambled. Unknown types are kept after the known ones.
+const TRACK_RANK: Record<string, number> = {
+  video: 0,
+  audio: 1,
+  sticker: 2,
+  effect: 3,
+  filter: 4,
+  text: 5,
+};
+
+// Sort tracks into the canonical layer order. Stable: tracks of the same type
+// keep their authored order (tiebreak on original index).
+export function sortTracks(draft: Draft): void {
+  draft.tracks = draft.tracks
+    .map((track, index) => ({ track, index }))
+    .sort((a, b) => (TRACK_RANK[a.track.type] ?? 99) - (TRACK_RANK[b.track.type] ?? 99) || a.index - b.index)
+    .map(({ track }) => track);
+}
+
+// --dry-run state. When set, saveDraft computes the in-memory change but skips
+// both the on-disk write and the .bak snapshot, so the draft is left untouched.
+// All ~35 mutating commands funnel through saveDraft, so gating here covers them.
+let dryRun = false;
+
+export function setDryRun(value: boolean): void {
+  dryRun = value;
+}
+
+export function isDryRun(): boolean {
+  return dryRun;
+}
+
+// Multi-step undo history. Alongside the single `.bak`, every write also keeps
+// a rolling stack of the pre-write content under `<draftdir>/.capcut-cli-history/`,
+// capped at HISTORY_MAX. `restore --step N` rolls back N writes; CapCut ignores
+// the hidden dir. snapshots are named `<draftbase>.NNNNNN.snap` (zero-padded,
+// monotonically increasing) so the newest is the lexicographically last.
+const HISTORY_DIR = ".capcut-cli-history";
+const HISTORY_MAX = 20;
+
+function historyDir(filePath: string): string {
+  return join(dirname(filePath), HISTORY_DIR);
+}
+
+function snapshotFiles(filePath: string): string[] {
+  const dir = historyDir(filePath);
+  if (!existsSync(dir)) return [];
+  const prefix = `${basename(filePath)}.`;
+  return readdirSync(dir)
+    .filter((f) => f.startsWith(prefix) && f.endsWith(".snap"))
+    .sort(); // zero-padded indices => lexicographic === numeric order, oldest first
+}
+
+function writeHistorySnapshot(filePath: string, content: string): void {
+  const dir = historyDir(filePath);
+  if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
+  const existing = snapshotFiles(filePath);
+  const last = existing[existing.length - 1];
+  const lastIndex = last ? Number.parseInt(last.match(/\.(\d+)\.snap$/)?.[1] ?? "0", 10) : 0;
+  const name = `${basename(filePath)}.${String(lastIndex + 1).padStart(6, "0")}.snap`;
+  writeFileSync(join(dir, name), content, "utf-8");
+  // Trim oldest beyond the cap.
+  const all = snapshotFiles(filePath);
+  while (all.length > HISTORY_MAX) {
+    const oldest = all.shift();
+    if (oldest) rmSync(join(dir, oldest));
+  }
+}
+
+// Snapshots newest-first, step 1 = most recent write (equivalent to `.bak`).
+export function listSnapshots(filePath: string): Array<{ step: number; index: number; path: string }> {
+  const dir = historyDir(filePath);
+  return snapshotFiles(filePath)
+    .map((f) => ({ index: Number.parseInt(f.match(/\.(\d+)\.snap$/)?.[1] ?? "0", 10), path: join(dir, f) }))
+    .sort((a, b) => b.index - a.index)
+    .map((s, i) => ({ step: i + 1, index: s.index, path: s.path }));
+}
+
 export function saveDraft(filePath: string, draft: Draft): void {
-  const bakPath = filePath + ".bak";
+  if (dryRun) {
+    // Normalize in memory (so any read-back is consistent) but write nothing.
+    sortTracks(draft);
+    return;
+  }
+  const bakPath = `${filePath}.bak`;
   if (existsSync(filePath)) {
     const original = rawOriginal ?? readFileSync(filePath, "utf-8");
     writeFileSync(bakPath, original, "utf-8");
+    writeHistorySnapshot(filePath, original);
   }
+  sortTracks(draft);
   // Detect original indent: if first line after { starts with tab use tab, else count spaces
   const indent = detectIndent(rawOriginal);
   writeFileSync(filePath, JSON.stringify(draft, null, indent), "utf-8");

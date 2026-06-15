@@ -1,9 +1,13 @@
 #!/usr/bin/env node
 
-import { existsSync, readFileSync, writeFileSync } from "node:fs";
+import { copyFileSync, existsSync, readdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
+import { homedir } from "node:os";
+import path from "node:path";
+import { fileURLToPath } from "node:url";
 import { parseAss } from "./ass.js";
 import { captionDraft } from "./caption.js";
 import { removeChroma, setChroma } from "./chroma.js";
+import { type CompileSpec, compileDraft, parseSpec } from "./compile.js";
 import type {
   ImageAnimOptions,
   KeyframeInput,
@@ -29,24 +33,28 @@ import {
   setTextRanges,
   setTextStyle,
   textAnimSlugs,
-  transitionSlugs,
 } from "./decorators.js";
 import { detectEncryption } from "./decrypt.js";
+import { type DoctorCheck, draftDirs, runDoctor } from "./doctor.js";
 import type { Draft, Segment, Track } from "./draft.js";
 import {
   extractText,
+  findDraft,
   findMaterial,
   findMaterialGlobal,
   findSegment,
   getMaterialTypes,
   getTracksByType,
+  isDryRun,
+  listSnapshots,
   loadDraft,
   saveDraft,
+  setDryRun,
   updateTextContent,
 } from "./draft.js";
 import { type Category, listEnum, type Namespace } from "./enums.js";
 import { exportBatch } from "./export-batch.js";
-import type { AddAudioOptions, AddTextOptions, AddVideoOptions, CutOptions, InitOptions } from "./factory.js";
+import type { AddAudioOptions, AddTextOptions, AddVideoOptions, CutOptions } from "./factory.js";
 import {
   addAudio,
   addEffect,
@@ -67,15 +75,86 @@ import {
   setAudioFade,
   setCover,
   setMixMode,
+  uuid,
 } from "./factory.js";
 import { DEFAULT_LINT_OPTIONS, type LintOptions, lintDraft, lintExitCode, summarize } from "./lint.js";
 import { migrateDraft } from "./migrate.js";
+import { buildRenderPlan, renderDraft } from "./render.js";
 import { serveQueue } from "./serve.js";
 import { addSfx } from "./sfx.js";
 import { parseSrt } from "./srt.js";
 import { formatDuration, formatTime, parseTimeInput, srtTime } from "./time.js";
 import { translateDraft } from "./translate.js";
 import { detectVersion } from "./version.js";
+
+export const COMMANDS = [
+  "info",
+  "version",
+  "lint",
+  "tracks",
+  "segments",
+  "texts",
+  "set-text",
+  "shift",
+  "shift-all",
+  "speed",
+  "volume",
+  "trim",
+  "opacity",
+  "export-srt",
+  "materials",
+  "segment",
+  "material",
+  "add-audio",
+  "add-video",
+  "add-text",
+  "cut",
+  "keyframe",
+  "transition",
+  "mask",
+  "bg-blur",
+  "text-style",
+  "text-anim",
+  "image-anim",
+  "add-sticker",
+  "mix-mode",
+  "audio-fade",
+  "add-cover",
+  "add-filter",
+  "bubble-text",
+  "add-effect",
+  "save-template",
+  "apply-template",
+  "batch",
+  "import-srt",
+  "import-ass",
+  "text-ranges",
+  "caption",
+  "translate",
+  "migrate",
+  "add-sfx",
+  "chroma",
+  "prune",
+  "relink",
+  "timeline",
+  "projects",
+  "diff",
+  "concat",
+  "config",
+  "describe",
+  "completions",
+  "enums",
+  "doctor",
+  "restore",
+  "serve",
+  "decrypt",
+  "export",
+  "init",
+  "compile",
+  "render",
+] as const;
+
+const GLOBAL_FLAGS = ["--jianying", "-H", "--human", "-q", "--quiet", "-v", "--version", "--dry-run"] as const;
 
 const HELP = `capcut-cli -- fast edits to CapCut projects
 
@@ -85,7 +164,10 @@ Usage: capcut <command> <project> [options]
 
 Global flags:
   -H, --human     Human-readable table output (default: JSON)
+  -v, --version   Print the installed CLI version
   -q, --quiet     No output on success, exit code only (write commands)
+  --dry-run       Preview a mutating command: print the result (with
+                  "dryRun":true) but leave the draft and its .bak untouched
   --jianying      Use JianYing enum namespace (default: CapCut) for
                   transition, mask, text-anim, image-anim, add-effect, enums
 
@@ -116,6 +198,23 @@ Create:
              Create a new empty draft from template. Defaults:
                --template   ../CapCutAPI/template (relative to capcut-cli)
                --drafts     ~/Movies/CapCut/User Data/Projects/com.lveditor.draft
+  compile    <spec.json> [--out <draftdir>] [--drafts <dir>]
+             Build a whole draft from a declarative JSON spec (the inverse of
+             describe). Times are in seconds. Media paths resolve relative to
+             the spec file. Validates the full spec before writing anything.
+
+Preview:
+  render     <project> [--out <file.mp4>] [options]
+             Render a low-res ffmpeg PROXY preview of the timeline so you can
+             watch an edit without opening CapCut. Flattens the main video
+             track (trim + per-segment speed) and mixes audio segments; it is
+             NOT CapCut's final render (no multi-track compositing/effects).
+             Options:
+               --scale <f>        Proxy scale of canvas dims (default 0.5)
+               --fps <n>          Output fps (default draft fps)
+               --burn-captions    Draw text-track segments onto the video
+               --ffmpeg-cmd <p>   ffmpeg binary (default ffmpeg)
+               --dry-run          Print the ffmpeg plan; do not execute
 
 Add:
   add-audio  <project> <file-or-wikimedia-url> <start> <duration> [options]
@@ -152,6 +251,17 @@ Edit:
   opacity    <project> <id> <alpha>             Set opacity (0.0-1.0)
   export-srt <project>                          Export subtitles to SRT
   batch      <project>                          Run multiple edits from stdin (JSONL)
+  restore    <project> [--step N | --list]      Undo writes (latest .bak, or N writes back; --list history)
+
+Maintenance & inspection:
+  prune      <project>                          Remove materials no segment references
+  relink     <project> --dir <d> | --from <p> --to <q>  Repair broken media paths
+  timeline   <project> [--cols N]               Show track/segment layout (JSON, or -H ASCII bars)
+  projects   [query] [--drafts <dir>] [--names] List CapCut/JianYing draft folders on disk
+  diff       <projectA> <projectB>             Compare two drafts (added/removed/changed)
+  concat     <projectA> <draftB> [--out <p>]   Append draftB onto projectA's timeline (id-safe)
+  config                                       Show resolved .capcutrc + effective defaults
+  describe                                      Emit the full command surface as JSON (agent tool spec)
 
 Animate:
   keyframe   <project> <id> <property> <time> <value>
@@ -249,6 +359,9 @@ Templates:
   apply-template <project> <template.json> <start> <duration> [text override]
              Stamp a template into a project at the given time
              Options: --x <n> --y <n> (override position)
+  templates  
+             Show available templates in the template library.
+             Use -H for a table.
 
 Project:
   cut        <project> <start> <end> --out <path>
@@ -305,6 +418,10 @@ Encryption (v0.6 — detection scaffold):
   decrypt    <project>
              Detect JianYing 6.0+ encryption and report next steps.
              (Decryption algorithm not bundled; clear error UX + workaround docs.)
+  doctor
+             Check the environment, not a draft: Node version, whisper binary
+             (for caption), ANTHROPIC_API_KEY (for translate), and the default
+             CapCut/JianYing project directory. Exit 1 only on hard failures.
 
 Stateless queue runner (v0.5):
   serve      [--queue <path>] [--fail-fast]
@@ -448,6 +565,16 @@ interface Flags {
   // serve
   queue?: string;
   failFast?: boolean;
+  version?: boolean;
+  // relink / projects / timeline / restore
+  dir?: string;
+  step?: number;
+  list?: boolean;
+  cols?: number;
+  names?: boolean;
+  fps?: number;
+  ffmpegCmd?: string;
+  burnCaptions?: boolean;
 }
 
 // Map CLI enum flags -> enums.json category key. Order matters for HELP text.
@@ -467,12 +594,53 @@ const ENUM_FLAG_MAP: Array<{ flag: string; category: Category }> = [
   { flag: "--filters", category: "filters" },
 ];
 
+function bashCompletion(): string {
+  const words = [...COMMANDS, ...GLOBAL_FLAGS].join(" ");
+
+  return `# bash completion for capcut
+
+_capcut()
+{
+    local cur
+    cur="\${COMP_WORDS[COMP_CWORD]}"
+
+    COMPREPLY=( $(compgen -W "${words}" -- "$cur") )
+}
+
+complete -F _capcut capcut
+`;
+}
+
+function zshCompletion(): string {
+  const words = [...COMMANDS, ...GLOBAL_FLAGS].map((w) => `"${w}"`).join("\n    ");
+
+  return `#compdef capcut
+
+_capcut() {
+  local -a commands
+
+  commands=(
+    ${words}
+  )
+
+  _describe 'command' commands
+}
+
+compdef _capcut capcut
+`;
+}
+
+function fishCompletion(): string {
+  return [...COMMANDS, ...GLOBAL_FLAGS].map((word) => `complete -c capcut -f -a "${word}"`).join("\n");
+}
+
 function parseFlags(args: string[]): { positional: string[]; flags: Flags } {
   const positional: string[] = [];
   const flags: Flags = { human: false, quiet: false, batch: false };
   for (let i = 0; i < args.length; i++) {
     const a = args[i];
     if (a === "-H" || a === "--human") flags.human = true;
+    else if (a === "-v" || a === "--version") flags.version = true;
     else if (a === "-q" || a === "--quiet") flags.quiet = true;
     else if (a === "--batch") flags.batch = true;
     else if ((a === "--track" || a === "--type") && i + 1 < args.length) {
@@ -484,7 +652,7 @@ function parseFlags(args: string[]): { positional: string[]; flags: Flags } {
     } else if (a === "--color" && i + 1 < args.length) {
       flags.color = args[++i];
     } else if (a === "--align" && i + 1 < args.length) {
-      flags.align = parseInt(args[++i]);
+      flags.align = parseInt(args[++i], 10);
     } else if (a === "--x" && i + 1 < args.length) {
       flags.x = parseFloat(args[++i]);
     } else if (a === "--y" && i + 1 < args.length) {
@@ -550,7 +718,7 @@ function parseFlags(args: string[]): { positional: string[]; flags: Flags } {
     } else if (a === "--bg-alpha" && i + 1 < args.length) {
       flags.bgAlpha = parseFloat(args[++i]);
     } else if (a === "--bg-style" && i + 1 < args.length) {
-      flags.bgStyle = parseInt(args[++i]);
+      flags.bgStyle = parseInt(args[++i], 10);
     } else if (a === "--bg-round-radius" && i + 1 < args.length) {
       flags.bgRoundRadius = parseFloat(args[++i]);
     } else if (a === "--bg-width" && i + 1 < args.length) {
@@ -604,7 +772,7 @@ function parseFlags(args: string[]): { positional: string[]; flags: Flags } {
     } else if (a === "--force-license") {
       flags.forceLicense = true;
     } else if (a === "--max-chars" && i + 1 < args.length) {
-      flags.maxChars = parseInt(args[++i]);
+      flags.maxChars = parseInt(args[++i], 10);
     } else if (a === "--max-cue-secs" && i + 1 < args.length) {
       flags.maxCueSecs = parseFloat(args[++i]);
     } else if (a === "--min-gap-ms" && i + 1 < args.length) {
@@ -639,6 +807,22 @@ function parseFlags(args: string[]): { positional: string[]; flags: Flags } {
       flags.queue = args[++i];
     } else if (a === "--fail-fast") {
       flags.failFast = true;
+    } else if (a === "--dir" && i + 1 < args.length) {
+      flags.dir = args[++i];
+    } else if (a === "--step" && i + 1 < args.length) {
+      flags.step = parseInt(args[++i], 10);
+    } else if (a === "--list") {
+      flags.list = true;
+    } else if (a === "--cols" && i + 1 < args.length) {
+      flags.cols = parseInt(args[++i], 10);
+    } else if (a === "--names") {
+      flags.names = true;
+    } else if (a === "--fps" && i + 1 < args.length) {
+      flags.fps = parseFloat(args[++i]);
+    } else if (a === "--ffmpeg-cmd" && i + 1 < args.length) {
+      flags.ffmpegCmd = args[++i];
+    } else if (a === "--burn-captions") {
+      flags.burnCaptions = true;
     } else {
       const hit = ENUM_FLAG_MAP.find((f) => f.flag === a);
       if (hit) {
@@ -653,7 +837,13 @@ function parseFlags(args: string[]): { positional: string[]; flags: Flags } {
 
 function out(data: unknown, flags: Flags): void {
   if (flags.quiet) return;
-  process.stdout.write(JSON.stringify(data) + "\n");
+  // In --dry-run, stamp an object result with dryRun:true so callers can tell a
+  // preview from a committed write. Arrays (read commands) are left untouched.
+  let payload = data;
+  if (isDryRun() && data !== null && typeof data === "object" && !Array.isArray(data)) {
+    payload = { ...(data as Record<string, unknown>), dryRun: true };
+  }
+  process.stdout.write(`${JSON.stringify(payload)}\n`);
 }
 
 class CliError extends Error {
@@ -738,7 +928,7 @@ function cmdTracks(draft: Draft, flags: Flags): void {
       if (t.hidden) fl.push("hidden");
       if (t.locked) fl.push("locked");
       console.log(
-        `${String(t.index).padStart(2)}  ${t.type.padEnd(8)} ${t.name.padEnd(14)} ${String(t.segments).padStart(4)} segs  ${formatDuration(t.duration_us).padStart(10)}${fl.length ? "  [" + fl.join(",") + "]" : ""}`,
+        `${String(t.index).padStart(2)}  ${t.type.padEnd(8)} ${t.name.padEnd(14)} ${String(t.segments).padStart(4)} segs  ${formatDuration(t.duration_us).padStart(10)}${fl.length ? `  [${fl.join(",")}]` : ""}`,
       );
     }
   } else {
@@ -780,7 +970,7 @@ function cmdSegments(draft: Draft, flags: Flags): void {
     for (const s of data) {
       const end = s.start_us + s.duration_us;
       console.log(
-        `${s.id.slice(0, 8)}  ${s.type.padEnd(6)} ${formatTime(s.start_us).padStart(8)}-${formatTime(end).padStart(8)}  ${formatDuration(s.duration_us).padStart(8)}  ${s.speed !== 1 ? s.speed + "x" : "   "}  ${s.label.slice(0, 40)}`,
+        `${s.id.slice(0, 8)}  ${s.type.padEnd(6)} ${formatTime(s.start_us).padStart(8)}-${formatTime(end).padStart(8)}  ${formatDuration(s.duration_us).padStart(8)}  ${s.speed !== 1 ? `${s.speed}x` : "   "}  ${s.label.slice(0, 40)}`,
       );
     }
   } else {
@@ -858,7 +1048,7 @@ function cmdSpeed(draft: Draft, filePath: string, segId: string, multiplier: str
   const result = findSegment(draft, segId);
   if (!result) die(`Segment not found: ${segId}`);
   const speed = parseFloat(multiplier);
-  if (isNaN(speed) || speed <= 0) die("Speed must be a positive number");
+  if (Number.isNaN(speed) || speed <= 0) die("Speed must be a positive number");
   const seg = result.segment;
   const oldSpeed = seg.speed;
   seg.speed = speed;
@@ -875,7 +1065,7 @@ function cmdVolume(draft: Draft, filePath: string, segId: string, levelStr: stri
   const result = findSegment(draft, segId);
   if (!result) die(`Segment not found: ${segId}`);
   const level = parseFloat(levelStr);
-  if (isNaN(level) || level < 0) die("Volume must be >= 0");
+  if (Number.isNaN(level) || level < 0) die("Volume must be >= 0");
   const old = result.segment.volume;
   result.segment.volume = level;
   if (save) saveDraft(filePath, draft);
@@ -916,7 +1106,7 @@ function cmdOpacity(draft: Draft, filePath: string, segId: string, alphaStr: str
   const result = findSegment(draft, segId);
   if (!result) die(`Segment not found: ${segId}`);
   const alpha = parseFloat(alphaStr);
-  if (isNaN(alpha) || alpha < 0 || alpha > 1) die("Opacity must be 0.0-1.0");
+  if (Number.isNaN(alpha) || alpha < 0 || alpha > 1) die("Opacity must be 0.0-1.0");
   if (!result.segment.clip) die(`Segment ${segId} has no clip (audio segment?)`);
   const old = result.segment.clip.alpha;
   result.segment.clip.alpha = alpha;
@@ -1027,7 +1217,7 @@ async function cmdAddAudio(draft: Draft, filePath: string, positional: string[],
     die("Usage: capcut add-audio <project> <file-or-wikimedia-url> <start> <duration>");
   // Wikimedia URLs go through the license-gated fetcher; locals pass through.
   const { localPath, asset, warning } = await resolveAssetPath(audioPath, filePath, "audio", flags.forceLicense);
-  const absPath = localPath.startsWith("/") ? localPath : process.cwd() + "/" + localPath;
+  const absPath = localPath.startsWith("/") ? localPath : `${process.cwd()}/${localPath}`;
   const start = parseTimeInput(startStr);
   const duration = parseTimeInput(durationStr);
   const opts: AddAudioOptions = {
@@ -1069,7 +1259,7 @@ async function cmdAddVideo(draft: Draft, filePath: string, positional: string[],
   if (!videoPath || !startStr || !durationStr)
     die("Usage: capcut add-video <project> <file-or-wikimedia-url> <start> <duration>");
   const { localPath, asset, warning } = await resolveAssetPath(videoPath, filePath, "video", flags.forceLicense);
-  const absPath = localPath.startsWith("/") ? localPath : process.cwd() + "/" + localPath;
+  const absPath = localPath.startsWith("/") ? localPath : `${process.cwd()}/${localPath}`;
   const start = parseTimeInput(startStr);
   const duration = parseTimeInput(durationStr);
   const opts: AddVideoOptions = {
@@ -1234,7 +1424,7 @@ function cmdBgBlur(draft: Draft, filePath: string, positional: string[], flags: 
   let level: 1 | 2 | 3 | 4 | "off";
   if (flags.off) level = "off";
   else {
-    const n = parseInt(arg ?? "");
+    const n = parseInt(arg ?? "", 10);
     if (![1, 2, 3, 4].includes(n)) die(`bg-blur level must be 1, 2, 3, or 4 (or --off)`);
     level = n as 1 | 2 | 3 | 4;
   }
@@ -1431,7 +1621,7 @@ function cmdMixMode(draft: Draft, filePath: string, positional: string[], flags:
   out({ ok: true, ...result }, flags);
 }
 
-function cmdCut(draft: Draft, filePath: string, positional: string[], flags: Flags): void {
+function cmdCut(draft: Draft, _filePath: string, positional: string[], flags: Flags): void {
   if (!flags.out) die("Missing --out <path>. Usage: capcut cut <project> <start> <end> --out <path>");
   const start = parseTimeInput(positional[2]);
   const end = parseTimeInput(positional[3]);
@@ -1824,7 +2014,7 @@ async function cmdServe(flags: Flags): Promise<void> {
     failFast: flags.failFast,
   });
   // Write a final summary line at end (JSON only, stderr to avoid mixing with per-job results)
-  process.stderr.write(JSON.stringify({ summary: result }) + "\n");
+  process.stderr.write(`${JSON.stringify({ summary: result })}\n`);
 }
 
 // --- Batch ---
@@ -1894,11 +2084,636 @@ function cmdBatch(draft: Draft, filePath: string, flags: Flags): void {
     } catch (e) {
       fail++;
       const msg = e instanceof Error ? e.message : String(e);
-      process.stderr.write(JSON.stringify({ error: msg, line: trimmed }) + "\n");
+      process.stderr.write(`${JSON.stringify({ error: msg, line: trimmed })}\n`);
     }
   }
   saveDraft(filePath, draft);
   out({ ok: true, succeeded: ok, failed: fail }, flags);
+}
+
+function cmdDoctor(flags: Flags): boolean {
+  const report = runDoctor();
+  if (flags.human) {
+    const glyph: Record<DoctorCheck["status"], string> = { ok: "✓", warn: "!", missing: "✗" };
+    console.log(`Platform:  ${report.platform}`);
+    console.log(`Node:      ${report.node}`);
+    console.log("");
+    for (const c of report.checks) {
+      console.log(`[${glyph[c.status]}] ${c.name.padEnd(18)} ${c.detail}`);
+      if (c.status !== "ok" && c.fix) console.log(`      → ${c.fix}`);
+    }
+    console.log("");
+    console.log(report.ok ? "Ready." : "Missing a hard requirement — see ✗ above.");
+  } else {
+    out(report, flags);
+  }
+  return report.ok;
+}
+
+function cmdTemplates(flags: Flags): void {
+  const cliDir = path.dirname(fileURLToPath(import.meta.url));
+  const templatesPath = path.join(cliDir, "..", "templates");
+
+  if (!existsSync(templatesPath)) {
+    die(`Templates directory not found: ${templatesPath}`);
+  }
+
+  const descriptions: Record<string, string> = {
+    "caption-pop": "word-highlight pop captions",
+    "lower-third": "name/title lower third",
+    "hook-question": "opening hook question card",
+    "gold-title": "gold title card",
+    "end-card": "end / outro card",
+    "subscribe-cta": "subscribe call-to-action",
+  };
+
+  const entries = readdirSync(templatesPath)
+    .filter((f) => f.endsWith(".json"))
+    .map((f) => {
+      const slug = path.basename(f, ".json");
+      return {
+        slug,
+        description: descriptions[slug] ?? slug.replace(/-/g, " "),
+      };
+    });
+
+  if (flags.human) {
+    if (entries.length === 0) {
+      console.log("No bundled templates found.");
+      return;
+    }
+    console.log(`${"Slug".padEnd(33)} Description`);
+    for (const e of entries) {
+      console.log(`${e.slug.padEnd(33)} ${e.description}`);
+    }
+    process.stderr.write(`\n${entries.length} templates\n`);
+  } else {
+    out(entries, flags);
+  }
+}
+
+function getCliVersion(): string {
+  const pkg = JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8"));
+
+  return pkg.version;
+}
+
+// `restore` undoes writes. Plain form restores the most recent `.bak`. With
+// --list it shows the rolling snapshot history; with --step N it rolls back N
+// writes (step 1 == the .bak). Honors --dry-run (reports without copying).
+function cmdRestore(projectPath: string | undefined, flags: Flags): void {
+  if (!projectPath) die("Missing project path. Usage: capcut restore <project> [--step N | --list]");
+  const filePath = findDraft(projectPath);
+  const snaps = listSnapshots(filePath);
+
+  if (flags.list) {
+    out({ ok: true, count: snaps.length, snapshots: snaps.map((s) => ({ step: s.step, path: s.path })) }, flags);
+    return;
+  }
+
+  if (flags.step !== undefined) {
+    if (!Number.isInteger(flags.step) || flags.step < 1) die("--step must be a positive integer (1 = most recent).");
+    const target = snaps.find((s) => s.step === flags.step);
+    if (!target) {
+      const avail = snaps.length ? `1..${snaps.length}` : "none yet";
+      die(`No snapshot at --step ${flags.step}. Available: ${avail}. Try: capcut restore ${projectPath} --list`);
+    }
+    if (!isDryRun()) copyFileSync(target.path, filePath);
+    out({ ok: true, restored: filePath, from: target.path, step: flags.step }, flags);
+    return;
+  }
+
+  const bakPath = `${filePath}.bak`;
+  if (!existsSync(bakPath)) {
+    die(`No backup found at ${bakPath}. Nothing to restore (a .bak is written on the first edit).`);
+  }
+  if (!isDryRun()) copyFileSync(bakPath, filePath);
+  out({ ok: true, restored: filePath, from: bakPath }, flags);
+}
+
+// `prune` removes materials no segment references. The referenced set is the
+// union of every segment's material_id AND its extra_material_refs[] (the latter
+// is what keeps masks/effects/animations/fades from being wrongly deleted).
+function cmdPrune(draft: Draft, filePath: string, flags: Flags): void {
+  const referenced = new Set<string>();
+  for (const track of draft.tracks) {
+    for (const seg of track.segments) {
+      if (seg.material_id) referenced.add(seg.material_id);
+      for (const ref of seg.extra_material_refs ?? []) referenced.add(ref);
+    }
+  }
+  const byType: Record<string, { removed: number; kept: number }> = {};
+  let removedTotal = 0;
+  for (const [type, arr] of Object.entries(draft.materials)) {
+    if (!Array.isArray(arr)) continue;
+    const before = arr.length;
+    const kept = arr.filter((m) => {
+      const id = (m as { id?: unknown }).id;
+      // Keep anything without a string id (can't prove it's orphaned) or that is referenced.
+      return typeof id !== "string" || referenced.has(id);
+    });
+    const removed = before - kept.length;
+    if (removed > 0) (draft.materials as Record<string, unknown[]>)[type] = kept;
+    byType[type] = { removed, kept: kept.length };
+    removedTotal += removed;
+  }
+  if (removedTotal > 0) saveDraft(filePath, draft);
+  out({ ok: true, removed: removedTotal, by_type: byType }, flags);
+}
+
+// `relink` repairs broken media paths. Two modes (combinable):
+//   --dir <d>          for each material whose path is missing, look for a file
+//                      with the same basename in <d> and repoint to it.
+//   --from <p> --to <q> prefix-replace on every material path.
+function cmdRelink(draft: Draft, filePath: string, flags: Flags): void {
+  if (!flags.dir && !(flags.from && flags.to)) {
+    die("Usage: capcut relink <project> --dir <folder>  |  --from <oldPrefix> --to <newPrefix>");
+  }
+  const dirIndex = new Map<string, string>();
+  if (flags.dir) {
+    if (!existsSync(flags.dir)) die(`--dir not found: ${flags.dir}`);
+    for (const f of readdirSync(flags.dir)) dirIndex.set(path.basename(f), path.join(flags.dir as string, f));
+  }
+  const relinked: Array<{ id: string; from: string; to: string }> = [];
+  let missing = 0;
+  let ok = 0;
+  for (const arr of Object.values(draft.materials)) {
+    if (!Array.isArray(arr)) continue;
+    for (const m of arr) {
+      const mat = m as { id?: string; path?: unknown };
+      if (typeof mat.path !== "string" || mat.path === "") continue;
+      let p = mat.path;
+      let changed = false;
+      if (flags.from && flags.to && p.startsWith(flags.from)) {
+        p = flags.to + p.slice(flags.from.length);
+        changed = true;
+      }
+      if (!existsSync(p) && flags.dir) {
+        const hit = dirIndex.get(path.basename(p));
+        if (hit) {
+          p = hit;
+          changed = true;
+        }
+      }
+      if (changed && p !== mat.path) {
+        relinked.push({ id: mat.id ?? "", from: mat.path, to: p });
+        mat.path = p;
+      }
+      if (existsSync(p)) ok++;
+      else missing++;
+    }
+  }
+  if (relinked.length > 0) saveDraft(filePath, draft);
+  out({ ok: true, relinked: relinked.length, still_missing: missing, present: ok, changes: relinked }, flags);
+}
+
+// `timeline` shows the track/segment layout. JSON default returns structured
+// lanes (with computed columns); -H renders ASCII bars scaled to --cols (def 60).
+function cmdTimeline(draft: Draft, flags: Flags): void {
+  const cols = flags.cols && flags.cols > 0 ? flags.cols : 60;
+  let span = 0;
+  for (const t of draft.tracks)
+    for (const s of t.segments) span = Math.max(span, s.target_timerange.start + s.target_timerange.duration);
+  span = Math.max(span, draft.duration, 1);
+  const scale = (us: number) => Math.round((us / span) * cols);
+  const tracks = draft.tracks.map((t) => ({
+    type: t.type,
+    name: t.name,
+    segments: t.segments.map((s) => {
+      const startCol = scale(s.target_timerange.start);
+      const endCol = Math.max(startCol + 1, scale(s.target_timerange.start + s.target_timerange.duration));
+      return {
+        id: s.id,
+        start_us: s.target_timerange.start,
+        duration_us: s.target_timerange.duration,
+        col_start: startCol,
+        col_end: endCol,
+      };
+    }),
+  }));
+
+  if (!flags.human) {
+    out({ ok: true, span_us: span, cols, tracks }, flags);
+    return;
+  }
+  const lines: string[] = [];
+  const label = (t: { type: string; name: string }) => `${t.type}${t.name ? `/${t.name}` : ""}`.padEnd(14).slice(0, 14);
+  for (const t of tracks) {
+    const row = Array.from({ length: cols }, () => " ");
+    for (const s of t.segments) {
+      for (let c = s.col_start; c < s.col_end && c < cols; c++) row[c] = "█";
+    }
+    lines.push(`${label(t)} |${row.join("")}|`);
+  }
+  process.stdout.write(`${lines.join("\n")}\n`);
+}
+
+// `projects` lists draft folders on disk. Scans --drafts <dir> (or the per-OS
+// CapCut/JianYing default dirs) for sub-folders containing a draft file. An
+// optional query substring filters by folder name. --names also reads each
+// draft's `name` field (one parse per project).
+function cmdProjects(positional: string[], flags: Flags): void {
+  const query = positional[1]?.toLowerCase();
+  const roots = flags.drafts ? [{ label: "custom", path: flags.drafts }] : draftDirs();
+  const projects: Array<{ name?: string; folder: string; path: string; mtime: string; root: string }> = [];
+  for (const root of roots) {
+    if (!existsSync(root.path)) continue;
+    for (const entry of readdirSync(root.path)) {
+      const folder = path.join(root.path, entry);
+      let isDir = false;
+      try {
+        isDir = statSync(folder).isDirectory();
+      } catch {
+        isDir = false;
+      }
+      if (!isDir) continue;
+      const draftFile = ["draft_content.json", "draft_info.json"]
+        .map((f) => path.join(folder, f))
+        .find((p) => existsSync(p));
+      if (!draftFile) continue;
+      if (query && !entry.toLowerCase().includes(query)) continue;
+      const rec: { name?: string; folder: string; path: string; mtime: string; root: string } = {
+        folder: entry,
+        path: draftFile,
+        mtime: statSync(draftFile).mtime.toISOString(),
+        root: root.label,
+      };
+      if (flags.names) {
+        try {
+          const d = JSON.parse(readFileSync(draftFile, "utf-8")) as { name?: string };
+          rec.name = d.name || undefined;
+        } catch {
+          /* unreadable draft — leave name undefined */
+        }
+      }
+      projects.push(rec);
+    }
+  }
+  projects.sort((a, b) => b.mtime.localeCompare(a.mtime));
+  if (flags.human) {
+    if (!projects.length) {
+      process.stdout.write("No projects found.\n");
+      return;
+    }
+    const lines = projects.map((p) => `${p.mtime.slice(0, 10)}  ${p.folder}${p.name ? `  (${p.name})` : ""}`);
+    process.stdout.write(`${lines.join("\n")}\n`);
+    return;
+  }
+  out({ ok: true, count: projects.length, projects }, flags);
+}
+
+// One-line summary per command, keyed by the COMMANDS entries. `describe`
+// serializes these into a machine-readable tool spec. The test asserts every
+// COMMANDS name has an entry here, so a new command can't ship undescribed.
+const SUMMARIES: Record<string, string> = {
+  info: "Project overview + material summary.",
+  version: "Detect CapCut/JianYing version, schema flags, and support status.",
+  lint: "Schema-aware checks (overlaps, line length, missing files); exit 0/1/2 for CI.",
+  tracks: "List all tracks.",
+  segments: "List segments with timing; filter by --track <type>.",
+  texts: "List all text/subtitle content.",
+  "set-text": "Change a text segment's content.",
+  shift: "Shift one segment's timing by an offset (e.g. +0.5s).",
+  "shift-all": "Shift all segments (optionally on one --track) by an offset.",
+  speed: "Set a segment's playback speed.",
+  volume: "Set a segment's volume (0.0-1.0).",
+  trim: "Trim a segment to a start/duration window.",
+  opacity: "Set a segment's opacity (0.0-1.0).",
+  "export-srt": "Export subtitles to SRT on stdout.",
+  materials: "List material types and counts; filter with --type.",
+  segment: "Full detail for one segment and its material.",
+  material: "Full detail for one material.",
+  "add-audio": "Add a local or Wikimedia audio file on an audio track.",
+  "add-video": "Add a local or Wikimedia video/image on a video track.",
+  "add-text": "Add a text segment with font/color/position options.",
+  cut: "Extract a time range into a new standalone draft.",
+  keyframe: "Add a keyframe (position/scale/rotation/alpha/volume); single or --batch.",
+  transition: "Add a transition between segments.",
+  mask: "Apply a mask (linear/circle/heart/...) with geometry flags, or --off.",
+  "bg-blur": "Set background blur level 1-4, or --off.",
+  "text-style": "Style text (alpha/shadow/border/background box).",
+  "text-anim": "Add intro/outro/combo text animation.",
+  "image-anim": "Add intro/outro/combo animation to an image/video segment.",
+  "add-sticker": "Add a sticker on its own track with transform.",
+  "mix-mode": "Set a video segment's blend mode.",
+  "audio-fade": "Add fade-in/fade-out to an audio segment (--in / --fade-out).",
+  "add-cover": "Set the project cover/thumbnail from a local image.",
+  "add-filter": "Add a colour filter on its own track.",
+  "bubble-text": "Apply a speech-bubble shape to a text segment.",
+  "add-effect": "Add a scene effect on its own track.",
+  "save-template": "Extract a segment as a reusable template JSON.",
+  "apply-template": "Stamp a template into a project with new timing/text.",
+  batch: "Run multiple edits from stdin (JSONL), one file write.",
+  "import-srt": "Import an SRT file/stdin as one text segment per cue.",
+  "import-ass": "Import an ASS/SSA subtitle file as text segments.",
+  "text-ranges": "Apply byte-accurate multi-style ranges to a text segment.",
+  caption: "Transcribe audio via whisper into real caption-track segments.",
+  translate: "Clone a draft into another language via the Anthropic API.",
+  migrate: "Apply known schema migrations across version boundaries.",
+  "add-sfx": "Add a sound effect on a dedicated track.",
+  chroma: "Green-screen / chroma key a video segment, or --off.",
+  enums: "List enum slugs (transitions, masks, effects, ...) by category.",
+  doctor: "Environment preflight (Node, whisper, API key, project dir).",
+  prune: "Remove materials no segment references.",
+  relink: "Repair broken media paths (--dir or --from/--to).",
+  timeline: "Show the track/segment layout (JSON, or -H ASCII bars).",
+  projects: "List CapCut/JianYing draft folders on disk.",
+  diff: "Compare two drafts (segments/materials/tracks added/removed/changed).",
+  concat: "Append one draft onto another's timeline (id-safe), write to --out or in place.",
+  config: "Show the resolved config (.capcutrc + effective defaults).",
+  describe: "Emit the full command surface as JSON (agent tool spec).",
+  completions: "Generate shell completions (bash|zsh|fish).",
+  restore: "Undo writes from .bak / snapshot history (--step N, --list).",
+  serve: "Run a stateless JSONL job queue from stdin/--queue.",
+  decrypt: "Detect JianYing 6.0+ encryption and explain the workaround.",
+  export: "EXPERIMENTAL UI-automated render queue (macOS).",
+  init: "Create a new empty draft from a template.",
+  compile: "Build a draft from a declarative JSON spec (the inverse of describe).",
+  render: "Render a low-res ffmpeg proxy preview (trim+speed+audio, --burn-captions); not CapCut's final render.",
+};
+
+const GLOBAL_FLAG_DOCS: Array<{ flag: string; description: string }> = [
+  { flag: "-H, --human", description: "Human-readable output instead of JSON." },
+  { flag: "-q, --quiet", description: "No stdout on success; exit code only." },
+  { flag: "-v, --version", description: "Print the installed CLI version." },
+  { flag: "--dry-run", description: "Preview a mutating command; write nothing." },
+  { flag: "--jianying", description: "Use the JianYing enum namespace." },
+];
+
+// `describe` emits a machine-readable tool spec for LLM/agent callers, so they
+// don't have to scrape --help. Names come from COMMANDS (source of truth);
+// summaries from SUMMARIES (test-enforced complete).
+function cmdDescribe(flags: Flags): void {
+  const commands = COMMANDS.map((name) => ({ name, summary: SUMMARIES[name] ?? "" }));
+  out(
+    {
+      name: "capcut-cli",
+      version: getCliVersion(),
+      description: "Edit CapCut/JianYing draft_content.json directly. JSON in, JSON out.",
+      global_flags: GLOBAL_FLAG_DOCS,
+      commands,
+    },
+    flags,
+  );
+}
+
+// --- Config (.capcutrc) ---
+
+interface CapcutConfig {
+  drafts?: string;
+  jianying?: boolean;
+  cols?: number;
+}
+
+// Load .capcutrc from cwd, then home. cwd wins. Returns {} if none/invalid.
+function loadConfig(): { path: string | null; config: CapcutConfig } {
+  for (const p of [path.join(process.cwd(), ".capcutrc"), path.join(homedir(), ".capcutrc")]) {
+    if (!existsSync(p)) continue;
+    try {
+      const cfg = JSON.parse(readFileSync(p, "utf-8")) as CapcutConfig;
+      return { path: p, config: cfg };
+    } catch {
+      // Malformed config is ignored rather than crashing every command.
+      return { path: p, config: {} };
+    }
+  }
+  return { path: null, config: {} };
+}
+
+// Apply config as defaults: a CLI flag always wins over the file.
+function applyConfig(flags: Flags, config: CapcutConfig): void {
+  if (flags.drafts === undefined && typeof config.drafts === "string") flags.drafts = config.drafts;
+  if (flags.jianying === undefined && config.jianying === true) flags.jianying = true;
+  if (flags.cols === undefined && typeof config.cols === "number") flags.cols = config.cols;
+}
+
+function cmdConfig(flags: Flags): void {
+  const { path: cfgPath, config } = loadConfig();
+  out(
+    {
+      ok: true,
+      path: cfgPath,
+      config,
+      effective: { drafts: flags.drafts, jianying: !!flags.jianying, cols: flags.cols },
+    },
+    flags,
+  );
+}
+
+// --- diff / concat ---
+
+// Read a draft from disk without touching loadDraft's module state (so two can
+// be loaded at once for diff/concat).
+function readDraft(input: string): { draft: Draft; filePath: string } {
+  const filePath = findDraft(input);
+  return { draft: JSON.parse(readFileSync(filePath, "utf-8")) as Draft, filePath };
+}
+
+function indexSegments(draft: Draft): Map<string, { seg: Segment; track: string }> {
+  const m = new Map<string, { seg: Segment; track: string }>();
+  for (const t of draft.tracks) for (const s of t.segments) m.set(s.id, { seg: s, track: t.type });
+  return m;
+}
+
+function indexMaterials(draft: Draft): Map<string, string> {
+  const m = new Map<string, string>();
+  for (const [type, arr] of Object.entries(draft.materials)) {
+    if (!Array.isArray(arr)) continue;
+    for (const mat of arr) {
+      const id = (mat as { id?: unknown }).id;
+      if (typeof id === "string") m.set(id, type);
+    }
+  }
+  return m;
+}
+
+// id -> serialized material, so diff can detect in-place content changes
+// (a text edit mutates the material under the same id).
+function indexMaterialContent(draft: Draft): Map<string, string> {
+  const m = new Map<string, string>();
+  for (const arr of Object.values(draft.materials)) {
+    if (!Array.isArray(arr)) continue;
+    for (const mat of arr) {
+      const id = (mat as { id?: unknown }).id;
+      if (typeof id === "string") m.set(id, JSON.stringify(mat));
+    }
+  }
+  return m;
+}
+
+// `diff` reports what changed between two drafts: segments added/removed/changed
+// and materials added/removed. Read-only.
+function cmdDiff(positional: string[], flags: Flags): void {
+  const aPath = positional[1];
+  const bPath = positional[2];
+  if (!aPath || !bPath) die("Usage: capcut diff <projectA> <projectB>");
+  const a = readDraft(aPath).draft;
+  const b = readDraft(bPath).draft;
+
+  const aSeg = indexSegments(a);
+  const bSeg = indexSegments(b);
+  const segAdded: string[] = [];
+  const segRemoved: string[] = [];
+  const segChanged: Array<{ id: string; fields: string[] }> = [];
+  for (const [id, { seg }] of bSeg) {
+    if (!aSeg.has(id)) {
+      segAdded.push(id);
+      continue;
+    }
+    const prev = aSeg.get(id)?.seg as Segment;
+    const fields: string[] = [];
+    if (prev.target_timerange.start !== seg.target_timerange.start) fields.push("start");
+    if (prev.target_timerange.duration !== seg.target_timerange.duration) fields.push("duration");
+    if (prev.material_id !== seg.material_id) fields.push("material_id");
+    if (JSON.stringify(prev.content ?? null) !== JSON.stringify(seg.content ?? null)) fields.push("content");
+    if (prev.speed !== seg.speed) fields.push("speed");
+    if (prev.volume !== seg.volume) fields.push("volume");
+    if (fields.length) segChanged.push({ id, fields });
+  }
+  for (const id of aSeg.keys()) if (!bSeg.has(id)) segRemoved.push(id);
+
+  const aMat = indexMaterialContent(a);
+  const bMat = indexMaterialContent(b);
+  const matAdded = [...bMat.keys()].filter((id) => !aMat.has(id));
+  const matRemoved = [...aMat.keys()].filter((id) => !bMat.has(id));
+  // Same id in both but different serialized content — e.g. a text edit mutates
+  // the text material (not the segment), so this is where set-text shows up.
+  const matChanged = [...bMat.keys()].filter((id) => aMat.has(id) && aMat.get(id) !== bMat.get(id));
+
+  const changed =
+    segAdded.length + segRemoved.length + segChanged.length + matAdded.length + matRemoved.length + matChanged.length >
+    0;
+  out(
+    {
+      ok: true,
+      changed,
+      tracks: { a: a.tracks.length, b: b.tracks.length },
+      segments: { added: segAdded, removed: segRemoved, changed: segChanged },
+      materials: { added: matAdded, removed: matRemoved, changed: matChanged },
+    },
+    flags,
+  );
+}
+
+// `concat` appends draftB onto draftA's timeline. B's segments are time-shifted
+// by A's duration; any B material/segment id that collides with A is reassigned
+// a fresh uuid (and references rewritten) so the merged draft stays valid.
+function cmdConcat(positional: string[], flags: Flags): void {
+  const aInput = positional[1];
+  const bInput = positional[2];
+  if (!aInput || !bInput) die("Usage: capcut concat <projectA> <draftB> [--out <path>]");
+  const { draft: a, filePath: aFile } = loadDraft(aInput);
+  const b = JSON.parse(readFileSync(findDraft(bInput), "utf-8")) as Draft;
+
+  const offset = a.duration || 0;
+  const aSegIds = new Set<string>();
+  for (const t of a.tracks) for (const s of t.segments) aSegIds.add(s.id);
+  const aMatIds = new Set(indexMaterials(a).keys());
+
+  // 1. Reassign colliding material ids in B, build old->new map.
+  const matRemap = new Map<string, string>();
+  for (const [, arr] of Object.entries(b.materials)) {
+    if (!Array.isArray(arr)) continue;
+    for (const mat of arr) {
+      const m = mat as { id?: string };
+      if (typeof m.id === "string" && aMatIds.has(m.id)) {
+        const fresh = uuid();
+        matRemap.set(m.id, fresh);
+        m.id = fresh;
+      }
+    }
+  }
+  // 2. Fix B segments: remap material refs, reassign colliding segment ids, time-shift.
+  for (const t of b.tracks) {
+    for (const s of t.segments) {
+      if (matRemap.has(s.material_id)) s.material_id = matRemap.get(s.material_id) as string;
+      s.extra_material_refs = (s.extra_material_refs ?? []).map((r) => matRemap.get(r) ?? r);
+      if (aSegIds.has(s.id)) s.id = uuid();
+      s.target_timerange = { ...s.target_timerange, start: s.target_timerange.start + offset };
+    }
+  }
+  // 3. Merge B materials into A.
+  for (const [type, arr] of Object.entries(b.materials)) {
+    if (!Array.isArray(arr)) continue;
+    const dest = (a.materials as Record<string, unknown[]>)[type];
+    if (Array.isArray(dest)) dest.push(...arr);
+    else (a.materials as Record<string, unknown[]>)[type] = [...arr];
+  }
+  // 4. Merge B tracks into A: same type+name extends; otherwise appended.
+  for (const bt of b.tracks) {
+    const match = a.tracks.find((at) => at.type === bt.type && at.name === bt.name);
+    if (match) match.segments.push(...bt.segments);
+    else a.tracks.push(bt);
+  }
+  a.duration = offset + (b.duration || 0);
+
+  if (flags.out) {
+    writeFileSync(flags.out, JSON.stringify(a, null, 2), "utf-8");
+    out({ ok: true, out: flags.out, duration_us: a.duration, remapped_ids: matRemap.size }, flags);
+  } else {
+    saveDraft(aFile, a);
+    out({ ok: true, project: aFile, duration_us: a.duration, remapped_ids: matRemap.size }, flags);
+  }
+}
+
+// `compile` reads a declarative JSON spec and builds a whole draft via the same
+// factory functions the imperative add-* commands use. Resolves the bundled
+// _init template the same way `init` does.
+function cmdCompile(positional: string[], flags: Flags): void {
+  const specPath = positional[1];
+  if (!specPath) die("Usage: capcut compile <spec.json> [--out <draftdir>] [--drafts <dir>]");
+  if (!existsSync(specPath)) die(`Spec file not found: ${specPath}`);
+
+  let spec: CompileSpec;
+  try {
+    spec = parseSpec(readFileSync(specPath, "utf-8"));
+  } catch (e) {
+    die((e as Error).message);
+  }
+
+  const cliDir = new URL(".", import.meta.url).pathname.replace(/\/dist\/$/, "");
+  const externalTemplate = `${cliDir}/../CapCutAPI/template`;
+  const bundledTemplate = `${cliDir}/templates/_init`;
+  let templateDir = flags.template ?? externalTemplate;
+  if (!flags.template && !existsSync(templateDir) && existsSync(bundledTemplate)) {
+    templateDir = bundledTemplate;
+  }
+
+  // Target draft directory: --out wins; else <drafts>/<spec.name>; else cwd/<spec.name>.
+  const name = spec.name ?? "compiled-draft";
+  const draftsDir = flags.drafts ?? `${process.env.HOME || "~"}/Movies/CapCut/User Data/Projects/com.lveditor.draft`;
+  const outDir = flags.out ? path.resolve(flags.out) : path.resolve(draftsDir, name);
+
+  const result = compileDraft(spec, {
+    templateDir,
+    outDir,
+    specDir: path.dirname(path.resolve(specPath)),
+  });
+  out(result, flags);
+  if (!flags.quiet) process.stderr.write(`Compiled: ${result.draft_path}\n`);
+}
+
+// `render` produces a low-res ffmpeg proxy preview of the timeline. Read-only:
+// it never mutates the draft. With --dry-run it returns the ffmpeg plan without
+// executing, so the filter graph is inspectable (and the path is ffmpeg-free).
+function cmdRender(draft: Draft, filePath: string, flags: Flags): void {
+  const opts = {
+    out: flags.out,
+    scale: flags.scale,
+    fps: flags.fps,
+    ffmpegCmd: flags.ffmpegCmd,
+    burnCaptions: flags.burnCaptions,
+    dryRun: isDryRun(),
+  };
+  if (opts.dryRun) {
+    // Build-only: surface the plan; no ffmpeg needed.
+    const plan = buildRenderPlan(draft, { ...opts, out: opts.out ?? path.join(path.dirname(filePath), "preview.mp4") });
+    out({ ok: true, executed: false, ...plan }, flags);
+    return;
+  }
+  const result = renderDraft(draft, filePath, opts);
+  out(result, flags);
+  if (!flags.quiet) process.stderr.write(`Rendered: ${result.output}\n`);
 }
 
 // --- Main ---
@@ -1911,12 +2726,83 @@ async function main(): Promise<void> {
   }
 
   const { positional, flags } = parseFlags(raw);
+
+  // .capcutrc defaults fill in unset flags (CLI flags always win).
+  applyConfig(flags, loadConfig().config);
+
+  // Global --dry-run: gate every saveDraft write (see src/draft.ts).
+  setDryRun(flags.dryRun === true);
+
+  if (flags.version) {
+    console.log(getCliVersion());
+    process.exit(0);
+  }
   const cmd = positional[0];
+
+  if (cmd === "completions") {
+    const shell = positional[1];
+
+    switch (shell) {
+      case "bash":
+        process.stdout.write(bashCompletion());
+        break;
+      case "zsh":
+        process.stdout.write(zshCompletion());
+        break;
+      case "fish":
+        process.stdout.write(fishCompletion());
+        break;
+      default:
+        die("Usage: capcut completions <bash|zsh|fish>");
+    }
+
+    process.exit(0);
+  }
+
   const projectPath = positional[1];
 
   // `enums` is a pure lookup — no project needed.
   if (cmd === "enums") {
     cmdEnums(flags);
+    process.exit(0);
+  }
+
+  // `doctor` inspects the environment, not a draft — no project needed.
+  if (cmd === "doctor") {
+    process.exit(cmdDoctor(flags) ? 0 : 1);
+  }
+
+  // `restore` copies a backup/snapshot back over the draft — no loadDraft/parse needed.
+  if (cmd === "restore") {
+    cmdRestore(projectPath, flags);
+    process.exit(0);
+  }
+
+  // `describe` emits the tool spec — no project needed.
+  if (cmd === "describe") {
+    cmdDescribe(flags);
+    process.exit(0);
+  }
+
+  // `projects` scans the disk for draft folders — no single project needed.
+  if (cmd === "projects") {
+    cmdProjects(positional, flags);
+    process.exit(0);
+  }
+
+  // `diff` reads two drafts; `concat` reads two and writes one — handled directly.
+  if (cmd === "diff") {
+    cmdDiff(positional, flags);
+    process.exit(0);
+  }
+  if (cmd === "concat") {
+    cmdConcat(positional, flags);
+    process.exit(0);
+  }
+
+  // `config` just reports the resolved .capcutrc — no project needed.
+  if (cmd === "config") {
+    cmdConfig(flags);
     process.exit(0);
   }
 
@@ -1938,20 +2824,25 @@ async function main(): Promise<void> {
     process.exit(0);
   }
 
+  // `templates` list all available templates
+  if (cmd === "templates") {
+    cmdTemplates(flags);
+    process.exit(0);
+  }
+
   // init doesn't need an existing project
   if (cmd === "init") {
     const name = projectPath; // positional[1] is the name for init
     if (!name) die("Missing name. Usage: capcut init <name> [--template <dir>] [--drafts <dir>]");
     const cliDir = new URL(".", import.meta.url).pathname.replace(/\/dist\/$/, "");
     // Default template resolution: user --template > ../CapCutAPI/template > bundled _init template
-    const externalTemplate = cliDir + "/../CapCutAPI/template";
-    const bundledTemplate = cliDir + "/templates/_init";
+    const externalTemplate = `${cliDir}/../CapCutAPI/template`;
+    const bundledTemplate = `${cliDir}/templates/_init`;
     let templateDir = flags.template ?? externalTemplate;
     if (!flags.template && !existsSync(templateDir) && existsSync(bundledTemplate)) {
       templateDir = bundledTemplate;
     }
-    const draftsDir =
-      flags.drafts ?? (process.env.HOME || "~") + "/Movies/CapCut/User Data/Projects/com.lveditor.draft";
+    const draftsDir = flags.drafts ?? `${process.env.HOME || "~"}/Movies/CapCut/User Data/Projects/com.lveditor.draft`;
     const result = initDraft({ name, templateDir, draftsDir });
     out(
       { ok: true, name, draft_path: result.draftPath, file_path: result.filePath, registered: result.registered },
@@ -1968,6 +2859,12 @@ async function main(): Promise<void> {
     process.exit(0);
   }
 
+  // `compile` builds a brand-new draft from a declarative spec — no existing project.
+  if (cmd === "compile") {
+    cmdCompile(positional, flags);
+    process.exit(0);
+  }
+
   if (!projectPath) die("Missing project path. Run 'capcut --help' for usage.");
 
   const { draft, filePath } = loadDraft(projectPath);
@@ -1975,6 +2872,18 @@ async function main(): Promise<void> {
   switch (cmd) {
     case "info":
       cmdInfo(draft, flags);
+      break;
+    case "prune":
+      cmdPrune(draft, filePath, flags);
+      break;
+    case "relink":
+      cmdRelink(draft, filePath, flags);
+      break;
+    case "timeline":
+      cmdTimeline(draft, flags);
+      break;
+    case "render":
+      cmdRender(draft, filePath, flags);
       break;
     case "version":
       cmdVersion(draft, flags);
@@ -2154,6 +3063,6 @@ async function main(): Promise<void> {
 
 main().catch((e) => {
   const msg = e instanceof Error ? e.message : String(e);
-  process.stderr.write(JSON.stringify({ error: msg }) + "\n");
+  process.stderr.write(`${JSON.stringify({ error: msg })}\n`);
   process.exit(1);
 });

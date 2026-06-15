@@ -2,6 +2,89 @@
 
 All notable changes to capcut-cli are documented here. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); the project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.10.0] — 2026-06-08
+
+Two commands that close the two biggest gaps in a headless CapCut workflow: seeing the result, and authoring a whole draft in one shot. No breaking changes; still zero npm-dep and JSON-by-default. Both shell out to `ffmpeg` only when actually rendering, the same opt-in external-binary pattern `caption` uses for whisper.
+
+### Added
+
+- **`render`** — a low-res **ffmpeg proxy preview** of a draft, so you can watch an edit without opening CapCut. Flattens the main video track (per-segment source trim + speed), scales to a proxy size (`--scale`, default 0.5), mixes every audio-track segment, and optionally burns the text segments in with `--burn-captions`. It is explicitly a preview, **not** CapCut's final render (no multi-track video compositing, no effects/transitions). The ffmpeg command is built by a pure, deterministic `buildRenderPlan` that is unit-tested without invoking ffmpeg; `--dry-run` prints that plan instead of executing (and needs no ffmpeg). Read-only — never mutates the draft.
+- **`compile`** — builds a whole draft from a declarative **JSON spec** (the inverse of `describe`): instead of chaining dozens of mutating `add-*` commands, an agent emits one spec and `compile` constructs the draft atomically via the same proven factory functions the imperative commands use. Times are in seconds (converted to CapCut's microseconds); media paths resolve relative to the spec file. The full spec is validated — and every media file checked to exist — **before** anything is written, so a bad spec fails clean. Writes both `draft_content.json` and `draft_info.json` so every downstream command reads the same data.
+
+## [0.9.0] — 2026-06-03
+
+Ten new commands/capabilities across inspection, maintenance, composition, and agent-integration. No breaking changes; still zero-dep, JSON-by-default, pipeable.
+
+### Added
+
+- **`describe`** — emits the full command surface as JSON (name, version, global flags, every command + summary) so LLM/agent callers get a tool spec instead of scraping `--help`. A test enforces that every command has a summary, so nothing ships undescribed.
+- **`prune`** — removes materials no segment references. The referenced set is the union of every segment's `material_id` **and** `extra_material_refs[]`, so masks/effects/animations/fades referenced indirectly are never wrongly deleted. Pairs with `--dry-run`.
+- **`relink`** — repairs broken media paths. `--dir <folder>` repoints each missing material to a same-basename file in the folder; `--from <p> --to <q>` prefix-replaces paths. Reports relinked / still-missing / present counts. Pairs with `--dry-run`.
+- **`timeline`** — shows the track/segment layout. JSON default returns lanes with computed columns; `-H` renders ASCII bars (`--cols N`, default 60). Makes layout/track-order issues diagnosable without opening CapCut.
+- **`projects`** — lists CapCut/JianYing draft folders on disk (scans the per-OS default dirs or `--drafts <dir>`), with an optional name-substring filter and `--names` to read each draft's title. No more pasting 40-char UUID paths.
+- **Multi-step undo** — every write now also keeps a rolling snapshot history under `<draftdir>/.capcut-cli-history/` (capped at 20). `restore --step N` rolls back N writes (step 1 == the `.bak`); `restore --list` shows the history. Plain `restore` is unchanged.
+- **`diff`** — compare two drafts: segments added/removed/changed (start/duration/material/speed/volume), and materials added/removed/**changed** (a text edit mutates the material in place, so this is where `set-text` shows up). Read-only.
+- **`concat`** — append one draft onto another's timeline: B's segments are time-shifted by A's duration, and any B material/segment id that collides with A is reassigned a fresh uuid (with references rewritten) so the merge stays valid. Writes to `--out` or in place.
+- **`config`** — defaults (`drafts` dir, `jianying`, `cols`) can be set in a `.capcutrc` (cwd, then home; CLI flags win). `capcut config` prints the resolved file and effective values.
+- **Windows `export --batch`** — the Windows path now ships: PowerShell opens each draft and sends CapCut's export shortcut (Ctrl+E). Same experimental UI-automation caveat as macOS. (Live render is host-dependent; the script generation is unit-tested.)
+
+## [0.8.0] — 2026-06-03
+
+Safety, discoverability, and a long-overdue track-order fix. No breaking changes; everything stays zero-dep, JSON-by-default, and pipeable.
+
+### Added
+
+- **Global `--dry-run`** ([#15](https://github.com/renezander030/capcut-cli/issues/15)) — any draft-mutating command now honors `--dry-run`: it computes and prints the normal JSON result with `"dryRun":true` added, but leaves the draft **and** its `.bak` untouched. Gated centrally in `saveDraft`, so it covers every write command at once. `translate` / `export --batch` keep their existing dry-run behavior.
+- **`restore` command** ([#16](https://github.com/renezander030/capcut-cli/issues/16)) — `capcut restore <project>` undoes the last write by copying `<draft>.bak` back over the draft. Single-step (only one backup generation is kept); exits non-zero with a clear message when no `.bak` exists. Honors `--dry-run`.
+- **Shell completions** ([#18](https://github.com/renezander030/capcut-cli/pull/18), [#19](https://github.com/renezander030/capcut-cli/pull/19), [#20](https://github.com/renezander030/capcut-cli/pull/20)) — `capcut completions <bash|zsh|fish>` generates a completion script for command names and global flags.
+
+### Fixed
+
+- **Track order scrambled on import** ([#21](https://github.com/renezander030/capcut-cli/issues/21)) — tracks were written in the order edit commands ran, but CapCut lays out the timeline from the tracks-array order, not from per-segment `render_index`, so building a draft incrementally produced a jumbled timeline. `saveDraft` now normalizes the tracks array to the canonical bottom→top layer order (`video → audio → sticker → effect → filter → text`) on every save; the sort is stable so same-type tracks keep their authored order. Also exported as `sortTracks` from the library entry point.
+
+### Documentation
+
+- **README** — added a from-source install path and a consolidated Prerequisites note (Node ≥ 18, whisper for `caption`, `ANTHROPIC_API_KEY` for `translate`); a worked-example block for the v0.4/v0.5 commands that had none (`mix-mode`, `audio-fade`, `add-filter`, `bubble-text`, `add-cover`, `add-sfx`, `chroma`, `import-ass`); `--dry-run` / `restore` usage; and a **Troubleshooting** table covering the CapCut-must-be-closed footgun, track-order normalization, `.bak` recovery, whisper/API-key setup, and the `--fade-out` flag.
+- **`CONTRIBUTING.md`** — build / test / lint commands, the `npm test` pre-commit gate, and PR conventions.
+
+### Internal
+
+- **Pre-commit hook rebuilds `dist/` before tests** ([#23](https://github.com/renezander030/capcut-cli/pull/23)) — the hook ran `test:fast` (no build step), so it could pass-or-fail against a stale `dist/`. It now runs `npm test`, which builds first.
+
+## [0.7.0] — 2026-05-31
+
+### Added
+
+- **`templates` command** ([#13](https://github.com/renezander030/capcut-cli/pull/13)) — `capcut templates` lists the bundled templates (slug + description). JSON by default, `-H` for a table.
+- **Global `--version` / `-v` flag** ([#12](https://github.com/renezander030/capcut-cli/pull/12)) — print the installed CLI version without a subcommand.
+
+### Documentation
+
+- **Independent / non-affiliation disclaimer + trademark notice** — README and metadata clarify the project is unofficial and not affiliated with ByteDance; "CapCut" / "JianYing" are used nominatively.
+
+### Internal
+
+- **Pinned Biome to 2.4.15** ([#14](https://github.com/renezander030/capcut-cli/pull/14)) and cleared auto-fixable lint debt.
+
+## [0.6.0] — 2026-05-29
+
+Distribution and integration release. No breaking changes to existing commands; everything stays zero-dep, JSON-by-default, and pipeable.
+
+### Added
+
+- **`capcut doctor`** — environment preflight that inspects the machine, not a draft: Node version (hard requirement, ≥ 18), a whisper binary on `PATH` (for `caption`), `ANTHROPIC_API_KEY` (for `translate`), and the default per-OS CapCut/JianYing project directory. JSON by default, `-H` for a human checklist. Exits `1` only on a hard failure.
+- **Importable Node library** — `import { loadDraft, saveDraft, findSegment, findMaterial, getTracksByType, extractText, updateTextContent, lintDraft, detectVersion, runDoctor } from "capcut-cli"`, with types. New `src/lib.ts` entry point; `package.json` `exports`/`main`/`types` map to `dist/lib.js`; `tsconfig` now emits `.d.ts`. Importing the package no longer executes the CLI.
+- **Dockerfile + `.dockerignore`** — zero-dep multi-stage build; the final image is Node + `dist/` + `templates/`. Drafts mount at `/work`. Also runs `serve` over a stdin pipe.
+- **GitHub Action (`action.yml`)** — composite action wrapping `capcut lint` so drafts can be gated in CI; `lint` exit code `2` (errors) fails the job. `uses: renezander030/capcut-cli@v0.6`.
+- **Three new shipped templates** — `caption-pop` (bold white center subtitle), `lower-third` (handle/name attribution), `hook-question` (large top-of-frame hook). Catalogue grows 3 → 6, all validated by the roundtrip suite.
+- **`serve-automation.md` example** — JSONL job/result contract and four integration paths (local pipe, n8n Execute Command, cloud builders via webhook→queue-file, Docker).
+
+### CI / Quality
+
+- **GitHub Actions CI** — test matrix across Node 18 / 20 / 22 plus a Biome lint job, on every push and pull request.
+- **Fuzz / injection test suite** — 12 malformed `draft_content.json` inputs (non-JSON, truncated, wrong-shape, prototype-pollution attempts, deep nesting) across six read commands assert graceful failure: no hang, no leaked stack trace, single-line JSON error on stderr. Plus a prototype-pollution non-regression check.
+- Test suite grew to 113 passing tests (doctor, fuzz, library, and the three new templates added their own coverage).
+
 ## [0.5.0] — 2026-05-25
 
 Six new commands voted in from [Discussion #1](https://github.com/renezander030/capcut-cli/discussions/1), shipped as a single release. All keep the zero-dep, JSON-by-default, pipeable design.

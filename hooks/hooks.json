@@ -1,10 +1,15 @@
 {
-  "description": "Ensures capcut-cli is available",
-  "hooks": [
-    {
-      "event": "on_plugin_enable",
-      "command": "npm list -g capcut-cli >/dev/null 2>&1 || npm install -g capcut-cli",
-      "description": "Install capcut-cli globally if not already installed"
-    }
-  ]
+  "description": "Ensure the capcut-cli npm package is installed when the plugin is active.",
+  "hooks": {
+    "SessionStart": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node -e \"const{execSync}=require('child_process');try{execSync('npm ls -g capcut-cli',{stdio:'ignore'})}catch(e){execSync('npm i -g capcut-cli',{stdio:'inherit'})}\""
+          }
+        ]
+      }
+    ]
+  }
 }

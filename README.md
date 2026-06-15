@@ -1,5 +1,10 @@
+<p align="center">
+  <img src="https://raw.githubusercontent.com/renezander030/capcut-cli/master/media/og-card.png" alt="capcut-cli — the CapCut/JianYing CLI any LLM agent can drive: zero dependencies, no server, both namespaces" width="640">
+</p>
+
 # capcut-cli
 
+[![CI](https://github.com/renezander030/capcut-cli/actions/workflows/ci.yml/badge.svg)](https://github.com/renezander030/capcut-cli/actions/workflows/ci.yml)
 [![npm version](https://img.shields.io/npm/v/capcut-cli.svg)](https://www.npmjs.com/package/capcut-cli)
 [![npm downloads](https://img.shields.io/npm/dm/capcut-cli.svg)](https://www.npmjs.com/package/capcut-cli)
 [![node](https://img.shields.io/node/v/capcut-cli.svg)](https://nodejs.org)
@@ -7,24 +12,23 @@
 
 English | [中文](./README.zh-CN.md)
 
-**The CapCut/JianYing toolkit that survives the next ByteDance update — and auto-captions with real caption objects.**
+> **Disclaimer:** This is an independent, community-maintained project. It is **not affiliated with, sponsored by, or endorsed by** CapCut, JianYing, or ByteDance Ltd. "CapCut" and "JianYing" (剪映) are trademarks of ByteDance Ltd. All product names, logos, and brands are the property of their respective owners and are used here only for identification (nominative) purposes.
 
-A pure CLI any LLM can drive: no MCP server, no HTTP daemon, no state. Inspect drafts, build from scratch, add media, modify subtitles, auto-caption with whisper, translate to N languages, cut long-form to shorts. Zero runtime deps, both CapCut and JianYing namespaces in one binary, JSON output by default.
+_An independent, community-maintained CLI for CapCut / JianYing draft files._
 
-**New in v0.4** — `caption` (whisper → real caption objects, not the import-srt text-mimics), `migrate` (mask ↔ common_masks across CapCut/JianYing version jumps), `lint` (schema-aware checks: overlaps, line length, missing files), `version` (detect support status), `translate` (Anthropic-API multi-language draft clone), `add-sfx`, `chroma`, `serve` (stateless JSONL queue runner for n8n/Coze/Make), and `export --batch` (EXPERIMENTAL macOS UI-automated render queue).
+**An independent CLI for CapCut / JianYing that any LLM agent can drive — zero dependencies, no server, both namespaces in one binary.**
 
-## v0.5 — vote on what ships next
+Every command reads and writes `draft_content.json` directly: JSON in, JSON out, no MCP server, no HTTP daemon, no state to babysit. That makes it a deterministic boundary any model (Claude, DeepSeek, GLM, Kimi) can call from a pipeline. Inspect drafts, build from scratch, add media, edit subtitles, auto-caption with whisper, translate to N languages, and cut long-form to shorts. Because there is no private API in the loop, it keeps working across ByteDance updates — and `caption` writes real caption objects, not the text-segment mimics other tools settle for.
 
-Open for community vote on **[Discussion #1](https://github.com/renezander030/capcut-cli/discussions/1)**. 👍 the comments for the features you want most — I ship the top 3-5 as a single v0.5 release within ~2 weeks.
+**Use it three ways:**
 
-- ✅ `audio-fade <project> <id> --in <s> --fade-out <s>` — fade-in / fade-out on audio segments (proper `audio_fades` objects, not volume keyframes) **shipped in v0.5**
-- ✅ `bubble-text <project> <id> --bubble <slug>` / 花字 — bubble / decorative text effects + `enums --bubbles` discovery **shipped in v0.5**
-- ✅ `add-filter <project> <slug> <start> <duration>` + `enums --filters` — colour filter chain (separate from VFX/scene effects) **shipped in v0.5**
-- ✅ `add-cover <project> <image-path>` / 封面 — set the JianYing/CapCut cover frame from the shell **shipped in v0.5**
-- ✅ `import-ass <project> <ass-path>` — ASS subtitle import alongside existing `import-srt` **shipped in v0.5**
-- ✅ `mix-mode <project> <id> <mode>` — blend modes per video segment (multiply, screen, overlay, …) **shipped in v0.5**
+- **CLI** — `npm install -g capcut-cli`, then `capcut <command> <project>`
+- **Library** — `import { loadDraft, lintDraft, saveDraft } from "capcut-cli"` (typed, zero-dep)
+- **Queue runner** — `capcut serve` reads JSONL jobs from stdin and drops into [n8n / Make / Coze](./examples/serve-automation.md)
 
-> Voting closes when v0.5 ships. If your feature is missing, drop a comment on Discussion #1.
+Run `capcut doctor` first to verify your environment (Node, whisper, draft directory).
+
+See the [changelog](./CHANGELOG.md) and [releases](https://github.com/renezander030/capcut-cli/releases) for what's new in each version.
 
 ## Workflow
 
@@ -43,10 +47,12 @@ flowchart LR
 
 How `capcut-cli` differs from the other CapCut / JianYing tooling:
 
-| Capability | [`pyJianYingDraft`](https://github.com/GuanYixuan/pyJianYingDraft) (Python, JianYing) | [`pyCapCut`](https://github.com/GuanYixuan/pyCapCut) (Python, CapCut) | [`CapCutAPI`](https://github.com/sun-guannan/CapCutAPI) (Python, HTTP server) | `cutcli` (Go, closed) | **`capcut-cli`** (Node, this repo) |
+| Capability | [`pyJianYingDraft`](https://github.com/GuanYixuan/pyJianYingDraft) (Python, JianYing) | [`pyCapCut`](https://github.com/GuanYixuan/pyCapCut) (Python, CapCut) | [`VectCutAPI`](https://github.com/sun-guannan/VectCutAPI) (Python, HTTP server, formerly CapCutAPI) | `cutcli` (Go, closed) | **`capcut-cli`** (Node, this repo) |
 |---|:---:|:---:|:---:|:---:|:---:|
 | Inspect drafts (`info` / `tracks` / `materials` / `segments` / `texts`) | partial | partial | ❌ | ❌ | ✅ |
 | Create drafts from scratch | ✅ | ✅ | ✅ | ✅ | ✅ |
+| Declarative spec → draft (one `compile`, not 30 imperative calls) | ❌ | ❌ | ❌ | ❌ | ✅ (v0.10.0) |
+| Preview an edit without opening CapCut (local ffmpeg proxy) | ❌ | ❌ | ❌ | ❌ | ✅ (v0.10.0) |
 | Decorators (`keyframe` / `transition` / `mask` / `text-anim` / `image-anim`) | ✅ | ✅ | ✅ | ✅ | ✅ (v0.3.0) |
 | SRT import → per-cue text segments | ❌ | ❌ | ✅ | ❌ | ✅ (v0.3.0) |
 | Multi-style text (word-level highlight captions) | partial | partial | ❌ | ❌ | ✅ (v0.3.0) |
@@ -60,94 +66,29 @@ How `capcut-cli` differs from the other CapCut / JianYing tooling:
 | Install | `pip install -r requirements.txt` | `pip install pyCapCut` | clone + run server | binary download | `npm install -g capcut-cli` |
 | License | none | none | none | unclear | MIT |
 
-## Feature checklist
+## What it does
 
-Status of every feature shipped. ✅ = implemented, ⬜ = roadmap. Section anchors link to the relevant command docs further down.
+A capability map; see [Commands](#commands) for syntax.
 
-### Project I/O
-- ✅ [`init`](#create-build-projects-from-scratch) — create a new draft from scratch
-- ✅ [`info`](#overview-start-here) · [`tracks`](#overview-start-here) · [`materials`](#overview-start-here) — overview
-- ✅ [`segments`](#browse) · [`texts`](#browse) — list, filterable by track type
-- ✅ [`segment` / `material` &lt;id&gt;](#detail-drill-into-one-item) — progressive disclosure for AI agents
-- ✅ [`export-srt`](#browse) — dump captions to SRT
-- ✅ [`cut`](#cut-long-form--short) — extract a time range into a standalone short
+- **Inspect** — `info` · `tracks` · `materials` · `segments` · `texts`; `segment`/`material <id>` for progressive-disclosure drill-down; `timeline` (ASCII layout); `export-srt`.
+- **Preview** — `render` builds a low-res **ffmpeg proxy** of the timeline (trim + per-segment speed + audio mix, `--burn-captions`) so you can watch an edit without opening CapCut. A preview, not CapCut's final render; `--dry-run` prints the ffmpeg plan.
+- **Build & add** — `init` a draft (or `compile` a whole one from a declarative JSON spec — the inverse of `describe`), then `add-video` · `add-audio` · `add-text` from local files or [Wikimedia Commons URLs](#wikimedia-commons-phase-5) (license-gated); `add-sticker`, `add-effect`.
+- **Edit** — `set-text` · `shift` · `shift-all` · `speed` · `volume` · `opacity` · `trim`; `batch` (many edits, one write); `--dry-run` preview, and `restore` undo (latest `.bak` or `--step N` through snapshot history).
+- **Maintain & compose** — `prune` (drop unreferenced materials) · `relink` (repair broken media paths via `--dir` or `--from`/`--to`) · `projects` (list drafts on disk by name) · `diff` (compare two drafts) · `concat` (stitch drafts into one timeline, id-safe).
+- **Decorate** — `keyframe` · `transition` · `mask` · `bg-blur` · `text-style` · `text-anim` · `image-anim` · `text-ranges` (word-level highlight captions); `mix-mode` · `audio-fade` · `add-filter` · `bubble-text` · `add-cover` · `add-sfx` · `chroma`.
+- **Captions & translate** — `caption` (whisper → real caption objects, not text-segment mimics), `import-srt` / `import-ass`, `translate` (Anthropic-API multi-language clone, zero deps).
+- **Templates** — `save-template` / `apply-template`; six ship in [`templates/`](./templates/) (`gold-title`, `end-card`, `subscribe-cta`, `hook-question`, `lower-third`, `caption-pop`).
+- **Resilience** — `version` (support detection) · `lint` (schema-aware CI checks, exit 0/1/2) · `migrate` · `decrypt`; [schema reference](./docs/draft-schema/) + [version matrix](./docs/version-support.md).
+- **Discover** — `enums` — 12 categories × 2 namespaces, no network.
+- **Integrate** — `describe` (JSON tool spec for LLM/agent callers), Node [library](#use-as-a-node-library), [Dockerfile](./Dockerfile), [GitHub Action](#github-action--lint-drafts-in-ci), `serve` (stateless JSONL runner for n8n/Make/Coze), `export --batch` (experimental render queue), `completions <bash|zsh|fish>`, [Claude Code plugin](#claude-code-plugin).
+- **Output** — JSON by default (pipe to `jq`), `-H` table, `-q` quiet. Defaults (`drafts` dir, `jianying`, `cols`) can live in a `.capcutrc`; `capcut config` shows the resolved values.
 
-### Add content
-- ✅ [`add-video`](#create-build-projects-from-scratch) · [`add-audio`](#create-build-projects-from-scratch) · [`add-text`](#add) — local files
-- ✅ [`add-video`](#wikimedia-commons-phase-5) / [`add-audio`](#wikimedia-commons-phase-5) — Wikimedia Commons URLs with license gate
-- ✅ [`add-sticker`](#decorators) — sticker track + transform
-- ✅ [`add-effect`](#decorators) — scene effect on its own track (vhs, shake, cinematic, vignette, …)
-
-### Edit
-- ✅ [`set-text`](#edit) · [`shift`](#edit) · [`shift-all`](#edit) · [`speed`](#edit) · [`volume`](#edit) · [`opacity`](#edit) · [`trim`](#edit)
-- ✅ [`batch`](#batch) — multiple edits, one JSON parse, one file write
-
-### Decorators (v0.3.0)
-- ✅ [`keyframe`](#decorators) — position, scale, rotation, alpha, colour-adjust, volume (single + `--batch` JSONL on stdin)
-- ✅ [`transition`](#decorators) — 8 starter slugs + the full enum catalogue
-- ✅ [`mask`](#decorators) — linear / mirror / circle / rectangle / heart / star + geometry flags + `--off`
-- ✅ [`bg-blur`](#decorators) — levels 1–4 + `--off`
-- ✅ [`text-style`](#decorators) — alpha · shadow · border · bg-box (26 flags)
-- ✅ [`text-anim`](#decorators) · [`image-anim`](#decorators) — intro / outro / combo from CapCut's library
-- ✅ [`text-ranges`](#decorators) — multi-style text, byte-accurate (unlocks word-level highlight captions)
-
-### Templates
-- ✅ [`save-template`](#templates) · [`apply-template`](#templates) — extract any segment as reusable JSON; restamp with new timing / position / text
-- ✅ 3 templates ship in [`templates/`](./templates/): `gold-title`, `end-card`, `subscribe-cta`
-
-### Import & discovery
-- ✅ [`import-srt`](#import-srt-subtitles-phase-3) — one cue per text segment; file, stdin, or `--style-ref` mirror
-- ✅ [`enums`](#enum-discovery-phase-3) — 12 categories × 2 namespaces from a committed `enums.json` (no network)
-
-### Source materials
-- ✅ Local files: mp4, mov, m4v, mp3, wav, aac, png, jpg, gif (any extension CapCut accepts)
-- ✅ [Wikimedia Commons URLs](#wikimedia-commons-phase-5) — page URL, `/wiki/File:` URL, direct CDN URL, or `api.php?prop=pageimages` query. License classifier refuses restrictive without `--force-license`.
-
-### Cross-platform
-- ✅ CapCut **and** JianYing — same binary, `--jianying` flag switches the enum namespace
-- ✅ macOS · Windows · Linux — pure Node ≥ 18, no native modules
-
-### Output
-- ✅ JSON (default — pipeable to `jq`)
-- ✅ `-H` / `--human` table mode (human-readable)
-- ✅ `-q` / `--quiet` mode (exit code only)
-
-### Quality (v0.4)
-- ✅ 60+ tests `node:test` suite ([`test/`](./test/)) running against [`test/draft_content.json`](./test/draft_content.json)
-- ✅ Husky [pre-commit hook](./.husky/pre-commit) — Biome lint on staged files + full test run
-- ✅ Schema reference in [`docs/draft-schema/`](./docs/draft-schema/) (7 files, ~3,700 lines)
-- ✅ [Version support matrix](./docs/version-support.md) — tested CapCut/JianYing versions, known-broken set, encryption status
-- ✅ [Claude Code plugin](#claude-code-plugin) (`/plugin marketplace add https://github.com/renezander030/capcut-cli`)
-
-### Version resilience (v0.4)
-- ✅ `version` — detect CapCut/JianYing version + schema flags (`mask_field`, `text_ranges`, `audio_fades`) + support status
-- ✅ `lint` — schema-aware checks: caption overlaps (error), line length, cue duration, missing material refs, missing local files. Exit codes 0/1/2 for CI
-- ✅ `migrate` — apply known migrations (`mask` ↔ `common_masks` across the JianYing 5.9 / CapCut 9.6 boundary)
-- ✅ `decrypt` — JianYing 6.0+ encryption detection + clear workaround UX (decryption algorithm intentionally not bundled)
-
-### Captions & translation (v0.4)
-- ✅ `caption` — whisper shell-out (openai-whisper / whisper.cpp / faster-whisper) → real caption-track segments with `sub_type` + `caption_template_info` (addresses pyJianYingDraft #148 — no more text-segment mimics)
-- ✅ `translate` — Anthropic-API multi-language draft clone, zero runtime deps (uses built-in `fetch`). `--dry-run` for safe inspection. Original stays untouched
-
-### v0.5 — new commands (in progress)
-- ✅ `mix-mode` — set blend mode on a video segment (normal · multiply · screen · overlay · soft-light · hard-light · color-dodge · color-burn · darken · lighten · difference · exclusion)
-- ✅ `audio-fade` — fade-in / fade-out on an audio segment via `materials.audio_fades[]` (real fade material, not `volume` keyframes)
-- ✅ `add-cover` — set the draft's cover frame (thumbnail) to a local image (PNG/JPG); `--time <ms>` defaults to 0
-- ✅ `add-filter` — colour-filter track separate from `add-effect`; 10-slug starter catalogue (capcut) or 468 slugs via `enums --filters --jianying`
-- ✅ `bubble-text` — speech-bubble shape on a text segment (7-slug starter catalogue + `enums --bubbles`, or `--effect-id`/`--resource-id` for your own ids)
-- ✅ `import-ass` — ASS / SSA subtitle import alongside `import-srt`; shares `--track-name` / `--style-ref` / `--time-offset` and the full text-style flag set
-
-### Ecosystem unlocks (v0.4)
-- ✅ `add-sfx` — first-class sound effects on a dedicated track (15+ CapCut SFX slugs via `enums --audio-effects`)
-- ✅ `chroma` — green-screen / chroma key on video segments (`--color` + `--intensity`, or `--off`)
-- ✅ `serve` — stateless JSONL queue runner (read from stdin or `--queue` file, dispatch to existing CLI, write JSONL results). No daemon, no port, no shared state — unlocks n8n / Coze / Make / cron without becoming a service
-- ✅ `export --batch` — EXPERIMENTAL UI-automated render queue (macOS AppleScript; Windows path sketched). `--dry-run` for safe exploration on any OS
+**Cross-platform:** CapCut **and** JianYing in one binary (`--jianying` switches the enum namespace); macOS · Windows · Linux; pure Node ≥ 18, zero runtime deps.
 
 ### Roadmap
-- ⬜ Drag-and-drop GIF demos in this README
-- ⬜ JianYing 6.0+ decryption (currently only detection — see `decrypt` workaround docs)
-- ⬜ Windows path for `export --batch` (currently only macOS via AppleScript)
-- 🚫 HTTP server / cloud rendering / MCP server — explicitly out of scope per [`PLAN.md`](./PLAN.md). `serve` ships as a stateless JSONL runner instead — no port, no daemon.
+- ⬜ JianYing 6.0+ decryption (currently detection only — see the `decrypt` workaround)
+- ⬜ Windows path for `export --batch` (currently macOS-only via AppleScript)
+- 🚫 HTTP server / cloud rendering / MCP server — out of scope per [`PLAN.md`](./PLAN.md); `serve` is a stateless JSONL runner instead. Vote on what lands next in [Discussion #1](https://github.com/renezander030/capcut-cli/discussions/1).
 
 ## The problem
 
@@ -167,13 +108,26 @@ Zero dependencies. JSON output by default. Pipeable. Works with CapCut and JianY
 
 ## Install
 
+**Prerequisites:** Node ≥ 18 (built-ins only — no native modules). Two commands need extra tooling: `caption` shells out to a whisper binary, and `translate` needs `ANTHROPIC_API_KEY`. Run `capcut doctor` right after install to check all of this in one shot.
+
 ```bash
 npm install -g capcut-cli
 ```
+Verify the installation:
 
+```bash
+capcut --version    # prints the installed CLI version
+```
 Or run directly:
 ```bash
 npx capcut-cli info ./my-project/
+```
+Or build from source:
+```bash
+git clone https://github.com/renezander030/capcut-cli
+cd capcut-cli
+npm install && npm run build
+node dist/index.js info ./my-project/   # or `npm link` to expose `capcut` globally
 ```
 
 ### Claude Code plugin
@@ -186,6 +140,49 @@ Add the marketplace, then enable the plugin:
 ```
 
 This gives Claude Code the `/capcut-cli:capcut-edit` skill -- it learns every command, the progressive disclosure navigation pattern, and how to find your CapCut projects on macOS/Windows. Auto-installs the CLI on first enable.
+
+### Use as a Node library
+
+The core is importable and typed — no shelling out, no CLI process:
+
+```ts
+import { loadDraft, lintDraft, saveDraft, detectVersion } from "capcut-cli";
+
+const { draft, filePath } = loadDraft("./my-project/draft_content.json");
+console.log(detectVersion(draft).support.status);   // supported | untested | known-broken
+const issues = lintDraft(draft);                     // [{ severity, code, message, location }]
+saveDraft(filePath, draft);
+```
+
+Importing the package never runs the CLI. Exposed: `loadDraft`, `saveDraft`, `findSegment`, `findMaterial`, `getTracksByType`, `extractText`, `updateTextContent`, `lintDraft`, `detectVersion`, `runDoctor`, plus their types.
+
+### Docker
+
+Zero runtime deps, so the image is just Node + the build output. Mount your drafts at `/work`:
+
+```bash
+docker build -t capcut-cli .
+docker run --rm -v "$PWD:/work" capcut-cli info /work/draft_content.json
+cat jobs.jsonl | docker run --rm -i -v "$PWD:/work" capcut-cli serve
+```
+
+### GitHub Action — lint drafts in CI
+
+Gate caption quality (overlaps, line length, missing files) on every push. `lint` exits `2` on errors, which fails the job:
+
+```yaml
+- uses: renezander030/capcut-cli@v0.6
+  with:
+    project: ./drafts/my-short
+    args: --max-chars 32 --max-cue-secs 6
+```
+
+### Verify your environment
+
+```bash
+capcut doctor          # JSON report; exit 1 only on a hard failure (Node < 18)
+capcut doctor -H       # human-readable checklist
+```
 
 ### Why a CLI, not an MCP server
 
@@ -245,6 +242,13 @@ a1b2c3d4  0:00.50- 0:03.00   Welcome to the video
 capcut set-text ./project a1b2c3 "New text" -q && echo "done"
 ```
 
+**Dry run** (`--dry-run`) -- preview any mutating command. It prints the normal JSON result with `"dryRun":true` added, but leaves the draft **and** its `.bak` untouched. Preview, then commit:
+```bash
+capcut speed ./project a1b2c3 2.0 --dry-run
+# {"ok":true,"id":"a1b2c3...","old_speed":1,"new_speed":2,"dryRun":true}   ← nothing written
+capcut speed ./project a1b2c3 2.0            # run for real
+```
+
 ## Commands
 
 ### Overview (start here)
@@ -295,6 +299,39 @@ capcut add-text ./my-short 0s 5s "My Short" --font-size 24 --color "#FFD700"
 
 Options for `add-video` / `add-audio`: `--volume <0-1>`, `--template <path>` (custom draft template).
 
+Or describe the whole draft once and `compile` it — the inverse of `describe`, and far more robust for an agent than chaining 30 mutating commands:
+
+```bash
+capcut compile ./short.json --out ./my-short      # spec -> a complete, valid draft
+```
+
+```jsonc
+// short.json — times in seconds; media paths resolve relative to this file
+{
+  "name": "My Short", "width": 1080, "height": 1920, "fps": 30, "ratio": "9:16",
+  "tracks": [
+    { "type": "video", "items": [
+      { "path": "clip1.mp4", "start": 0, "duration": 3 },
+      { "path": "clip2.mp4", "start": 3, "duration": 4 }
+    ] },
+    { "type": "audio", "items": [ { "path": "music.mp3", "start": 0, "duration": 7, "volume": 0.4 } ] },
+    { "type": "text",  "items": [ { "text": "Hook line", "start": 0, "duration": 2, "fontSize": 18, "color": "#FFD700", "y": -0.6 } ] }
+  ]
+}
+```
+
+The whole spec is validated — and every media file checked to exist — **before** anything is written, so a malformed spec fails clean instead of leaving a half-built draft.
+
+### Preview (watch an edit without opening CapCut)
+
+```bash
+capcut render ./my-short                          # -> ./my-short/preview.mp4
+capcut render ./my-short --out p.mp4 --burn-captions --scale 0.5
+capcut render ./my-short --dry-run                # print the ffmpeg plan, run nothing
+```
+
+`render` shells out to **ffmpeg** to build a low-res proxy of the timeline: it flattens the main video track (per-segment source trim + speed), mixes every audio-track segment, and with `--burn-captions` draws the text segments in. It is a *preview*, not CapCut's final render — no multi-track video compositing, no effects/transitions. Read-only: it never touches the draft. Needs `ffmpeg` on `PATH` (or `--ffmpeg-cmd <path>`); `--dry-run` prints the planned ffmpeg invocation and needs no ffmpeg at all.
+
 ### Add
 
 ```bash
@@ -306,7 +343,7 @@ Options: `--font-size <n>`, `--color <hex>`, `--align <0|1|2>` (left/center/righ
 
 ### Edit
 
-Every write command creates a `.bak` backup before modifying the file.
+Every write command creates a `.bak` backup before modifying the file. Add `--dry-run` to any of them to preview without writing; `capcut restore` rolls the last write back.
 
 ```bash
 capcut set-text ./project a1b2c3 "New subtitle"
@@ -318,6 +355,7 @@ capcut speed ./project a1b2c3 1.5
 capcut volume ./project a1b2c3 0.8
 capcut opacity ./project a1b2c3 0.5
 capcut trim ./project a1b2c3 2s 5s
+capcut restore ./project                     # undo the last write (single-step, from .bak)
 ```
 
 ### Templates
@@ -379,6 +417,35 @@ capcut text-ranges ./project c1c1c1 --styles '[
 
 See `skills/capcut-edit/references/api-reference.md` for every flag and value
 format.
+
+### Sound, colour & decorative effects (v0.4 / v0.5)
+
+```bash
+# Blend mode on a video segment (multiply, screen, overlay, …)
+capcut mix-mode    ./project a1b2c3 screen
+
+# Fade audio in/out — real audio_fades objects, not volume keyframes.
+# Note: --fade-out, because --out is the global output-path flag.
+capcut audio-fade  ./project a1b2c3 --in 0.5s --fade-out 1s
+
+# Colour filter on its own track (slugs from `enums --filters`)
+capcut add-filter  ./project warm 0s 10s
+
+# Speech-bubble shape on a text segment (slugs from `enums --bubbles`)
+capcut bubble-text ./project c1c1c1 --bubble rounded
+
+# Set the project cover / thumbnail from a local image (--time in ms)
+capcut add-cover   ./project ./thumb.png --time 1500
+
+# Sound effect on a dedicated track (slugs from `enums --audio-effects`)
+capcut add-sfx     ./project big-house 2s 1s
+
+# Green-screen / chroma key on a video segment (or --off to clear)
+capcut chroma      ./project a1b2c3 --color "#00FF00" --intensity 0.5
+
+# ASS / SSA subtitle import, alongside import-srt
+capcut import-ass  ./project subs.ass --track-name captions
+```
 
 ### Enum discovery (Phase 3)
 
@@ -495,6 +562,37 @@ $ capcut set-text ./project a1b2c3 "Hey everyone"
 - `1:30` -- 1 minute 30 seconds
 - `0:05.5` -- 5.5 seconds
 
+### Shell completions
+
+Generate shell completions:
+
+```bash
+capcut completions <bash|zsh|fish>
+```
+
+#### Bash
+
+```bash
+capcut completions bash >> ~/.bashrc
+```
+
+#### Zsh
+
+```bash
+mkdir -p ~/.zsh/completions
+capcut completions zsh > ~/.zsh/completions/_capcut
+```
+Ensure `~/.zsh/completions` is in your `fpath` before running `compinit`.
+
+#### Fish
+
+```bash
+mkdir -p ~/.config/fish/completions
+capcut completions fish > ~/.config/fish/completions/capcut.fish
+```
+
+Completes command names and global flags (`--jianying`, `-H`/`--human`, `-q`/`--quiet`, `-v`/`--version`).
+
 ## How it works
 
 CapCut stores projects as JSON (`draft_content.json` on Windows, `draft_info.json` on macOS). This CLI reads and modifies that JSON directly. It preserves the original file's indentation style on save.
@@ -504,6 +602,19 @@ Typical project location:
 - **macOS**: `/Users/<you>/Movies/CapCut/User Data/Projects/com.lveditor.draft/<id>/`
 
 Close the project in CapCut before editing, reopen after. CapCut reads the JSON on project open.
+
+## Troubleshooting
+
+| Symptom | Cause & fix |
+|---|---|
+| **Edits vanish / project looks unchanged** | CapCut was open. It keeps its own copy of the draft in memory and overwrites your file when it next saves. **Close the project in CapCut, run the CLI, then reopen.** This is the single most common gotcha. |
+| **Track / layer order looks scrambled in CapCut** | Older builds wrote tracks in command-call order, but CapCut lays out the timeline from the tracks-array order. Recent builds normalize the array to the canonical layer order (video → audio → overlays → text) on every save. Update, re-run the edit, reopen. ([#21](https://github.com/renezander030/capcut-cli/issues/21)) |
+| **Need to undo an edit** | `capcut restore <project>` reverts the last write. Earlier writes are recoverable too: `capcut restore <project> --list` shows the snapshot history (kept in `<draftdir>/.capcut-cli-history/`, last 20), and `--step N` rolls back N writes. Preview any command first with `--dry-run` to avoid the round-trip. |
+| **`caption` fails: whisper not found** | `caption` shells out to a whisper binary. Install one (`pip install openai-whisper`, `brew install whisper-cpp`, or faster-whisper) or pass `--whisper-cmd <path>`. |
+| **`translate` fails: ANTHROPIC_API_KEY** | Set the env var (`export ANTHROPIC_API_KEY=…`) or pass `--api-key`. |
+| **`audio-fade --out` seems ignored** | `--out` is the global output-path flag. Use `--fade-out` for the fade-out duration. |
+| **`doctor` can't find your project dir on Linux** | The default-path probe only knows the macOS/Windows locations — CapCut Desktop isn't shipped for Linux. Pass the draft path explicitly. |
+| **`requires Node >= 18`** | The CLI uses Node 18+ built-ins (`fetch`, fs promises). Upgrade Node, then re-run `capcut doctor`. |
 
 ## Workflow: batch subtitle correction
 
@@ -536,8 +647,13 @@ End-to-end recipes in [`examples/`](./examples/):
 ## What's next
 
 - **Want the full viral-shorts system, not just the CLI?** Get the [Viral Story Shorts Blueprint + Claude Skill](https://renezander.gumroad.com/l/viral-youtube-shorts-blueprint?utm_source=capcut-cli&utm_medium=readme&utm_campaign=footer) — the complete pipeline I use to ship Shorts at volume.
+- **By the same author**: [draftcat](https://github.com/renezander030/draftcat) — governed AI pipelines for service businesses (Go, MIT). Same design DNA: single binary, no API needed, structured JSON boundary between agent and tool.
 - **Author**: I'm Rene Zander — I build AI-driven content automation systems. More guides at [renezander.com](https://renezander.com/?utm_source=capcut-cli&utm_medium=readme&utm_campaign=author).
 - **Hire me** for AI/automation work: [renezander.com/contact](https://renezander.com/contact/?utm_source=capcut-cli&utm_medium=readme&utm_campaign=hire).
+
+## Trademarks
+
+CapCut™ and JianYing™ (剪映) are trademarks of ByteDance Ltd. This project is unofficial and is not affiliated with or endorsed by ByteDance; the marks are used nominatively to describe interoperability.
 
 ## License
 

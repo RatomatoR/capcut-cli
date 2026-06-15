@@ -1,11 +1,20 @@
 {
   "name": "capcut-cli",
-  "version": "0.5.0",
-  "description": "CLI to create and edit CapCut projects — build drafts from scratch, add video/audio/text, subtitles, timing, speed, volume, templates, cut long-form to shorts. No API needed.",
+  "version": "0.10.0",
+  "description": "Independent, unofficial CLI to create and edit CapCut projects — build drafts from scratch, add video/audio/text, subtitles, timing, speed, volume, templates, cut long-form to shorts. No API needed. Not affiliated with ByteDance.",
   "type": "module",
   "bin": {
     "capcut": "dist/index.js",
     "capcut-cli": "dist/index.js"
+  },
+  "main": "./dist/lib.js",
+  "types": "./dist/lib.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/lib.d.ts",
+      "import": "./dist/lib.js"
+    },
+    "./package.json": "./package.json"
   },
   "files": [
     "dist",
@@ -70,7 +79,7 @@
     "node": ">=18"
   },
   "devDependencies": {
-    "@biomejs/biome": "^2.4.15",
+    "@biomejs/biome": "2.4.15",
     "@types/node": "^25.6.0",
     "husky": "^9.1.7",
     "lint-staged": "^17.0.4",
