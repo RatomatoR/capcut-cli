@@ -2,6 +2,14 @@
 
 All notable changes to capcut-cli are documented here. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); the project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.11.2] — 2026-06-20
+
+### Fixed
+
+- Windows now resolves the bundled template and spawned `serve` CLI through proper filesystem paths instead of URL pathnames, fixing `init`, `compile`, and queued jobs on drive-letter paths.
+- ESM test imports use `file:` URLs on Windows, and a single-file `restore` preserves the backup's exact bytes.
+- The full Node 20 suite now passes on Windows, macOS, and Linux in GitHub Actions.
+
 ## [0.11.1] — 2026-06-20
 
 ### Fixed
