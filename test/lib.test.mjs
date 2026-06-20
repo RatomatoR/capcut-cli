@@ -1,10 +1,10 @@
 import assert from "node:assert/strict";
 import { dirname, join } from "node:path";
 import { describe, it } from "node:test";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
-const LIB = join(__dirname, "..", "dist", "lib.js");
+const LIB = pathToFileURL(join(__dirname, "..", "dist", "lib.js")).href;
 const FIXTURE = join(__dirname, "draft_content.json");
 
 describe("library entry point (dist/lib.js)", () => {

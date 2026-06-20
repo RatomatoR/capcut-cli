@@ -1,10 +1,10 @@
 import assert from "node:assert/strict";
 import { dirname, join } from "node:path";
 import { describe, it } from "node:test";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
-const DRAFT = join(__dirname, "..", "dist", "draft.js");
+const DRAFT = pathToFileURL(join(__dirname, "..", "dist", "draft.js")).href;
 
 // Regression for #21: tracks are pushed in command-call order, so the tracks
 // array (which drives CapCut's timeline layout) can come out scrambled.

@@ -86,7 +86,7 @@ import { buildRenderPlan, renderDraft } from "./render.js";
 import { serveQueue } from "./serve.js";
 import { addSfx } from "./sfx.js";
 import { parseSrt } from "./srt.js";
-import { diagnoseDraftStore } from "./store.js";
+import { diagnoseDraftStore, discoverDraftStore } from "./store.js";
 import { formatDuration, formatTime, parseTimeInput, srtTime } from "./time.js";
 import { translateDraft } from "./translate.js";
 import { detectVersion } from "./version.js";
@@ -2134,7 +2134,7 @@ function cmdDecrypt(positional: string[], flags: Flags): void {
 
 async function cmdServe(flags: Flags): Promise<void> {
   // Resolve our own dist path so the spawned child uses the same install.
-  const selfPath = new URL(import.meta.url).pathname;
+  const selfPath = fileURLToPath(import.meta.url);
   const result = await serveQueue({
     queuePath: flags.queue,
     cliPath: selfPath,
@@ -2342,6 +2342,7 @@ function getCliVersion(): string {
 function cmdRestore(projectPath: string | undefined, flags: Flags): void {
   if (!projectPath) die("Missing project path. Usage: capcut restore <project> [--step N | --list]");
   const filePath = findDraft(projectPath);
+  const hasSynchronizedSiblings = discoverDraftStore(filePath).targets.length > 1;
   const snaps = listSnapshots(filePath);
 
   if (flags.list) {
@@ -2358,8 +2359,10 @@ function cmdRestore(projectPath: string | undefined, flags: Flags): void {
     }
     if (!isDryRun()) {
       copyFileSync(target.path, filePath);
-      const restored = loadDraft(filePath);
-      saveDraft(restored.filePath, restored.draft, { backup: false });
+      if (hasSynchronizedSiblings) {
+        const restored = loadDraft(filePath);
+        saveDraft(restored.filePath, restored.draft, { backup: false });
+      }
     }
     out({ ok: true, restored: filePath, from: target.path, step: flags.step }, flags);
     return;
@@ -2371,8 +2374,10 @@ function cmdRestore(projectPath: string | undefined, flags: Flags): void {
   }
   if (!isDryRun()) {
     copyFileSync(bakPath, filePath);
-    const restored = loadDraft(filePath);
-    saveDraft(restored.filePath, restored.draft, { backup: false });
+    if (hasSynchronizedSiblings) {
+      const restored = loadDraft(filePath);
+      saveDraft(restored.filePath, restored.draft, { backup: false });
+    }
   }
   out({ ok: true, restored: filePath, from: bakPath }, flags);
 }
@@ -2861,9 +2866,9 @@ function cmdCompile(positional: string[], flags: Flags): void {
     return;
   }
 
-  const cliDir = new URL(".", import.meta.url).pathname.replace(/\/dist\/$/, "");
-  const externalTemplate = `${cliDir}/../CapCutAPI/template`;
-  const bundledTemplate = `${cliDir}/templates/_init`;
+  const cliDir = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
+  const externalTemplate = path.resolve(cliDir, "..", "CapCutAPI", "template");
+  const bundledTemplate = path.join(cliDir, "templates", "_init");
   let templateDir = flags.template ?? externalTemplate;
   if (!flags.template && !existsSync(templateDir) && existsSync(bundledTemplate)) {
     templateDir = bundledTemplate;
@@ -3032,10 +3037,10 @@ async function main(): Promise<void> {
   if (cmd === "init") {
     const name = projectPath; // positional[1] is the name for init
     if (!name) die("Missing name. Usage: capcut init <name> [--template <dir>] [--drafts <dir>]");
-    const cliDir = new URL(".", import.meta.url).pathname.replace(/\/dist\/$/, "");
+    const cliDir = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
     // Default template resolution: user --template > ../CapCutAPI/template > bundled _init template
-    const externalTemplate = `${cliDir}/../CapCutAPI/template`;
-    const bundledTemplate = `${cliDir}/templates/_init`;
+    const externalTemplate = path.resolve(cliDir, "..", "CapCutAPI", "template");
+    const bundledTemplate = path.join(cliDir, "templates", "_init");
     let templateDir = flags.template ?? externalTemplate;
     if (!flags.template && !existsSync(templateDir) && existsSync(bundledTemplate)) {
       templateDir = bundledTemplate;

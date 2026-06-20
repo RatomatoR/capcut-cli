@@ -1,10 +1,10 @@
 import assert from "node:assert/strict";
 import { dirname, join } from "node:path";
 import { describe, it } from "node:test";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
-const EXPORT_BATCH = join(__dirname, "..", "dist", "export-batch.js");
+const EXPORT_BATCH = pathToFileURL(join(__dirname, "..", "dist", "export-batch.js")).href;
 
 // Live Windows UI automation can't run on this (Linux) host, so we verify the
 // generated PowerShell script — the part that is deterministic and testable.
