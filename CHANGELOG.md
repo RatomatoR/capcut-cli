@@ -2,6 +2,35 @@
 
 All notable changes to capcut-cli are documented here. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); the project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.11.0] — 2026-06-20
+
+A reliability and automation release spanning the full draft lifecycle. It closes the highest-value gaps found in the v0.10.1 repository audit while preserving the zero-runtime-dependency core.
+
+### Added
+
+- **CapCut 8.7+ draft store** — version-aware discovery of `draft_content.json`, `draft_info.json`, `draft_meta_info.json`, and `template-2.tmp`, including nested/string JSON envelopes. Every readable timeline target is synchronized on write.
+- **`diagnose`** — redacted storage report with canonical-file selection, hashes, timeline divergence, editor-process detection, and `--bundle <report.json>` output for compatibility reports.
+- **Command contract v2** — `describe` now exposes usage, typed positionals/options, defaults/enums, mutability, prerequisites, output form, and exit codes for every command. Help, completions, generated docs, and the typed `runCommand()` library API consume the registry.
+- **`compile` v2** — stable item refs, source timing, speed/volume/opacity/transforms, transitions, filters, effects, keyframes, audio fades, templates, SRT captions, text styles/ranges, plus `--check` / `--plan` validation without writes.
+- **Caption adapters + karaoke** — explicit OpenAI Whisper, whisper.cpp, and faster-whisper dialects; word-timestamp parsing/grouping; `--karaoke`, `--max-words`, `--max-chars`, and `--max-gap-ms` generate time-varying highlighted caption segments.
+- **Full media probing** — ffprobe duration, FPS, display rotation, dimensions, codecs, audio presence/channels, and a path+mtime cache. `add-video`, `add-audio`, and `compile` can infer omitted durations.
+- **Higher-fidelity proxy rendering** — optional `--all-video-tracks` composition with transforms/opacity, audio fades, draft caption colour/size/position, explicit skipped-feature reports, and FFmpeg capability detection/fallbacks.
+- **Reliable `serve` runner** — bounded async workers, per-project serialization, stable job-ID deduplication, retry/backoff, configurable timeout/output limits, and safe capture for outputs larger than 64 KiB.
+- **Cross-platform CI smoke matrix** — Node 20 tests on Ubuntu, macOS, and Windows in addition to the existing Node 18/20/22 Linux matrix.
+
+### Changed
+
+- **Conflict-safe atomic persistence** — writes are prepared and fsynced before same-directory rename, every synchronized target receives a backup/history snapshot, changed-on-disk drafts are refused, and managed drafts are protected while CapCut/JianYing is running. `--force-write` is the explicit override.
+- **Transactional `batch`** — all operations validate against cloned state and commit once. Any failure writes nothing by default; `--continue-on-error` intentionally commits only successful operations and exits non-zero.
+- **`doctor`** — now reports ffprobe and detailed FFmpeg filter/encoder capabilities alongside Whisper and project-directory checks.
+- **Lint gate** — warnings now fail `npm run lint`; the existing lint debt was removed.
+
+### Fixed
+
+- Large JianYing enum and `serve` results no longer truncate at the macOS 64 KiB synchronous pipe boundary.
+- Proxy-render tests no longer assume every installed FFmpeg build includes `drawtext`; caption burn falls back cleanly when it is absent.
+- Stale roadmap, version-support, Chinese README, skill reference, test-count, and release metadata claims were synchronized with the shipped surface.
+
 ## [0.10.0] — 2026-06-08
 
 Two commands that close the two biggest gaps in a headless CapCut workflow: seeing the result, and authoring a whole draft in one shot. No breaking changes; still zero npm-dep and JSON-by-default. Both shell out to `ffmpeg` only when actually rendering, the same opt-in external-binary pattern `caption` uses for whisper.

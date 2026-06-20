@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { after, describe, it } from "node:test";
 import { fileURLToPath } from "node:url";
-import { buildRenderPlan } from "../dist/render.js";
+import { buildRenderPlan, probeFfmpegCapabilities } from "../dist/render.js";
 import { spawnCli } from "./helpers/spawn-cli.mjs";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -114,6 +114,60 @@ describe("render — plan (buildRenderPlan, pure)", () => {
     assert.equal(plan.videoSegments, 1);
     assert.equal(plan.skipped.length, 1);
     assert.match(plan.skipped[0].reason, /file missing/);
+  });
+
+  it("composites overlay tracks, transforms, opacity, and audio fades", () => {
+    const s = setup();
+    after(s.cleanup);
+    const draft = buildDraft(s.dir);
+    const overlayPath = join(s.dir, "overlay.png");
+    writeFileSync(overlayPath, "");
+    draft.materials.videos.push({
+      id: "mov",
+      path: overlayPath,
+      type: "photo",
+      material_name: "overlay.png",
+      duration: US,
+      width: 100,
+      height: 100,
+    });
+    draft.tracks.push({
+      id: "tov",
+      type: "video",
+      name: "overlay",
+      attribute: 0,
+      segments: [
+        {
+          id: "seg-overlay",
+          material_id: "mov",
+          target_timerange: { start: US, duration: US },
+          source_timerange: { start: 0, duration: US },
+          speed: 1,
+          volume: 1,
+          visible: true,
+          clip: { alpha: 0.5, rotation: 10, scale: { x: 0.5, y: 0.5 }, transform: { x: 0.25, y: -0.25 } },
+          extra_material_refs: [],
+          render_index: 0,
+        },
+      ],
+    });
+    draft.materials.audio_fades.push({ id: "fade-1", fade_in_duration: 250_000, fade_out_duration: 500_000 });
+    draft.tracks.find((track) => track.type === "audio").segments[0].extra_material_refs.push("fade-1");
+    const plan = buildRenderPlan(draft, { out: join(s.dir, "p.mp4"), allVideoTracks: true });
+    assert.equal(plan.overlaySegments, 1);
+    assert.match(plan.filterComplex, /overlay=x=/);
+    assert.match(plan.filterComplex, /colorchannelmixer=aa=0.5/);
+    assert.match(plan.filterComplex, /rotate=10\*PI\/180/);
+    assert.match(plan.filterComplex, /afade=t=in/);
+    assert.match(plan.filterComplex, /afade=t=out/);
+  });
+
+  it("reports ffmpeg filter capabilities", (t) => {
+    if (!hasFfmpeg) return t.skip("ffmpeg not installed");
+    const capabilities = probeFfmpegCapabilities();
+    assert.equal(capabilities.available, true);
+    assert.equal(typeof capabilities.drawtext, "boolean");
+    assert.equal(typeof capabilities.overlay, "boolean");
   });
 
   it("throws when there is no usable video segment", () => {

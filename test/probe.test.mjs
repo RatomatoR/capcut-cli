@@ -1,9 +1,16 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { writeFileSync } from "node:fs";
+import { readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { after, describe, it } from "node:test";
-import { displayDimensions, normalizeRotation, parseProbeStreams, probeVideoDimensions } from "../dist/probe.js";
+import {
+  displayDimensions,
+  normalizeRotation,
+  parseMediaProbe,
+  parseProbeStreams,
+  probeMedia,
+  probeVideoDimensions,
+} from "../dist/probe.js";
 import { spawnCli } from "./helpers/spawn-cli.mjs";
 import { tmpDraft } from "./helpers/tmp-draft.mjs";
 
@@ -72,6 +79,34 @@ describe("probe: displayDimensions", () => {
   });
 });
 
+describe("probe: full media metadata", () => {
+  it("parses duration, fps, codecs, dimensions, rotation, and audio channels", () => {
+    const parsed = parseMediaProbe(
+      JSON.stringify({
+        streams: [
+          {
+            codec_type: "video",
+            codec_name: "h264",
+            width: 1920,
+            height: 1080,
+            avg_frame_rate: "30000/1001",
+            tags: { rotate: "90" },
+          },
+          { codec_type: "audio", codec_name: "aac", channels: 2 },
+        ],
+        format: { duration: "12.5" },
+      }),
+    );
+    assert.equal(parsed.width, 1080);
+    assert.equal(parsed.height, 1920);
+    assert.equal(parsed.durationUs, 12_500_000);
+    assert.ok(Math.abs(parsed.fps - 29.97) < 0.01);
+    assert.equal(parsed.audioChannels, 2);
+    assert.equal(parsed.videoCodec, "h264");
+    assert.equal(parsed.audioCodec, "aac");
+  });
+});
+
 describe("probe: normalizeRotation", () => {
   it("normalizes negatives and overflows to 0/90/180/270", () => {
     assert.equal(normalizeRotation(-90), 270);
@@ -110,6 +145,17 @@ describe("add-video: dimension resolution", () => {
     assert.match(r.json.warning, /ffprobe|--width/);
   });
 
+  it("does not cap a photo timeline duration to ffprobe's single-frame duration", () => {
+    const media = dummyMedia("still.jpg");
+    const r = spawnCli(["add-video", fix.path, media, "0", "3s", "--track-name", "still"]);
+    assert.equal(r.status, 0, `stderr: ${r.stderr}`);
+    assert.equal(r.json.duration_us, 3_000_000);
+    const written = JSON.parse(readFileSync(fix.path, "utf-8"));
+    const segment = written.tracks.find((track) => track.name === "still").segments[0];
+    const material = written.materials.videos.find((item) => item.id === segment.material_id);
+    assert.equal(material.type, "photo");
+  });
+
   it("auto-probes a real file via ffprobe", (t) => {
     if (!hasFfprobe) return t.skip("ffprobe not installed");
     const probed = probeVideoDimensions(REAL_MEDIA);
@@ -119,5 +165,15 @@ describe("add-video: dimension resolution", () => {
     assert.equal(r.json.dimension_source, "ffprobe");
     assert.equal(r.json.width, probed.width);
     assert.equal(r.json.height, probed.height);
+  });
+
+  it("uses probed duration when duration is omitted", (t) => {
+    if (!hasFfprobe) return t.skip("ffprobe not installed");
+    const media = probeMedia(REAL_MEDIA);
+    if (!media?.durationUs) return t.skip("test media not available");
+    const r = spawnCli(["add-video", fix.path, REAL_MEDIA, "0", "--track-name", "auto-duration"]);
+    assert.equal(r.status, 0, `stderr: ${r.stderr}`);
+    assert.equal(r.json.duration_source, "ffprobe");
+    assert.equal(r.json.duration_us, media.durationUs);
   });
 });

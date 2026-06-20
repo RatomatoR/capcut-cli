@@ -20,10 +20,36 @@ describe("describe", () => {
     assert.deepEqual(undescribed, [], `commands missing a summary: ${undescribed.map((c) => c.name).join(", ")}`);
   });
 
+  it("provides a complete machine-callable contract for every command", () => {
+    const r = spawnCli(["describe"]);
+    assert.equal(r.json.schema_version, 2);
+    for (const command of r.json.commands) {
+      assert.match(command.usage, new RegExp(`^capcut ${command.name}(?: |$)`));
+      assert.ok(Array.isArray(command.positionals), `${command.name}: positionals`);
+      assert.ok(Array.isArray(command.options), `${command.name}: options`);
+      assert.equal(typeof command.mutates, "boolean", `${command.name}: mutates`);
+      assert.ok(command.output?.type, `${command.name}: output`);
+      assert.ok(command.exit_codes?.["0"], `${command.name}: exit codes`);
+      for (const option of command.options) {
+        assert.ok(Array.isArray(option.flags) && option.flags.length > 0, `${command.name}: option flags`);
+        assert.ok(option.type, `${command.name}: option type`);
+      }
+    }
+  });
+
   it("includes the new commands", () => {
     const r = spawnCli(["describe"]);
     const names = r.json.commands.map((c) => c.name);
-    for (const expected of ["prune", "relink", "timeline", "projects", "describe", "restore"]) {
+    for (const expected of [
+      "prune",
+      "relink",
+      "timeline",
+      "projects",
+      "describe",
+      "restore",
+      "diagnose",
+      "templates",
+    ]) {
       assert.ok(names.includes(expected), `expected command "${expected}" in describe output`);
     }
   });

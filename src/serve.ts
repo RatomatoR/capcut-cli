@@ -1,86 +1,261 @@
-import { spawnSync } from "node:child_process";
-import { createReadStream, existsSync } from "node:fs";
+import { spawn } from "node:child_process";
+import {
+  closeSync,
+  createReadStream,
+  existsSync,
+  mkdtempSync,
+  openSync,
+  readFileSync,
+  rmSync,
+  statSync,
+} from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { createInterface } from "node:readline";
 
 export interface ServeOptions {
   queuePath?: string;
-  cliPath: string; // path to the built dist/index.js
+  cliPath: string;
   failFast?: boolean;
+  workers?: number;
+  retries?: number;
+  timeoutMs?: number;
+  backoffMs?: number;
+  maxBufferBytes?: number;
 }
 
 export interface JobInput {
+  id?: string;
   cmd: string;
   args?: string[];
   project?: string;
+  timeoutMs?: number;
+  retries?: number;
 }
 
 export interface JobResult {
+  id?: string;
   ok: boolean;
   cmd: string;
   args: string[];
   status: number | null;
   stdout?: unknown;
   stderr?: string;
+  attempts?: number;
+  duration_ms?: number;
+  deduplicated?: boolean;
+  timed_out?: boolean;
+  overflow?: boolean;
+}
+
+export interface ServeSummary {
+  succeeded: number;
+  failed: number;
+  deduplicated: number;
 }
 
 /**
- * Stateless JSONL queue runner. Reads {cmd, args, project} jobs from either a
- * file or stdin, dispatches each to the existing CLI, writes one JSONL result
- * line per job to stdout. No daemon, no port, no shared state — the process
- * exits when the queue drains.
+ * Bounded JSONL job runner for n8n/Make/Coze/cron.
  *
- * This unlocks n8n / Coze / Make / cron without becoming a stateful service.
+ * Jobs for different projects may run in parallel; jobs targeting the same
+ * project are serialized so two writers never race. An optional stable `id`
+ * deduplicates retries from external orchestrators. Each job has bounded
+ * output, configurable timeout, retry/backoff, and one JSON result line.
  */
-export async function serveQueue(opts: ServeOptions): Promise<{ succeeded: number; failed: number }> {
+export async function serveQueue(opts: ServeOptions): Promise<ServeSummary> {
+  if (opts.queuePath && !existsSync(opts.queuePath)) throw new Error(`Queue file not found: ${opts.queuePath}`);
   const input = opts.queuePath ? createReadStream(opts.queuePath, "utf-8") : process.stdin;
-  if (opts.queuePath && !existsSync(opts.queuePath)) {
-    throw new Error(`Queue file not found: ${opts.queuePath}`);
-  }
   const reader = createInterface({ input, crlfDelay: Infinity });
-  let succeeded = 0;
-  let failed = 0;
+  const jobs: JobInput[] = [];
+  const immediate: JobResult[] = [];
+
   for await (const rawLine of reader) {
     const line = rawLine.trim();
     if (!line) continue;
-    let job: JobInput;
     try {
-      job = JSON.parse(line) as JobInput;
-    } catch (e) {
-      const msg = e instanceof Error ? e.message : String(e);
-      writeResult({ ok: false, cmd: "", args: [], status: null, stderr: `JSON parse error: ${msg}` });
-      failed++;
+      const job = JSON.parse(line) as JobInput;
+      if (!job || typeof job.cmd !== "string" || job.cmd.length === 0) {
+        throw new Error("missing or invalid 'cmd' field");
+      }
+      jobs.push(job);
+    } catch (error) {
+      const result: JobResult = {
+        ok: false,
+        cmd: "",
+        args: [],
+        status: null,
+        stderr: `JSON parse error: ${error instanceof Error ? error.message : String(error)}`,
+      };
+      immediate.push(result);
+      writeResult(result);
       if (opts.failFast) break;
-      continue;
     }
-    const result = runJob(opts.cliPath, job);
+  }
+
+  let succeeded = 0;
+  let failed = immediate.length;
+  let deduplicated = 0;
+  const projectLocks = new Map<string, Promise<unknown>>();
+  const idResults = new Map<string, Promise<JobResult>>();
+
+  const execute = async (job: JobInput): Promise<JobResult> => {
+    if (job.id) {
+      const previous = idResults.get(job.id);
+      if (previous) {
+        const result = await previous;
+        return { ...result, deduplicated: true };
+      }
+    }
+    const operation = withProjectLock(projectLocks, job.project, () => runWithRetries(opts, job));
+    if (job.id) idResults.set(job.id, operation);
+    return operation;
+  };
+
+  const record = async (job: JobInput): Promise<boolean> => {
+    const result = await execute(job);
     writeResult(result);
+    if (result.deduplicated) deduplicated++;
     if (result.ok) succeeded++;
     else failed++;
-    if (!result.ok && opts.failFast) break;
+    return result.ok;
+  };
+
+  if (opts.failFast) {
+    for (const job of jobs) {
+      if (!(await record(job))) break;
+    }
+  } else {
+    const workerCount = Math.max(1, Math.min(Math.floor(opts.workers ?? 1), 32));
+    let cursor = 0;
+    const workers = Array.from({ length: workerCount }, async () => {
+      while (cursor < jobs.length) {
+        const index = cursor++;
+        await record(jobs[index]);
+      }
+    });
+    await Promise.all(workers);
   }
-  return { succeeded, failed };
+
+  return { succeeded, failed, deduplicated };
 }
 
-function runJob(cliPath: string, job: JobInput): JobResult {
-  if (!job.cmd || typeof job.cmd !== "string") {
-    return { ok: false, cmd: "", args: [], status: null, stderr: "missing or invalid 'cmd' field" };
+function withProjectLock(
+  locks: Map<string, Promise<unknown>>,
+  project: string | undefined,
+  operation: () => Promise<JobResult>,
+): Promise<JobResult> {
+  if (!project) return operation();
+  const previous = locks.get(project) ?? Promise.resolve();
+  const current = previous.catch(() => undefined).then(operation);
+  locks.set(
+    project,
+    current.then(
+      () => undefined,
+      () => undefined,
+    ),
+  );
+  return current;
+}
+
+async function runWithRetries(opts: ServeOptions, job: JobInput): Promise<JobResult> {
+  const started = Date.now();
+  const retries = Math.max(0, Math.floor(job.retries ?? opts.retries ?? 0));
+  let result: JobResult = { ok: false, cmd: job.cmd, args: [], status: null };
+  for (let attempt = 1; attempt <= retries + 1; attempt++) {
+    result = await runJob(opts.cliPath, job, {
+      timeoutMs: job.timeoutMs ?? opts.timeoutMs ?? 300_000,
+      maxBufferBytes: opts.maxBufferBytes ?? 16 * 1024 * 1024,
+    });
+    result.attempts = attempt;
+    if (result.ok) break;
+    if (attempt <= retries) await delay((opts.backoffMs ?? 250) * 2 ** (attempt - 1));
   }
-  const args: string[] = [job.cmd];
-  if (job.project) args.push(job.project);
-  if (Array.isArray(job.args)) args.push(...job.args.map(String));
-  const r = spawnSync("node", [cliPath, ...args], { encoding: "utf-8", timeout: 60_000 });
-  let stdout: unknown = r.stdout;
-  try {
-    if (r.stdout?.trim()) stdout = JSON.parse(r.stdout);
-  } catch {
-    /* not JSON — keep raw */
-  }
-  const ok = r.status === 0;
-  const result: JobResult = { ok, cmd: job.cmd, args, status: r.status, stdout };
-  if (!ok && r.stderr) result.stderr = r.stderr.trim();
+  result.duration_ms = Date.now() - started;
   return result;
 }
 
-function writeResult(r: JobResult): void {
-  process.stdout.write(`${JSON.stringify(r)}\n`);
+function runJob(
+  cliPath: string,
+  job: JobInput,
+  limits: { timeoutMs: number; maxBufferBytes: number },
+): Promise<JobResult> {
+  const args: string[] = [job.cmd];
+  if (job.project) args.push(job.project);
+  if (Array.isArray(job.args)) args.push(...job.args.map(String));
+  return new Promise((resolve) => {
+    const captureDir = mkdtempSync(join(tmpdir(), "capcut-serve-"));
+    const stdoutPath = join(captureDir, "stdout");
+    const stderrPath = join(captureDir, "stderr");
+    const stdoutFd = openSync(stdoutPath, "w");
+    const stderrFd = openSync(stderrPath, "w");
+    const child = spawn(process.execPath, [cliPath, ...args], { stdio: ["ignore", stdoutFd, stderrFd] });
+    closeSync(stdoutFd);
+    closeSync(stderrFd);
+    let settled = false;
+    let timedOut = false;
+    let overflow = false;
+
+    const finish = (result: JobResult) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      clearInterval(bufferWatch);
+      rmSync(captureDir, { recursive: true, force: true });
+      resolve(result);
+    };
+    const timer = setTimeout(() => {
+      timedOut = true;
+      child.kill("SIGKILL");
+    }, limits.timeoutMs);
+    const bufferWatch = setInterval(() => {
+      const bytes = [stdoutPath, stderrPath].reduce((sum, path) => {
+        try {
+          return sum + statSync(path).size;
+        } catch {
+          return sum;
+        }
+      }, 0);
+      if (bytes > limits.maxBufferBytes) {
+        overflow = true;
+        child.kill("SIGKILL");
+      }
+    }, 25);
+    child.on("error", (error) =>
+      finish({ id: job.id, ok: false, cmd: job.cmd, args, status: null, stderr: error.message }),
+    );
+    child.on("close", (status) => {
+      if (settled) return;
+      const out = readFileSync(stdoutPath, "utf-8");
+      const err = readFileSync(stderrPath, "utf-8").trim();
+      let parsed: unknown = out;
+      try {
+        if (out.trim()) parsed = JSON.parse(out);
+      } catch {
+        // Keep text output unchanged.
+      }
+      finish({
+        id: job.id,
+        ok: status === 0 && !timedOut && !overflow,
+        cmd: job.cmd,
+        args,
+        status,
+        stdout: parsed,
+        stderr: overflow
+          ? `output exceeded ${limits.maxBufferBytes} bytes`
+          : timedOut
+            ? `timed out after ${limits.timeoutMs}ms`
+            : err || undefined,
+        timed_out: timedOut || undefined,
+        overflow: overflow || undefined,
+      });
+    });
+  });
+}
+
+function delay(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function writeResult(result: JobResult): void {
+  process.stdout.write(`${JSON.stringify(result)}\n`);
 }

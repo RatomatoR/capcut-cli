@@ -18,15 +18,17 @@ _一个独立的、社区维护的 CapCut / 剪映草稿文件命令行工具。
 
 **任何大模型 Agent 都能驱动的剪映 / CapCut 命令行 —— 零依赖、无服务、CapCut + 剪映共用一个二进制。**
 
-每个命令都直接读写 `draft_content.json`：JSON 进、JSON 出，不用 MCP 服务，不用 HTTP 守护进程，无状态。任何模型（Claude、DeepSeek、GLM、Kimi）都能在流水线里直接调用这个确定性边界。命令行查看工程、从零搭草稿、加素材、改字幕、用 whisper 自动打字幕、一键克隆成多语言版本、把长视频切成短片。因为链路里没有任何私有 API，所以扛得住字节跳动下次改版 —— 而且 `caption` 写的是真字幕对象，不是别的工具那种文本伪装。
+每个命令都通过版本感知的本地草稿存储层工作：JSON 进、JSON 出，不用 MCP 服务或 HTTP 守护进程。新版 CapCut 会自动检测并同步 `draft_content.json`、`draft_info.json`、`draft_meta_info.json` 与 `template-2.tmp` 中可读的时间线，不再假设只有一个文件是真源。
 
 **三种用法：**
 
 - **命令行** —— `npm install -g capcut-cli`，然后 `capcut <command> <project>`
-- **代码库** —— `import { loadDraft, lintDraft, saveDraft } from "capcut-cli"`（带类型、零依赖）
-- **队列执行器** —— `capcut serve` 从 stdin 读 JSONL 任务，可对接 [n8n / Make / 扣子 Coze](./examples/serve-automation.md)
+- **代码库** —— `import { loadDraft, lintDraft, saveDraft, runCommand } from "capcut-cli"`（带类型、零依赖）
+- **队列执行器** —— `capcut serve` 从 stdin 读 JSONL 任务，支持并发、重试、去重与同项目串行化，可对接 [n8n / Make / 扣子 Coze](./examples/serve-automation.md)
 
-先跑 `capcut doctor` 检查环境（Node、whisper、草稿目录）。
+先跑 `capcut doctor` 检查环境（Node、Whisper、ffprobe、FFmpeg 能力、草稿目录）。
+
+**v0.11.0 可靠性版本** —— CapCut 8.7 多文件存储适配、原子/冲突安全写入、事务式 `batch`、命令契约 v2、`compile` v2、卡拉 OK 字幕、完整媒体探测、多视频轨代理预览，以及可靠的并发队列执行器。详见 [CHANGELOG](./CHANGELOG.md#0110--2026-06-20)。
 
 **v0.6 新增** —— `doctor`（环境预检）、可导入的 Node 代码库（`import { … } from "capcut-cli"`）、官方 [Dockerfile](./Dockerfile)、在 CI 里检查草稿的 [GitHub Action](./action.yml)、三个新模板（`caption-pop`、`lower-third`、`hook-question`），以及覆盖 Node 18/20/22 的 CI 矩阵。
 
@@ -114,6 +116,7 @@ flowchart LR
 ### 编辑
 - ✅ `set-text` · `shift` · `shift-all` · `speed` · `volume` · `opacity` · `trim`
 - ✅ [`batch`](#批量编辑) — 一次 JSON 解析 + 一次写入，多条修改
+- ✅ `batch` 默认全有或全无；`--continue-on-error` 才会明确提交部分成功操作
 
 ### 装饰命令（v0.3.0）
 - ✅ `keyframe` — 位置 / 缩放 / 旋转 / 透明度 / 调色 / 音量（单次 + 标准输入 JSONL `--batch`）
@@ -123,14 +126,17 @@ flowchart LR
 - ✅ `text-style` — 透明度 · 阴影 · 描边 · 背景框（26 个参数）
 - ✅ `text-anim` · `image-anim` — 入场 / 出场 / 组合动画（剪映原生库）
 - ✅ `text-ranges` — 多样式文本，字节级精确（解锁字级高亮字幕）
+- ✅ `caption --karaoke` — OpenAI Whisper / whisper.cpp / faster-whisper 字级时间戳与动态高亮
 
 ### 模板
 - ✅ [`save-template` · `apply-template`](#模板复用--开箱即用) — 把任意片段抽成 JSON，复用时重写时长 / 位置 / 文本
-- ✅ 仓库自带 3 个模板（[`templates/`](./templates/)）：`gold-title` · `end-card` · `subscribe-cta`
+- ✅ 仓库自带 6 个模板（[`templates/`](./templates/)）：`gold-title` · `end-card` · `subscribe-cta` · `caption-pop` · `lower-third` · `hook-question`
 
 ### 导入 & 发现
 - ✅ `import-srt` — SRT 一条 cue 一个文本片段；支持文件 / stdin / `--style-ref` 镜像样式
 - ✅ `enums` — 12 个分类 × 2 个命名空间，从仓库内 `enums.json` 读，**无需联网**
+- ✅ `describe` v2 — 参数类型、默认值、枚举、写入属性、前置条件、输出与退出码
+- ✅ `compile` v2 — 稳定 ref、装饰器、模板、字幕、关键帧、淡入淡出与 `--check` / `--plan`
 
 ### 素材来源
 - ✅ 本地文件：mp4 / mov / m4v / mp3 / wav / aac / png / jpg / gif（任何 CapCut 接受的扩展名）
@@ -139,6 +145,7 @@ flowchart LR
 ### 跨平台
 - ✅ CapCut 和剪映 —— 同一个二进制，`--jianying` 切换 enum 命名空间
 - ✅ macOS · Windows · Linux —— 纯 Node ≥ 18，没有原生模块
+- ✅ `diagnose` — 检测规范草稿文件、分歧、编辑器进程，并输出脱敏支持包
 
 ### 输出格式
 - ✅ JSON（默认 —— 管道给 `jq` 就行）
@@ -146,18 +153,14 @@ flowchart LR
 - ✅ `-q` / `--quiet` 静默模式（仅返回码）
 
 ### 质量保障
-- ✅ 36 个 `node:test` 单测（[`test/`](./test/)），跑在 [`test/draft_content.json`](./test/draft_content.json) 之上
+- ✅ 200+ 个 `node:test` 测试（[`test/`](./test/)），覆盖 Node 18/20/22 与 Ubuntu/macOS/Windows smoke matrix
 - ✅ Husky [pre-commit 钩子](./.husky/pre-commit) —— Biome lint（仅暂存文件）+ 完整测试
 - ✅ Schema 参考文档（[`docs/draft-schema/`](./docs/draft-schema/)，7 个文件 ~3700 行）
 - ✅ Claude Code 插件（`/plugin marketplace add https://github.com/renezander030/capcut-cli`），详见英文 [README · Claude Code plugin](./README.md#claude-code-plugin)
 
 ### 路线图
-- ⬜ 音频淡入 / 淡出命令（临时方案：用 `volume` 关键帧）
-- ⬜ 文本气泡 / 花字（临时方案：在文本素材上手动设置 `bubble_*` 字段）
-- ⬜ 滤镜链命令 + `enums --filters` 发现命令（暂无临时方案 —— `add-effect` 处理的是场景特效，不是色调滤镜）
-- ⬜ README 的拖拽 GIF 演示
+- ⬜ 用报告者提供的 Windows 工程包验证 v0.11 CapCut 8.7 存储适配，并关闭 [#35](https://github.com/renezander030/capcut-cli/issues/35)
 - ⬜ 剪映 6.0+ 解密（目前只能检测 —— 详见 `decrypt` 命令的提示文案）
-- ⬜ `export --batch` 的 Windows 路径（目前只有 macOS 走 AppleScript）
 - 🚫 HTTP 服务 / 云渲染 / MCP 服务 —— 明确不做，详见 [`PLAN.md`](./PLAN.md)。`serve` 命令走的是无状态 JSONL 队列：没有端口，没有守护进程。
 
 ## 解决什么问题

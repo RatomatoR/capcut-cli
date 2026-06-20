@@ -1,8 +1,9 @@
 import { spawnSync } from "node:child_process";
 import { randomUUID as uuid } from "node:crypto";
-import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { setTextRanges } from "./decorators.js";
 import type { Draft, Segment, Track } from "./draft.js";
 import { findSegment } from "./draft.js";
 import { parseSrt } from "./srt.js";
@@ -15,6 +16,24 @@ export interface CaptionOptions {
   language?: string; // ISO code; default "auto"
   trackName?: string; // default "captions"
   styleRef?: string; // segment ID whose styling to copy
+  whisperEngine?: "auto" | "openai" | "whisper-cpp" | "faster-whisper";
+  karaoke?: boolean;
+  maxWords?: number;
+  maxChars?: number;
+  maxGapMs?: number;
+}
+
+export interface CaptionWord {
+  word: string;
+  startUs: number;
+  endUs: number;
+}
+
+export interface CaptionCue {
+  startUs: number;
+  endUs: number;
+  text: string;
+  words?: CaptionWord[];
 }
 
 export interface CaptionResult {
@@ -26,6 +45,9 @@ export interface CaptionResult {
   last_cue?: { start_us: number; text: string };
   source_audio: string;
   engine: "whisper-cli" | "shell" | "openai" | "stdin-srt";
+  engine_name?: string;
+  words?: number;
+  karaoke?: boolean;
 }
 
 /**
@@ -44,8 +66,15 @@ export interface CaptionResult {
  */
 export function captionDraft(draft: Draft, opts: CaptionOptions): CaptionResult {
   const audio = resolveAudio(draft, opts);
-  const srt = runWhisper(audio, opts);
-  const cues = parseSrt(srt);
+  const transcription = runWhisper(audio, opts);
+  const cues = opts.karaoke
+    ? groupWords(
+        transcription.words.length > 0 ? transcription.words : wordsFromCues(transcription.cues),
+        opts.maxWords ?? 4,
+        opts.maxChars ?? 28,
+        (opts.maxGapMs ?? 500) * 1000,
+      )
+    : transcription.cues;
   if (cues.length === 0) {
     throw new Error("Whisper produced no cues. Check the audio file is not silent and the model name is valid.");
   }
@@ -68,53 +97,78 @@ export function captionDraft(draft: Draft, opts: CaptionOptions): CaptionResult 
 
   if (!Array.isArray(draft.materials.texts)) draft.materials.texts = [];
 
+  let created = 0;
   for (const cue of cues) {
-    const matId = uuid();
-    const content = JSON.stringify({
-      text: cue.text,
-      styles: [{ ...baseStyle, range: [0, Buffer.from(cue.text, "utf16le").length] }],
-    });
-    // Use type: "text" (known-working schema) plus caption-distinguishing fields.
-    // import-srt produces text segments WITHOUT sub_type / caption_template_info, so
-    // CapCut treats them as inline titles. Setting these fields marks the material as a
-    // caption (per pyJianYingDraft #148 discussion) — schema may evolve across versions,
-    // verify with `capcut version <project>` after import.
-    const textMaterial = {
-      id: matId,
-      type: "text",
-      content,
-      font_size: baseStyle.font_size ?? 15,
-      text_color: baseStyle.font_color ?? "#FFFFFF",
-      alignment: 1,
-      sub_type: 1,
-      caption_template_info: { category_id: "", category_name: "", effect_id: "", is_new: false, resource_id: "" },
-    };
-    draft.materials.texts.push(textMaterial as unknown as Draft["materials"]["texts"][number]);
-
-    const seg: Segment = {
-      id: uuid(),
-      material_id: matId,
-      target_timerange: { start: cue.startUs, duration: cue.endUs - cue.startUs },
-      source_timerange: { start: 0, duration: cue.endUs - cue.startUs },
-      speed: 1,
-      volume: 1,
-      visible: true,
-      clip: { alpha: 1, rotation: 0, scale: { x: 1, y: 1 }, transform: { x: 0, y: -0.6 } },
-      extra_material_refs: [],
-      render_index: 0,
-    } as unknown as Segment;
-    track.segments.push(seg);
+    if (opts.karaoke && cue.words && cue.words.length > 0) {
+      const fullText = cue.words.map((word) => word.word).join(" ");
+      let cursor = 0;
+      for (const word of cue.words) {
+        const start = cursor;
+        const end = start + word.word.length;
+        const segmentId = addCaptionSegment(draft, track, fullText, word.startUs, word.endUs, baseStyle);
+        setTextRanges(draft, segmentId, [
+          { start, end, font_color: "#FFD700", font_size: Number(baseStyle.font_size ?? 15) * 1.08, bold: true },
+        ]);
+        cursor = end + 1;
+        created++;
+      }
+    } else {
+      addCaptionSegment(draft, track, cue.text, cue.startUs, cue.endUs, baseStyle);
+      created++;
+    }
   }
 
   return {
     ok: true,
-    cues: cues.length,
+    cues: created,
     track_name: trackName,
     first_cue: { start_us: cues[0].startUs, text: cues[0].text },
     last_cue: { start_us: cues[cues.length - 1].startUs, text: cues[cues.length - 1].text },
     source_audio: audio,
     engine: opts.whisperCmd ? "shell" : "whisper-cli",
+    engine_name: transcription.engine,
+    words: transcription.words.length,
+    karaoke: opts.karaoke ?? false,
   };
+}
+
+function addCaptionSegment(
+  draft: Draft,
+  track: Track,
+  text: string,
+  startUs: number,
+  endUs: number,
+  baseStyle: Record<string, unknown>,
+): string {
+  const matId = uuid();
+  const content = JSON.stringify({
+    text,
+    styles: [{ ...baseStyle, range: [0, Buffer.from(text, "utf16le").length] }],
+  });
+  draft.materials.texts.push({
+    id: matId,
+    type: "text",
+    content,
+    font_size: baseStyle.font_size ?? 15,
+    text_color: baseStyle.font_color ?? "#FFFFFF",
+    alignment: 1,
+    sub_type: 1,
+    caption_template_info: { category_id: "", category_name: "", effect_id: "", is_new: false, resource_id: "" },
+  } as unknown as Draft["materials"]["texts"][number]);
+  const segmentId = uuid();
+  track.segments.push({
+    id: segmentId,
+    material_id: matId,
+    target_timerange: { start: startUs, duration: Math.max(1, endUs - startUs) },
+    source_timerange: { start: 0, duration: Math.max(1, endUs - startUs) },
+    speed: 1,
+    volume: 1,
+    visible: true,
+    clip: { alpha: 1, rotation: 0, scale: { x: 1, y: 1 }, transform: { x: 0, y: -0.6 } },
+    extra_material_refs: [],
+    render_index: 0,
+  } as unknown as Segment);
+  return segmentId;
 }
 
 function resolveAudio(draft: Draft, opts: CaptionOptions): string {
@@ -135,39 +189,90 @@ function resolveAudio(draft: Draft, opts: CaptionOptions): string {
   throw new Error("Missing --audio <path> or --from-segment <id>. Provide one.");
 }
 
-function runWhisper(audio: string, opts: CaptionOptions): string {
+interface TranscriptionResult {
+  cues: CaptionCue[];
+  words: CaptionWord[];
+  engine: "openai" | "whisper-cpp" | "faster-whisper";
+}
+
+function detectEngine(opts: CaptionOptions): TranscriptionResult["engine"] {
+  if (opts.whisperEngine && opts.whisperEngine !== "auto") return opts.whisperEngine;
+  const command = (opts.whisperCmd ?? "whisper").toLowerCase();
+  if (command.includes("faster-whisper")) return "faster-whisper";
+  if (command.includes("whisper-cli") || /(^|[/\\])main(?:\.exe)?$/.test(command)) return "whisper-cpp";
+  return "openai";
+}
+
+export function buildWhisperInvocation(
+  engine: TranscriptionResult["engine"],
+  audio: string,
+  model: string,
+  language: string,
+  outputDir: string,
+  json: boolean,
+): { args: string[]; prefix: string; extension: ".json" | ".srt" } {
+  const prefix = join(outputDir, "transcript");
+  if (engine === "whisper-cpp") {
+    return {
+      args: ["-m", model, "-f", audio, "-l", language, json ? "-oj" : "-osrt", "-of", prefix],
+      prefix,
+      extension: json ? ".json" : ".srt",
+    };
+  }
+  return {
+    args: [
+      audio,
+      "--model",
+      model,
+      "--language",
+      language,
+      "--output_format",
+      json ? "json" : "srt",
+      "--output_dir",
+      outputDir,
+      ...(json ? ["--word_timestamps", "True"] : []),
+    ],
+    prefix,
+    extension: json ? ".json" : ".srt",
+  };
+}
+
+function runWhisper(audio: string, opts: CaptionOptions): TranscriptionResult {
   const cmd = opts.whisperCmd ?? "whisper";
   const model = opts.whisperModel ?? "base";
   const language = opts.language ?? "auto";
+  const engine = detectEngine(opts);
   const tmpdirPath = mkdtempSync(join(tmpdir(), "capcut-caption-"));
   try {
-    // Try the openai-whisper CLI flag shape first (most common installation).
-    const r = spawnSync(
-      cmd,
-      [audio, "--model", model, "--language", language, "--output_format", "srt", "--output_dir", tmpdirPath],
-      {
-        encoding: "utf-8",
-        timeout: 300_000,
-      },
-    );
+    const json = opts.karaoke === true;
+    const invocation = buildWhisperInvocation(engine, audio, model, language, tmpdirPath, json);
+    const { args, prefix, extension } = invocation;
+    const r = spawnSync(cmd, args, { encoding: "utf-8", timeout: 300_000, maxBuffer: 16 * 1024 * 1024 });
     if (r.error || r.status !== 0) {
       const stderr = r.stderr || r.error?.message || `whisper exited ${r.status}`;
       throw new Error(
-        `whisper CLI failed: ${stderr}\nTried: ${cmd} ${audio} --model ${model} --language ${language} --output_format srt --output_dir ${tmpdirPath}\n` +
-          `Install one of: \`pip install openai-whisper\`, \`brew install whisper-cpp\`, or pass --whisper-cmd <path-to-binary>.`,
+        `${engine} CLI failed: ${stderr}\nTried: ${cmd} ${args.join(" ")}\n` +
+          "Select the matching dialect with --whisper-engine openai|whisper-cpp|faster-whisper and pass its model via --whisper-model.",
       );
     }
-    // openai-whisper names output by audio basename + .srt
-    const base =
-      audio
-        .split(/[\\/]/)
-        .pop()
-        ?.replace(/\.[^.]+$/, "") ?? "audio";
-    const srtPath = join(tmpdirPath, `${base}.srt`);
-    if (!existsSync(srtPath)) {
-      throw new Error(`whisper finished but no SRT found at ${srtPath}. stdout: ${r.stdout?.slice(0, 200)}`);
+
+    const outputPath =
+      readdirSync(tmpdirPath)
+        .filter((name) => name.endsWith(extension))
+        .map((name) => join(tmpdirPath, name))[0] ?? `${prefix}${extension}`;
+    if (!existsSync(outputPath)) {
+      throw new Error(`${engine} finished but no ${extension} output was found. stdout: ${r.stdout?.slice(0, 200)}`);
     }
-    return readFileSync(srtPath, "utf-8");
+    if (json) {
+      const parsed = parseWhisperJson(readFileSync(outputPath, "utf-8"));
+      return { ...parsed, engine };
+    }
+    const cues = parseSrt(readFileSync(outputPath, "utf-8")).map((cue) => ({
+      startUs: cue.startUs,
+      endUs: cue.endUs,
+      text: cue.text,
+    }));
+    return { cues, words: [], engine };
   } finally {
     try {
       rmSync(tmpdirPath, { recursive: true, force: true });
@@ -175,6 +280,95 @@ function runWhisper(audio: string, opts: CaptionOptions): string {
       /* ignore */
     }
   }
+}
+
+export function parseWhisperJson(raw: string): { cues: CaptionCue[]; words: CaptionWord[] } {
+  const parsed = JSON.parse(raw) as Record<string, unknown>;
+  const cues: CaptionCue[] = [];
+  const words: CaptionWord[] = [];
+  const segments = Array.isArray(parsed.segments) ? parsed.segments : [];
+  for (const value of segments) {
+    const segment = value as Record<string, unknown>;
+    const startUs = Math.round(Number(segment.start ?? 0) * 1_000_000);
+    const endUs = Math.round(Number(segment.end ?? segment.start ?? 0) * 1_000_000);
+    const text = String(segment.text ?? "").trim();
+    const segmentWords: CaptionWord[] = [];
+    if (Array.isArray(segment.words)) {
+      for (const item of segment.words) {
+        const word = item as Record<string, unknown>;
+        const textValue = String(word.word ?? word.text ?? "").trim();
+        if (!textValue) continue;
+        const parsedWord = {
+          word: textValue,
+          startUs: Math.round(Number(word.start ?? segment.start ?? 0) * 1_000_000),
+          endUs: Math.round(Number(word.end ?? segment.end ?? 0) * 1_000_000),
+        };
+        segmentWords.push(parsedWord);
+        words.push(parsedWord);
+      }
+    }
+    if (text) cues.push({ startUs, endUs, text, words: segmentWords.length ? segmentWords : undefined });
+  }
+
+  const transcription = Array.isArray(parsed.transcription) ? parsed.transcription : [];
+  for (const value of transcription) {
+    const item = value as Record<string, unknown>;
+    const offsets = (item.offsets ?? {}) as Record<string, unknown>;
+    const startUs = Math.round(Number(offsets.from ?? 0) * 1000);
+    const endUs = Math.round(Number(offsets.to ?? offsets.from ?? 0) * 1000);
+    const text = String(item.text ?? "").trim();
+    if (text) cues.push({ startUs, endUs, text });
+  }
+
+  if (cues.length === 0 && typeof parsed.text === "string") {
+    cues.push({ startUs: 0, endUs: 1_000_000, text: parsed.text.trim() });
+  }
+  return { cues, words: words.length > 0 ? words : wordsFromCues(cues) };
+}
+
+export function wordsFromCues(cues: CaptionCue[]): CaptionWord[] {
+  const words: CaptionWord[] = [];
+  for (const cue of cues) {
+    const parts = cue.text.trim().split(/\s+/).filter(Boolean);
+    if (parts.length === 0) continue;
+    const duration = Math.max(parts.length, cue.endUs - cue.startUs);
+    for (let index = 0; index < parts.length; index++) {
+      words.push({
+        word: parts[index],
+        startUs: cue.startUs + Math.round((duration * index) / parts.length),
+        endUs: cue.startUs + Math.round((duration * (index + 1)) / parts.length),
+      });
+    }
+  }
+  return words;
+}
+
+export function groupWords(words: CaptionWord[], maxWords = 4, maxChars = 28, maxGapUs = 500_000): CaptionCue[] {
+  const cues: CaptionCue[] = [];
+  let group: CaptionWord[] = [];
+  const flush = () => {
+    if (group.length === 0) return;
+    cues.push({
+      startUs: group[0].startUs,
+      endUs: group[group.length - 1].endUs,
+      text: group.map((word) => word.word).join(" "),
+      words: group,
+    });
+    group = [];
+  };
+  for (const word of words) {
+    const candidate = [...group, word];
+    const gap = group.length === 0 ? 0 : word.startUs - group[group.length - 1].endUs;
+    if (
+      group.length > 0 &&
+      (candidate.length > maxWords || candidate.map((item) => item.word).join(" ").length > maxChars || gap > maxGapUs)
+    ) {
+      flush();
+    }
+    group.push(word);
+  }
+  flush();
+  return cues;
 }
 
 function extractTextStyle(draft: Draft, materialId: string): Record<string, unknown> {

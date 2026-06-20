@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { copyFileSync, cpSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
-import { dirname, resolve } from "node:path";
+import { basename, dirname, resolve } from "node:path";
 import type { Draft, Segment, Timerange, Track } from "./draft.js";
 import { findMaterialGlobal, findSegment } from "./draft.js";
 import { findEnum, type Namespace } from "./enums.js";
@@ -199,7 +199,7 @@ export function registerDraftInIndex(opts: RegisterOptions): boolean {
   index[storeKey] = filtered;
 
   // Back up the user's index (it lists ALL their projects) before overwriting.
-  writeFileSync(indexPath + ".bak", raw, "utf-8");
+  writeFileSync(`${indexPath}.bak`, raw, "utf-8");
   writeFileSync(indexPath, JSON.stringify(index, null, 0), "utf-8");
   return true;
 }
@@ -528,7 +528,7 @@ export function addAudio(
 
   // Copy file into draft assets directory
   const draftDir = dirname(filePath);
-  const filename = opts.path.split("/").pop() || "audio.mp3";
+  const filename = basename(opts.path) || "audio.mp3";
   const assetsDir = resolve(draftDir, "assets", "audio");
   mkdirSync(assetsDir, { recursive: true });
   const destPath = resolve(assetsDir, filename);
@@ -629,7 +629,7 @@ export function addVideo(
 
   // Copy file into draft assets directory
   const draftDir = dirname(filePath);
-  const filename = opts.path.split("/").pop() || "media";
+  const filename = basename(opts.path) || "media";
   const assetsDir = resolve(draftDir, "assets", "video");
   mkdirSync(assetsDir, { recursive: true });
   const destPath = resolve(assetsDir, filename);
@@ -1299,7 +1299,8 @@ export function setAudioFade(
     fade_type: 0,
     type: "audio_fade",
   });
-  (seg.extra_material_refs ||= []).push(fadeId);
+  seg.extra_material_refs ||= [];
+  seg.extra_material_refs.push(fadeId);
 
   return { segmentId: seg.id, fade_id: fadeId, fade_in_us: fadeIn, fade_out_us: fadeOut };
 }

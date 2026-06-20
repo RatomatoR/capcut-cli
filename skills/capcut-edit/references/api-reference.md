@@ -16,8 +16,8 @@ capcut <command> <project> [args] [flags]
 
 `<project>` is one of:
 
-- a file path to `draft_content.json` or `draft_info.json`
-- a directory containing either of those files
+- a supported timeline file (`draft_content.json`, `draft_info.json`, `draft_meta_info.json`, `template-2.tmp`)
+- a directory containing one or more supported timeline targets
 
 ### Global flags
 
@@ -26,13 +26,15 @@ capcut <command> <project> [args] [flags]
 | `--human` | `-H` | Human-readable table output. Default is JSON. |
 | `--quiet` | `-q` | No stdout on success; exit code only. Use in scripts for write commands. |
 | `--jianying` | — | Switch enum namespace to JianYing (default: CapCut). Applies to `transition`, `mask`, `text-anim`, `image-anim`, `add-effect`, `enums`. |
+| `--dry-run` | — | Preview a mutation without writing or creating backups. |
+| `--force-write` | — | Override changed-on-disk/editor-running safety. Use only with explicit user acceptance. |
 
 ### `.bak` invariant
 
-Every write command creates a `.bak` sibling of the draft file before writing.
-Restore = `cp <file>.bak <file>`. The `.bak` is always the immediately-prior
-state; timestamped historical baks (`<file>.bak.<epoch>`) are created by user
-workflows, not by `capcut-cli`.
+Every write conflict-checks the loaded files, prepares same-directory temporary
+files, fsyncs, and renames atomically. Every readable timeline target is
+synchronized and receives a `.bak` plus rolling `.capcut-cli-history/`
+snapshots. Use `capcut restore <project> [--step N | --list]`.
 
 ### ID prefix rule
 
@@ -625,6 +627,44 @@ faster-whisper ... --output-format srt \
       --style-ref cccccc01 \
       --time-offset -120ms
 ```
+
+---
+
+## v0.11 reliability and automation
+
+The generated [`docs/command-reference.md`](../../../docs/command-reference.md)
+is the exhaustive flag/type/default source. Important v0.11 paths:
+
+### `capcut diagnose <project> [--bundle <report.json>]`
+
+Reports canonical-file selection, hashes, readable timeline envelopes,
+divergence, app version, and running CapCut/JianYing processes without exposing
+media paths. Use `--bundle` for issue attachments.
+
+### `capcut compile <spec.json> [--check | --plan | --out <dir>]`
+
+Specs support stable item `ref` values and top-level `operations`: transition,
+filter, effect, keyframe, audio-fade, text-style, text-ranges, template, and
+captions. Media items accept source timing, speed, opacity, rotation, scale,
+position, volume, and auto-probed duration. `--check`/`--plan` never write.
+
+### `capcut caption <project> ... --karaoke`
+
+Select a dialect with `--whisper-engine openai|whisper-cpp|faster-whisper`.
+Word-timestamp JSON is grouped with `--max-words`, `--max-chars`, and
+`--max-gap-ms`; each word interval becomes a real highlighted caption segment.
+
+### `capcut render <project> --all-video-tracks --burn-captions`
+
+Composites overlay tracks with transform/opacity, mixes audio fades, and uses
+draft caption colour/size/position. `doctor` reports `drawtext`, `overlay`, and
+`libx264`; missing optional filters produce an explicit fallback report.
+
+### `capcut serve [--workers N] [--retries N] [--timeout MS]`
+
+JSONL jobs may carry stable `id`, per-job `timeoutMs`/`retries`, `project`, and
+`args`. Different projects may run concurrently; writes to one project are
+serialized. `--backoff-ms` and `--max-buffer-mb` bound retry/output behavior.
 
 ---
 

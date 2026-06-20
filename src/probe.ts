@@ -1,4 +1,5 @@
 import { spawnSync } from "node:child_process";
+import { statSync } from "node:fs";
 
 /**
  * Best-effort media dimension probe.
@@ -22,6 +23,95 @@ export interface ProbedDimensions {
   width: number;
   height: number;
   rotation: number; // normalized 0/90/180/270, clockwise
+}
+
+export interface MediaProbe {
+  width: number | null;
+  height: number | null;
+  rotation: number;
+  durationUs: number | null;
+  fps: number | null;
+  hasVideo: boolean;
+  hasAudio: boolean;
+  audioChannels: number | null;
+  videoCodec: string | null;
+  audioCodec: string | null;
+}
+
+const probeCache = new Map<string, MediaProbe | null>();
+
+function fraction(value: unknown): number | null {
+  if (typeof value === "number" && Number.isFinite(value)) return value;
+  if (typeof value !== "string") return null;
+  const [a, b] = value.split("/").map(Number);
+  const result = b ? a / b : a;
+  return Number.isFinite(result) && result > 0 ? result : null;
+}
+
+export function parseMediaProbe(json: string): MediaProbe | null {
+  let parsed: Record<string, unknown>;
+  try {
+    parsed = JSON.parse(json) as Record<string, unknown>;
+  } catch {
+    return null;
+  }
+  const streams = Array.isArray(parsed.streams) ? (parsed.streams as Array<Record<string, unknown>>) : [];
+  const video = streams.find((stream) => stream.codec_type === "video");
+  const audio = streams.find((stream) => stream.codec_type === "audio");
+  if (!video && !audio) return null;
+
+  let rotation = 0;
+  const tags = video?.tags as Record<string, unknown> | undefined;
+  if (tags?.rotate !== undefined && Number.isFinite(Number(tags.rotate))) rotation = Number(tags.rotate);
+  else if (Array.isArray(video?.side_data_list)) {
+    const item = (video.side_data_list as Array<Record<string, unknown>>).find((value) =>
+      Number.isFinite(Number(value.rotation)),
+    );
+    if (item) rotation = Number(item.rotation);
+  }
+  rotation = normalizeRotation(rotation);
+  let width = video && Number(video.width) > 0 ? Number(video.width) : null;
+  let height = video && Number(video.height) > 0 ? Number(video.height) : null;
+  if ((rotation === 90 || rotation === 270) && width && height) [width, height] = [height, width];
+
+  const format = (parsed.format ?? {}) as Record<string, unknown>;
+  const durationSeconds = fraction(format.duration) ?? fraction(video?.duration) ?? fraction(audio?.duration);
+  return {
+    width,
+    height,
+    rotation,
+    durationUs: durationSeconds === null ? null : Math.round(durationSeconds * 1_000_000),
+    fps: fraction(video?.avg_frame_rate) ?? fraction(video?.r_frame_rate),
+    hasVideo: Boolean(video),
+    hasAudio: Boolean(audio),
+    audioChannels: audio && Number(audio.channels) > 0 ? Number(audio.channels) : null,
+    videoCodec: typeof video?.codec_name === "string" ? video.codec_name : null,
+    audioCodec: typeof audio?.codec_name === "string" ? audio.codec_name : null,
+  };
+}
+
+export function probeMedia(path: string, ffprobeCmd = "ffprobe", useCache = true): MediaProbe | null {
+  let cacheKey = `${ffprobeCmd}:${path}`;
+  try {
+    const stat = statSync(path);
+    cacheKey += `:${stat.size}:${stat.mtimeMs}`;
+  } catch {
+    return null;
+  }
+  if (useCache && probeCache.has(cacheKey)) return probeCache.get(cacheKey) ?? null;
+  let result: ReturnType<typeof spawnSync>;
+  try {
+    result = spawnSync(ffprobeCmd, ["-v", "quiet", "-print_format", "json", "-show_streams", "-show_format", path], {
+      encoding: "utf-8",
+      timeout: 30_000,
+      maxBuffer: 16 * 1024 * 1024,
+    });
+  } catch {
+    return null;
+  }
+  const parsed = result.status === 0 && typeof result.stdout === "string" ? parseMediaProbe(result.stdout) : null;
+  if (useCache) probeCache.set(cacheKey, parsed);
+  return parsed;
 }
 
 /**
@@ -97,19 +187,7 @@ export function probeVideoDimensions(
   path: string,
   ffprobeCmd = "ffprobe",
 ): { width: number; height: number; rotation: number } | null {
-  let r: ReturnType<typeof spawnSync>;
-  try {
-    r = spawnSync(
-      ffprobeCmd,
-      ["-v", "quiet", "-print_format", "json", "-show_streams", "-select_streams", "v:0", path],
-      { encoding: "utf-8", timeout: 30_000 },
-    );
-  } catch {
-    return null;
-  }
-  if (r.status !== 0 || typeof r.stdout !== "string") return null;
-  const parsed = parseProbeStreams(r.stdout);
-  if (!parsed) return null;
-  const { width, height } = displayDimensions(parsed);
-  return { width, height, rotation: parsed.rotation };
+  const parsed = probeMedia(path, ffprobeCmd);
+  if (!parsed?.width || !parsed.height) return null;
+  return { width: parsed.width, height: parsed.height, rotation: parsed.rotation };
 }

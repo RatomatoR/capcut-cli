@@ -1,5 +1,7 @@
 # capcut-cli feature plan — port high-value additions from VectCutAPI/CapCutAPI
 
+> Historical implementation plan through v0.3. v0.11 additionally ships optional ffprobe metadata/duration detection, a local FFmpeg proxy renderer, compile v2, and reliability features documented in the changelog. “Out of scope” below now means no mandatory runtime/server or cloud final renderer.
+
 Source of reference features: [`sun-guannan/VectCutAPI`](https://github.com/sun-guannan/VectCutAPI) (formerly `CapCutAPI`), Python HTTP/MCP server wrapping `pyJianYingDraft`. Local clone for reference lives at `../CapCutAPI/` (fork: `ashreo/CapCutAPI`).
 
 **Guiding principles**
@@ -189,9 +191,9 @@ Keep capcut-cli lean. These stay in the upstream Python project:
 - HTTP server (port 9001) — upstream covers it.
 - MCP server — capcut-cli plugin already provides skill-level integration; a thin MCP shim is only justified if usage demands it.
 - Non-Wikimedia remote URL downloading — conflicts with zero-dep ethos and license-check guarantees; user downloads separately.
-- `get_video_duration` via ffprobe — runtime dep; skip unless strongly needed.
+- Mandatory ffprobe dependency — metadata/duration probing is now optional and gracefully falls back to explicit arguments.
 - Letterboxing to 1920×1080 — ffmpeg runtime dep; wrap outside the CLI if needed.
-- Cloud rendering / web preview — out of scope.
+- Cloud/final CapCut rendering — out of scope. The local FFmpeg proxy renderer is intentionally approximate.
 
 ---
 

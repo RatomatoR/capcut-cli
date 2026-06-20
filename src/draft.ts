@@ -1,5 +1,25 @@
-import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
+import {
+  closeSync,
+  existsSync,
+  fsyncSync,
+  mkdirSync,
+  openSync,
+  readdirSync,
+  readFileSync,
+  renameSync,
+  rmSync,
+  unlinkSync,
+  writeFileSync,
+  writeSync,
+} from "node:fs";
 import { basename, dirname, join, resolve } from "node:path";
+import {
+  type DraftStore,
+  discoverDraftStore,
+  editorProcesses,
+  isManagedDraftPath,
+  serializeDraftCandidate,
+} from "./store.js";
 
 export interface Timerange {
   start: number;
@@ -93,21 +113,20 @@ export interface Draft {
 }
 
 export function findDraft(input: string): string {
-  const resolved = resolve(input);
-  if (existsSync(resolved) && statSync(resolved).isFile()) return resolved;
-  const candidates = [resolve(resolved, "draft_content.json"), resolve(resolved, "draft_info.json")];
-  for (const p of candidates) {
-    if (existsSync(p) && statSync(p).isFile()) return p;
-  }
-  throw new Error(`No draft found at: ${input}\nExpected draft_content.json or draft_info.json`);
+  return discoverDraftStore(input).canonical.path;
 }
 
-let rawOriginal: string | null = null;
+interface LoadContext {
+  store: DraftStore;
+}
+
+const loadContexts = new Map<string, LoadContext>();
 
 export function loadDraft(path: string): { draft: Draft; filePath: string } {
-  const filePath = findDraft(path);
-  rawOriginal = readFileSync(filePath, "utf-8");
-  const draft = JSON.parse(rawOriginal) as Draft;
+  const store = discoverDraftStore(path);
+  const filePath = store.canonical.path;
+  const draft = structuredClone(store.canonical.draft) as Draft;
+  loadContexts.set(resolve(filePath), { store });
   return { draft, filePath };
 }
 
@@ -138,6 +157,7 @@ export function sortTracks(draft: Draft): void {
 // both the on-disk write and the .bak snapshot, so the draft is left untouched.
 // All ~35 mutating commands funnel through saveDraft, so gating here covers them.
 let dryRun = false;
+let forceWrite = false;
 
 export function setDryRun(value: boolean): void {
   dryRun = value;
@@ -145,6 +165,10 @@ export function setDryRun(value: boolean): void {
 
 export function isDryRun(): boolean {
   return dryRun;
+}
+
+export function setForceWrite(value: boolean): void {
+  forceWrite = value;
 }
 
 // Multi-step undo history. Alongside the single `.bak`, every write also keeps
@@ -193,31 +217,97 @@ export function listSnapshots(filePath: string): Array<{ step: number; index: nu
     .map((s, i) => ({ step: i + 1, index: s.index, path: s.path }));
 }
 
-export function saveDraft(filePath: string, draft: Draft): void {
+export function saveDraft(filePath: string, draft: Draft, options: { backup?: boolean } = {}): void {
   if (dryRun) {
     // Normalize in memory (so any read-back is consistent) but write nothing.
     sortTracks(draft);
     return;
   }
-  const bakPath = `${filePath}.bak`;
-  if (existsSync(filePath)) {
-    const original = rawOriginal ?? readFileSync(filePath, "utf-8");
-    writeFileSync(bakPath, original, "utf-8");
-    writeHistorySnapshot(filePath, original);
+
+  const resolved = resolve(filePath);
+  const context = loadContexts.get(resolved) ?? { store: discoverDraftStore(filePath) };
+  const { store } = context;
+
+  if (!forceWrite && isManagedDraftPath(filePath)) {
+    const running = editorProcesses();
+    if (running.length > 0) {
+      throw new Error(
+        `${running.join(" / ")} is running. Close the editor before writing this managed draft, ` +
+          "or pass --force-write if you accept that the app may overwrite the change.",
+      );
+    }
   }
+
+  // Optimistic concurrency check: never silently overwrite a file changed by
+  // CapCut, another CLI process, or a sync client since loadDraft read it.
+  if (!forceWrite) {
+    for (const target of store.targets) {
+      if (!target.exists || target.raw === null) continue;
+      const current = readFileSync(target.path, "utf-8");
+      if (current !== target.raw) {
+        throw new Error(
+          `Draft changed on disk after it was loaded: ${target.name}. ` +
+            "Reload and retry, or pass --force-write to overwrite intentionally.",
+        );
+      }
+    }
+  }
+
   sortTracks(draft);
-  // Detect original indent: if first line after { starts with tab use tab, else count spaces
-  const indent = detectIndent(rawOriginal);
-  writeFileSync(filePath, JSON.stringify(draft, null, indent), "utf-8");
+
+  // Prepare every replacement before renaming any target. This keeps the
+  // multi-file write as close to a transaction as the filesystem allows.
+  const prepared = store.targets.map((target, index) => {
+    const content = serializeDraftCandidate(target, draft);
+    const temp = `${target.path}.capcut-cli-${process.pid}-${Date.now()}-${index}.tmp`;
+    writeAndSync(temp, content);
+    return { target, temp, content };
+  });
+
+  const committed: typeof prepared = [];
+  try {
+    for (const item of prepared) {
+      if (options.backup !== false && item.target.raw !== null) {
+        writeAtomic(`${item.target.path}.bak`, item.target.raw);
+        writeHistorySnapshot(item.target.path, item.target.raw);
+      }
+    }
+    for (const item of prepared) {
+      renameSync(item.temp, item.target.path);
+      committed.push(item);
+    }
+  } catch (error) {
+    // Roll back targets already renamed during a partial commit.
+    for (const item of committed.reverse()) {
+      if (item.target.raw !== null) writeAtomic(item.target.path, item.target.raw);
+    }
+    for (const item of prepared) {
+      if (existsSync(item.temp)) unlinkSync(item.temp);
+    }
+    throw error;
+  }
+
+  // Refresh hashes/raw snapshots so a library caller can save the same loaded
+  // draft more than once without tripping its own conflict guard.
+  // Rediscover from the canonical file, not only the parent directory. The
+  // latter would lose explicitly addressed custom filenames such as A.json.
+  loadContexts.set(resolved, { store: discoverDraftStore(store.canonical.path) });
 }
 
-function detectIndent(raw: string | null): string | number {
-  if (!raw) return 0;
-  const match = raw.match(/\n(\s+)/);
-  if (!match) return 0;
-  const ws = match[1];
-  if (ws.includes("\t")) return "\t";
-  return ws.length;
+function writeAndSync(path: string, content: string): void {
+  const fd = openSync(path, "w", 0o600);
+  try {
+    writeSync(fd, content, undefined, "utf-8");
+    fsyncSync(fd);
+  } finally {
+    closeSync(fd);
+  }
+}
+
+function writeAtomic(path: string, content: string): void {
+  const temp = `${path}.capcut-cli-${process.pid}-${Date.now()}.tmp`;
+  writeAndSync(temp, content);
+  renameSync(temp, path);
 }
 
 export function extractText(content: string): string {

@@ -1,4 +1,6 @@
 import { spawnSync } from "node:child_process";
+import { closeSync, mkdtempSync, openSync, readFileSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -10,18 +12,35 @@ const CLI = join(__dirname, "..", "..", "dist", "index.js");
  * `json` is the parsed stdout (or null if not parseable).
  */
 export function spawnCli(args, opts = {}) {
-  const r = spawnSync("node", [CLI, ...args], {
-    encoding: "utf-8",
-    cwd: opts.cwd,
-    input: opts.input,
-    env: { ...process.env, ...(opts.env ?? {}) },
-    timeout: opts.timeout ?? 30_000,
-  });
+  // On macOS, spawnSync pipe capture can stop at the kernel's 64 KiB pipe
+  // buffer without returning an error. Capture to files so large JSON outputs
+  // (notably JianYing enums) are complete and parseable on every platform.
+  const captureDir = mkdtempSync(join(tmpdir(), "capcut-test-capture-"));
+  const stdoutPath = join(captureDir, "stdout");
+  const stderrPath = join(captureDir, "stderr");
+  const stdoutFd = openSync(stdoutPath, "w");
+  const stderrFd = openSync(stderrPath, "w");
+  let r;
+  try {
+    r = spawnSync("node", [CLI, ...args], {
+      cwd: opts.cwd,
+      input: opts.input,
+      env: { ...process.env, ...(opts.env ?? {}) },
+      timeout: opts.timeout ?? 30_000,
+      stdio: ["pipe", stdoutFd, stderrFd],
+    });
+  } finally {
+    closeSync(stdoutFd);
+    closeSync(stderrFd);
+  }
+  const stdout = readFileSync(stdoutPath, "utf-8");
+  const stderr = readFileSync(stderrPath, "utf-8");
+  rmSync(captureDir, { recursive: true, force: true });
   let json = null;
   try {
-    json = r.stdout ? JSON.parse(r.stdout) : null;
+    json = stdout ? JSON.parse(stdout) : null;
   } catch {
     /* not JSON; leave null */
   }
-  return { status: r.status, stdout: r.stdout, stderr: r.stderr, json };
+  return { status: r.status, stdout, stderr, json };
 }

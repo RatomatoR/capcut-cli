@@ -1,9 +1,12 @@
 import assert from "node:assert/strict";
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { after, describe, it } from "node:test";
+import { fileURLToPath } from "node:url";
 import { spawnCli } from "./helpers/spawn-cli.mjs";
+
+const __dirname = dirname(fileURLToPath(import.meta.url));
 
 // Media files only need to EXIST for compile (factory copies them; it never
 // reads their content), so empty placeholder files are enough here.
@@ -75,6 +78,61 @@ describe("compile", () => {
     assert.equal(spawnCli(["compile", spec, "--out", out]).status, 0);
     const lint = spawnCli(["lint", out, "--no-check-paths"]);
     assert.equal(lint.status, 0, `lint failed: ${lint.stdout}${lint.stderr}`);
+  });
+
+  it("supports refs, decorators, templates, captions, and --check planning", () => {
+    const s = setup();
+    after(s.cleanup);
+    writeFileSync(join(s.dir, "captions.srt"), "1\n00:00:00,000 --> 00:00:01,000\nHello\n");
+    const rich = structuredClone(VALID);
+    rich.tracks[0].items = [
+      { path: "clip1.mp4", start: 0, duration: 2, ref: "hero", speed: 1.25, opacity: 0.8, scale: 1.1 },
+    ];
+    rich.tracks[1].items[0].ref = "music";
+    rich.tracks[2].items[0].ref = "hook";
+    rich.operations = [
+      { op: "transition", target: "hero", slug: "dissolve", duration: 0.4 },
+      { op: "keyframe", target: "hero", property: "uniform_scale", time: 0, value: 1 },
+      { op: "audio-fade", target: "music", fadeIn: 0.5, fadeOut: 0.5 },
+      { op: "text-style", target: "hook", style: { borderWidth: 0.08, borderColor: "#000000" } },
+      { op: "text-ranges", target: "hook", ranges: [{ start: 0, end: 4, font_color: "#FFD700" }] },
+      { op: "filter", slug: "vintage", start: 0, duration: 2 },
+      { op: "effect", slug: "shake", start: 0, duration: 1 },
+      {
+        op: "template",
+        path: join(__dirname, "..", "templates", "subscribe-cta.json"),
+        start: 1,
+        duration: 1,
+        text: "Follow",
+      },
+      { op: "captions", path: "captions.srt" },
+    ];
+    const spec = writeSpec(s.dir, rich);
+    const out = join(s.dir, "Rich");
+
+    const check = spawnCli(["compile", spec, "--out", out, "--check"]);
+    assert.equal(check.status, 0, check.stderr);
+    assert.equal(check.json.write, false);
+    assert.equal(check.json.operations, rich.operations.length);
+    assert.equal(check.json.refs.length, 3);
+    assert.equal(readFileSync(spec, "utf-8").length > 0, true);
+
+    const result = spawnCli(["compile", spec, "--out", out]);
+    assert.equal(result.status, 0, result.stderr);
+    assert.ok(result.json.refs.hero);
+    const draft = JSON.parse(readFileSync(join(out, "draft_content.json"), "utf-8"));
+    const hero = draft.tracks
+      .flatMap((track) => track.segments)
+      .find((segment) => segment.id === result.json.refs.hero);
+    assert.equal(hero.speed, 1.25);
+    assert.equal(hero.clip.alpha, 0.8);
+    assert.equal(hero.clip.scale.x, 1.1);
+    assert.ok(hero.common_keyframes.length > 0);
+    assert.ok(draft.materials.transitions.length > 0);
+    assert.ok(draft.materials.audio_fades.length > 0);
+    assert.ok(draft.tracks.some((track) => track.type === "filter"));
+    assert.ok(draft.tracks.some((track) => track.type === "effect"));
+    assert.ok(draft.tracks.some((track) => track.name === "captions"));
   });
 
   it("rejects a spec with no tracks", () => {

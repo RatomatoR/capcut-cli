@@ -2,21 +2,22 @@
 
 `capcut serve` is a **stateless JSONL queue runner**. It reads one job per line from
 stdin (or a `--queue` file), dispatches each to the CLI, and writes one JSON result
-per line to stdout. No daemon, no port, no state between runs. That makes it a clean
+per line to stdout. No daemon or port. Within one drain it supports bounded workers,
+retries, stable-ID deduplication, and per-project serialization. That makes it a clean
 fit for any automation tool that can run a shell command or pipe bytes.
 
 ## The job format
 
-One JSON object per line. `cmd` is required; `project` and `args` are optional:
+One JSON object per line. `cmd` is required; `id`, `project`, `args`, `timeoutMs`, and `retries` are optional:
 
 ```jsonl
-{"cmd":"info","project":"/work/draft_content.json"}
-{"cmd":"add-text","project":"/work/draft_content.json","args":["8s","2s","Subscribe","--font-size","16"]}
+{"id":"inspect-42","cmd":"info","project":"/work/draft_content.json"}
+{"id":"title-42","cmd":"add-text","project":"/work/draft_content.json","args":["8s","2s","Subscribe","--font-size","16"],"retries":2}
 {"cmd":"import-srt","project":"/work/draft_content.json","args":["/work/captions.srt"]}
 {"cmd":"lint","project":"/work/draft_content.json"}
 ```
 
-Each result line is `{ok, cmd, args, status, stdout, stderr}`. `ok` is `true` when the
+Each result line is `{id, ok, cmd, args, status, stdout, stderr, attempts, duration_ms, deduplicated}`. `ok` is `true` when the
 command exited `0`; `stdout` is the parsed JSON the command would have printed. Because
 `lint` exits `2` on errors, a lint job comes back `{"ok":false,"status":2,...}` — handle
 that in your flow to gate a render.
@@ -26,10 +27,10 @@ that in your flow to gate a render.
 ```bash
 cat jobs.jsonl | capcut serve > results.jsonl
 # or read from a file the upstream step wrote:
-capcut serve --queue jobs.jsonl > results.jsonl
+capcut serve --queue jobs.jsonl --workers 4 --retries 2 --timeout 300000 > results.jsonl
 ```
 
-Add `--fail-fast` to stop at the first failing job.
+Jobs for the same `project` always run sequentially; different projects can use the worker pool. Add `--fail-fast` to stop at the first failing job. `--backoff-ms` controls exponential retry delay and `--max-buffer-mb` bounds captured output.
 
 ## n8n (self-hosted — Execute Command node)
 

@@ -1,0 +1,321 @@
+import { spawnSync } from "node:child_process";
+import { createHash } from "node:crypto";
+import { existsSync, readFileSync, statSync } from "node:fs";
+import { platform } from "node:os";
+import { dirname, join, resolve } from "node:path";
+import type { Draft } from "./draft.js";
+
+const STANDARD_FILES = ["draft_content.json", "draft_info.json", "draft_meta_info.json", "template-2.tmp"] as const;
+
+export type DraftCandidateName = (typeof STANDARD_FILES)[number] | string;
+
+export interface DraftCandidate {
+  name: DraftCandidateName;
+  path: string;
+  exists: boolean;
+  size: number;
+  mtime: string | null;
+  sha256: string | null;
+  raw: string | null;
+  parseable: boolean;
+  envelopePath: string[];
+  draft: Draft | null;
+  timelineHash: string | null;
+  error?: string;
+}
+
+export interface DraftStore {
+  projectDir: string;
+  canonical: DraftCandidate;
+  targets: DraftCandidate[];
+  candidates: DraftCandidate[];
+  version: string | null;
+  modernStorage: boolean;
+  diverged: boolean;
+}
+
+export interface DraftStoreReport {
+  ok: boolean;
+  project_dir: string;
+  canonical: string;
+  version: string | null;
+  modern_storage: boolean;
+  diverged: boolean;
+  editor_running: string[];
+  candidates: Array<{
+    file: string;
+    exists: boolean;
+    size: number;
+    mtime: string | null;
+    sha256: string | null;
+    parseable_timeline: boolean;
+    envelope: string;
+    timeline_hash: string | null;
+    tracks?: number;
+    segments?: number;
+    app_version?: string | null;
+    error?: string;
+  }>;
+  next_actions: string[];
+}
+
+function hash(value: string): string {
+  return createHash("sha256").update(value).digest("hex");
+}
+
+function isTimeline(value: unknown): value is Draft {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return false;
+  const record = value as Record<string, unknown>;
+  return Array.isArray(record.tracks) && Boolean(record.materials) && typeof record.materials === "object";
+}
+
+function findTimeline(value: unknown, path: string[] = [], depth = 0): { draft: Draft; path: string[] } | null {
+  if (isTimeline(value)) return { draft: value, path };
+  if (depth >= 3 || !value || typeof value !== "object" || Array.isArray(value)) return null;
+
+  const preferred = ["draft_content", "draft_info", "timeline", "content", "data", "draft"];
+  const entries = Object.entries(value as Record<string, unknown>).sort(([a], [b]) => {
+    const ai = preferred.indexOf(a);
+    const bi = preferred.indexOf(b);
+    return (ai < 0 ? 99 : ai) - (bi < 0 ? 99 : bi);
+  });
+  for (const [key, child] of entries) {
+    if (typeof child === "string" && child.trim().startsWith("{")) {
+      try {
+        const parsed = JSON.parse(child) as unknown;
+        const found = findTimeline(parsed, [...path, `${key}:json`], depth + 1);
+        if (found) return found;
+      } catch {
+        // Not a JSON envelope. Continue looking at other fields.
+      }
+    } else if (child && typeof child === "object") {
+      const found = findTimeline(child, [...path, key], depth + 1);
+      if (found) return found;
+    }
+  }
+  return null;
+}
+
+function parseCandidate(path: string): DraftCandidate {
+  const name = path.split(/[\\/]/).pop() ?? path;
+  if (!existsSync(path)) {
+    return {
+      name,
+      path,
+      exists: false,
+      size: 0,
+      mtime: null,
+      sha256: null,
+      raw: null,
+      parseable: false,
+      envelopePath: [],
+      draft: null,
+      timelineHash: null,
+    };
+  }
+
+  const stat = statSync(path);
+  const raw = readFileSync(path, "utf-8");
+  const base = {
+    name,
+    path,
+    exists: true,
+    size: stat.size,
+    mtime: stat.mtime.toISOString(),
+    sha256: hash(raw),
+    raw,
+  };
+  try {
+    const parsed = JSON.parse(raw) as unknown;
+    const found = findTimeline(parsed);
+    if (!found) {
+      return {
+        ...base,
+        parseable: false,
+        envelopePath: [],
+        draft: null,
+        timelineHash: null,
+        error: "JSON file does not contain a recognizable timeline",
+      };
+    }
+    return {
+      ...base,
+      parseable: true,
+      envelopePath: found.path,
+      draft: found.draft,
+      timelineHash: hash(JSON.stringify(found.draft)),
+    };
+  } catch (error) {
+    return {
+      ...base,
+      parseable: false,
+      envelopePath: [],
+      draft: null,
+      timelineHash: null,
+      error: error instanceof Error ? error.message : String(error),
+    };
+  }
+}
+
+function versionTuple(version: string | null): number[] {
+  return (version ?? "")
+    .split(".")
+    .map((part) => Number.parseInt(part, 10))
+    .filter(Number.isFinite);
+}
+
+function atLeast(version: string | null, wanted: string): boolean {
+  const a = versionTuple(version);
+  const b = versionTuple(wanted);
+  for (let i = 0; i < Math.max(a.length, b.length); i++) {
+    const diff = (a[i] ?? 0) - (b[i] ?? 0);
+    if (diff !== 0) return diff > 0;
+  }
+  return true;
+}
+
+function candidatePaths(input: string): { projectDir: string; requested: string | null; paths: string[] } {
+  const resolved = resolve(input);
+  const isFile = existsSync(resolved) && statSync(resolved).isFile();
+  const projectDir = isFile ? dirname(resolved) : resolved;
+  const requested = isFile ? resolved : null;
+  const paths = requested ? [requested] : [];
+  for (const name of STANDARD_FILES) {
+    const path = join(projectDir, name);
+    if (!paths.includes(path)) paths.push(path);
+  }
+  return { projectDir, requested, paths };
+}
+
+export function discoverDraftStore(input: string): DraftStore {
+  const { projectDir, requested, paths } = candidatePaths(input);
+  const candidates = paths.map(parseCandidate);
+  const parseable = candidates.filter((candidate) => candidate.parseable && candidate.draft);
+  if (parseable.length === 0) {
+    const found = candidates.filter((candidate) => candidate.exists).map((candidate) => candidate.name);
+    const detail = found.length > 0 ? `Found ${found.join(", ")}, but none contained a readable timeline.` : "";
+    throw new Error(
+      `No draft found at: ${input}\nExpected draft_content.json, draft_info.json, draft_meta_info.json, or template-2.tmp. ${detail}`.trim(),
+    );
+  }
+
+  const versions = parseable
+    .map((candidate) => candidate.draft?.platform?.app_version)
+    .filter((value): value is string => typeof value === "string" && value.length > 0);
+  const version = versions.sort((a, b) => (atLeast(a, b) ? -1 : 1))[0] ?? null;
+  const modernStorage = atLeast(version, "8.7");
+
+  let canonical: DraftCandidate | undefined;
+  if (requested) canonical = parseable.find((candidate) => candidate.path === requested);
+  const preference = modernStorage
+    ? ["template-2.tmp", "draft_meta_info.json", "draft_content.json", "draft_info.json"]
+    : ["draft_content.json", "draft_info.json", "template-2.tmp", "draft_meta_info.json"];
+  canonical ??= preference
+    .map((name) => parseable.find((candidate) => candidate.name === name))
+    .find((candidate): candidate is DraftCandidate => Boolean(candidate));
+  canonical ??= parseable[0];
+
+  const timelineHashes = new Set(parseable.map((candidate) => candidate.timelineHash).filter(Boolean));
+  return {
+    projectDir,
+    canonical,
+    targets: parseable,
+    candidates,
+    version,
+    modernStorage,
+    diverged: timelineHashes.size > 1,
+  };
+}
+
+function replaceAtPath(root: unknown, path: string[], draft: Draft): unknown {
+  if (path.length === 0) return draft;
+  if (!root || typeof root !== "object" || Array.isArray(root)) {
+    throw new Error(`Cannot update draft envelope at ${path.join(".")}`);
+  }
+  const cloned = structuredClone(root) as Record<string, unknown>;
+  const [part, ...rest] = path;
+  const jsonString = part.endsWith(":json");
+  const key = jsonString ? part.slice(0, -5) : part;
+  if (jsonString) {
+    if (typeof cloned[key] !== "string") throw new Error(`Cannot update JSON envelope field ${key}`);
+    const parsed = JSON.parse(cloned[key] as string) as unknown;
+    cloned[key] = JSON.stringify(replaceAtPath(parsed, rest, draft));
+  } else {
+    cloned[key] = replaceAtPath(cloned[key], rest, draft);
+  }
+  return cloned;
+}
+
+function indentOf(raw: string | null): string | number {
+  if (!raw) return 0;
+  const match = raw.match(/\n(\s+)/);
+  if (!match) return 0;
+  return match[1].includes("\t") ? "\t" : match[1].length;
+}
+
+export function serializeDraftCandidate(candidate: DraftCandidate, draft: Draft): string {
+  if (!candidate.raw || candidate.envelopePath.length === 0) {
+    return JSON.stringify(draft, null, indentOf(candidate.raw));
+  }
+  const root = JSON.parse(candidate.raw) as unknown;
+  const updated = replaceAtPath(root, candidate.envelopePath, draft);
+  return JSON.stringify(updated, null, indentOf(candidate.raw));
+}
+
+export function editorProcesses(): string[] {
+  try {
+    if (platform() === "win32") {
+      const result = spawnSync("tasklist", ["/FO", "CSV", "/NH"], { encoding: "utf-8", timeout: 3000 });
+      const output = result.stdout ?? "";
+      return ["CapCut.exe", "JianyingPro.exe"].filter((name) => output.toLowerCase().includes(name.toLowerCase()));
+    }
+    const result = spawnSync("ps", ["-axo", "comm="], { encoding: "utf-8", timeout: 3000 });
+    const output = result.stdout ?? "";
+    return ["CapCut", "JianyingPro"].filter((name) => output.toLowerCase().includes(name.toLowerCase()));
+  } catch {
+    return [];
+  }
+}
+
+export function isManagedDraftPath(path: string): boolean {
+  return path.replace(/\\/g, "/").toLowerCase().includes("/com.lveditor.draft/");
+}
+
+export function diagnoseDraftStore(input: string): DraftStoreReport {
+  const store = discoverDraftStore(input);
+  const running = editorProcesses();
+  const actions: string[] = [];
+  if (store.diverged)
+    actions.push("Timeline files diverge. Close CapCut, back up the project, then run a dry-run edit before writing.");
+  if (store.modernStorage && !store.targets.some((candidate) => candidate.name === "template-2.tmp")) {
+    actions.push("CapCut >= 8.7 detected without a readable template-2.tmp timeline; attach this report to issue #35.");
+  }
+  if (running.length > 0) actions.push(`Close ${running.join(" / ")} before editing this managed draft.`);
+  if (actions.length === 0)
+    actions.push("Storage targets are readable and agree. A normal CLI write will synchronize them.");
+
+  return {
+    ok: !store.diverged,
+    project_dir: "<project>",
+    canonical: store.canonical.name,
+    version: store.version,
+    modern_storage: store.modernStorage,
+    diverged: store.diverged,
+    editor_running: running,
+    candidates: store.candidates.map((candidate) => ({
+      file: candidate.name,
+      exists: candidate.exists,
+      size: candidate.size,
+      mtime: candidate.mtime,
+      sha256: candidate.sha256,
+      parseable_timeline: candidate.parseable,
+      envelope: candidate.envelopePath.length === 0 ? "root" : candidate.envelopePath.join("."),
+      timeline_hash: candidate.timelineHash,
+      tracks: candidate.draft?.tracks.length,
+      segments: candidate.draft?.tracks.reduce((sum, track) => sum + track.segments.length, 0),
+      app_version: candidate.draft?.platform?.app_version ?? null,
+      error: candidate.error,
+    })),
+    next_actions: actions,
+  };
+}

@@ -1,70 +1,66 @@
 # Version support matrix
 
-`capcut-cli` reads `draft_content.json` (Windows) / `draft_info.json` (macOS) directly. Both CapCut and JianYing evolve the schema across releases. This page tracks which app versions we test against and what's known-broken.
+CapCut and JianYing evolve an undocumented on-disk schema. This matrix deliberately separates fixture-backed evidence from compatibility expectations.
 
-Run `capcut version <project>` on any draft to detect the app, version, and which schema fields it carries. The command also flags whether the draft uses fields we don't yet write (e.g. `common_masks` introduced in JianYing 9.6+ / newer CapCut builds).
+Run `capcut version <project>` for schema flags and `capcut diagnose <project> -H` for canonical-file selection, timeline divergence, and editor-process safety. `capcut diagnose <project> --bundle support.json` creates a redacted report suitable for an issue.
 
-## Tested versions
+## Evidence levels
 
-### CapCut (`platform.app_source == "cc"`)
+- **fixture-tested** — committed fixture exercised by automated tests.
+- **synthetic-tested** — a minimal version/OS shape exercises an observed storage or schema behavior; still needs a real app-created bundle.
+- **reported** — behavior comes from a reproducible user report but is not yet represented by a sanitized real fixture.
+- **expected-compatible** — schema inspection suggests compatibility; not a claim of testing in the desktop app.
+- **known-broken** — the CLI detects the incompatibility and reports a workaround or refusal.
 
-| Version | Status | Notes |
-|---|---|---|
-| 6.2.8 | tested | Fixture in `test/draft_content.json`; full coverage |
-| 6.5.0 | tested | No schema-breaking changes from 6.2 |
-| 7.0.0 | tested | New transition slugs; covered by `enums.json` |
-| 8.0.0 | tested | No schema-breaking changes |
-| 9.0.0 | tested | `common_masks` field present alongside legacy `mask` — `capcut mask` still writes legacy field (works in 9.x; `capcut migrate` for 10.x+) |
+## CapCut (`platform.app_source == "cc"`)
 
-Supported range: **6.x — 9.x**. CapCut International is **not encrypted** and the schema is largely stable across these versions.
+| Version | Evidence | Status | Notes |
+|---|---|---|---|
+| 6.2.8 | fixture-tested | supported | Canonical fixture in `test/draft_content.json`; full command suite. |
+| 6.5–8.0 | expected-compatible | unverified | No committed app-created fixtures. Enum/schema changes appear additive. |
+| 8.7 Windows | reported + synthetic-tested | adapter shipped, real validation pending | Issue #35 reports that `draft_content.json` edits may be ignored in favour of `template-2.tmp` / `draft_meta_info.json`. v0.11 discovers nested/string JSON timeline envelopes, selects modern storage, synchronizes every readable target, and provides `diagnose --bundle`. A reporter-provided real folder is still required before marking this fixture-tested. |
+| 9.x | expected-compatible | unverified | `common_masks` may coexist with legacy mask fields. Use `version`, `diagnose`, and `migrate`; do not treat this row as desktop-app verification. |
 
-### JianYing (`platform.app_source == "lv"`)
+There is no blanket “6.x–9.x tested” claim. Only versions with committed fixtures receive that label.
 
-| Version | Status | Notes |
-|---|---|---|
-| 5.9.0 | tested | The "safe" version pre-encryption. Pin and block auto-update — see below |
-| 6.0.0+ | known-broken | `draft_content.json` is encrypted; `capcut decrypt` ships in v0.6.0 |
+## JianYing (`platform.app_source == "lv"`)
 
-Supported range: **5.9.x only**.
+| Version | Evidence | Status | Notes |
+|---|---|---|---|
+| 5.9.x | community-reported | expected-compatible | Last widely used plaintext line; no sanitized app-created fixture is currently committed. |
+| 6.0+ | reported | known-broken for encrypted files | `capcut decrypt` detects encryption and explains the workaround; it does not decrypt the file. Plaintext/exported variants can still be inspected normally. |
 
-## Why JianYing pinning matters
+## v0.11 storage and write safety
 
-JianYing auto-updates aggressively and replaces v5.9 with newer encrypted versions. Once that happens, every open-source draft toolchain breaks. The widely-used workarounds (recorded across the ecosystem, see [pyJianYingDraft #115](https://github.com/GuanYixuan/pyJianYingDraft/issues/115)):
+`capcut-cli` inspects these files in a project directory:
 
-- **Windows**: delete `update.exe` and `VEDetector.exe` from the JianYing install dir, set the parent directory of `update.exe` read-only via folder-permission ACLs
-- **macOS**: no clean workaround documented as of May 2026 — community is asking for help
-- **Cloud Windows VM**: install once, snapshot, restore on every boot
+1. `draft_content.json`
+2. `draft_info.json`
+3. `draft_meta_info.json`
+4. `template-2.tmp`
 
-`capcut-cli` does not yet ship `capcut decrypt`; once it does, the pin requirement relaxes.
+It recognizes a timeline at the root or inside a shallow object/string JSON envelope. For CapCut 8.7+, readable `template-2.tmp` / `draft_meta_info.json` timelines take precedence; older versions retain the content/info preference. Every readable timeline target is synchronized by one atomic save.
+
+Writes use same-directory temporary files, fsync, and rename. Before committing, the CLI refuses if a target changed since it was loaded. Managed CapCut/JianYing draft paths are also protected while the desktop editor is detected. `--force-write` is an explicit override, not a default recovery path.
 
 ## Schema feature detection
 
-`capcut version` reports four schema flags on every draft:
+`capcut version` reports:
 
 | Flag | Meaning |
 |---|---|
-| `mask_field: "mask"` | Legacy mask schema (`materials.masks[]`) — what `capcut mask` writes |
-| `mask_field: "common_masks"` | New mask schema (`materials.common_masks[]`) — needs `capcut migrate` to read/write |
-| `mask_field: "both"` | Draft was edited across versions — safe but unusual |
-| `mask_field: "none"` | No masks in this draft |
-| `has_text_ranges` | At least one text material has a multi-style `styles[]` array (Phase 3, v0.3.0) |
-| `has_audio_fades` | `materials.audio_fades[]` exists — required for fade-in/fade-out commands (roadmap) |
-| `new_version_field` | Value of the top-level `new_version` field — non-null on some CapCut International builds |
-| `last_modified_platform` | Value of `last_modified_platform` — non-null when draft was edited in multiple platforms |
-
-## What changes between versions
-
-For the full schema diff, see [`docs/draft-schema/05-version-differences.md`](./draft-schema/05-version-differences.md).
-
-Short version:
-- **CapCut ↔ JianYing**: enum slug namespace differs (transitions, masks, etc.). `capcut enums --jianying` switches namespace; per-draft auto-detection happens via `platform.app_source`.
-- **Within CapCut**: enum library grows on each release. New slugs appear but old ones keep working. Schema fields are additive.
-- **Within JianYing**: 5.9 → 6.0 introduced field encryption and the `mask` → `common_masks` rename. Other changes additive.
+| `mask_field` | Legacy `mask`, newer `common_masks`, both, or neither. |
+| `has_text_ranges` | At least one text material contains multi-style ranges. |
+| `has_audio_fades` | `materials.audio_fades[]` exists. |
+| `new_version_field` | Top-level `new_version`, when present. |
+| `last_modified_platform` | Cross-platform modification marker, when present. |
 
 ## Reporting a broken version
 
-If `capcut version` reports `support.status: untested` and a command misbehaves on that draft:
+1. Close CapCut/JianYing.
+2. Run `capcut diagnose <project> --bundle support.json`.
+3. Run `capcut version <project>`.
+4. Open an issue with app version, OS, exact command, JSON error, and `support.json`.
+5. If possible, attach a sanitized project folder. Remove private media and paths first.
 
-1. Copy `draft_content.json` to a gist (strip private file paths first).
-2. Open an issue with: app version, OS, the exact command, and the JSON error output.
-3. The fixture lands in `test/fixtures/<version>/` and the version moves from `untested` to `tested` (or `known-broken` with a documented fallback).
+A version moves to **fixture-tested** only after the sanitized fixture and regression test are committed.

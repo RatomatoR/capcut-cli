@@ -1,6 +1,7 @@
 import { existsSync } from "node:fs";
 import { homedir, platform, release } from "node:os";
 import { delimiter, join } from "node:path";
+import { probeFfmpegCapabilities } from "./render.js";
 
 export type CheckStatus = "ok" | "warn" | "missing";
 
@@ -68,6 +69,29 @@ export function runDoctor(): DoctorReport {
     detail: `Node ${process.versions.node}${major >= 18 ? "" : " (capcut-cli needs >= 18)"}`,
     affects: major >= 18 ? undefined : ["*"],
     fix: major >= 18 ? undefined : "Upgrade to Node 18 or newer.",
+  });
+
+  const ffprobe = onPath("ffprobe");
+  checks.push({
+    name: "ffprobe",
+    status: ffprobe ? "ok" : "warn",
+    detail: ffprobe ? `found: ${ffprobe}` : "ffprobe not found; media duration/dimensions cannot be auto-detected",
+    affects: ["add-video", "add-audio", "compile"],
+    fix: ffprobe
+      ? undefined
+      : "Install ffmpeg (which includes ffprobe), or pass media durations and dimensions explicitly.",
+  });
+
+  const ffmpeg = onPath("ffmpeg");
+  const capabilities = ffmpeg ? probeFfmpegCapabilities(ffmpeg) : null;
+  checks.push({
+    name: "ffmpeg",
+    status: capabilities?.available ? "ok" : "warn",
+    detail: capabilities?.available
+      ? `found: ${ffmpeg}; drawtext=${capabilities.drawtext}; overlay=${capabilities.overlay}; libx264=${capabilities.x264}`
+      : "ffmpeg not found; proxy rendering unavailable",
+    affects: ["render"],
+    fix: capabilities?.available ? undefined : "Install ffmpeg or pass --ffmpeg-cmd <path> to render.",
   });
 
   // whisper — needed by `caption`.

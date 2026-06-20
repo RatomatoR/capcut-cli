@@ -7,7 +7,8 @@ import { fileURLToPath } from "node:url";
 import { parseAss } from "./ass.js";
 import { captionDraft } from "./caption.js";
 import { removeChroma, setChroma } from "./chroma.js";
-import { type CompileSpec, compileDraft, parseSpec } from "./compile.js";
+import { buildCommandSpecs, completionWords, GLOBAL_OPTION_SPECS, renderCommandIndex } from "./command-specs.js";
+import { type CompileSpec, compileDraft, parseSpec, planCompile } from "./compile.js";
 import type {
   ImageAnimOptions,
   KeyframeInput,
@@ -50,6 +51,7 @@ import {
   loadDraft,
   saveDraft,
   setDryRun,
+  setForceWrite,
   updateTextContent,
 } from "./draft.js";
 import { type Category, listEnum, type Namespace } from "./enums.js";
@@ -79,11 +81,12 @@ import {
 } from "./factory.js";
 import { DEFAULT_LINT_OPTIONS, type LintOptions, lintDraft, lintExitCode, summarize } from "./lint.js";
 import { migrateDraft } from "./migrate.js";
-import { probeVideoDimensions } from "./probe.js";
+import { probeMedia } from "./probe.js";
 import { buildRenderPlan, renderDraft } from "./render.js";
 import { serveQueue } from "./serve.js";
 import { addSfx } from "./sfx.js";
 import { parseSrt } from "./srt.js";
+import { diagnoseDraftStore } from "./store.js";
 import { formatDuration, formatTime, parseTimeInput, srtTime } from "./time.js";
 import { translateDraft } from "./translate.js";
 import { detectVersion } from "./version.js";
@@ -126,6 +129,7 @@ export const COMMANDS = [
   "add-effect",
   "save-template",
   "apply-template",
+  "templates",
   "batch",
   "import-srt",
   "import-ass",
@@ -146,6 +150,7 @@ export const COMMANDS = [
   "completions",
   "enums",
   "doctor",
+  "diagnose",
   "restore",
   "serve",
   "decrypt",
@@ -154,8 +159,6 @@ export const COMMANDS = [
   "compile",
   "render",
 ] as const;
-
-const GLOBAL_FLAGS = ["--jianying", "-H", "--human", "-q", "--quiet", "-v", "--version", "--dry-run"] as const;
 
 const HELP = `capcut-cli -- fast edits to CapCut projects
 
@@ -169,6 +172,7 @@ Global flags:
   -q, --quiet     No output on success, exit code only (write commands)
   --dry-run       Preview a mutating command: print the result (with
                   "dryRun":true) but leave the draft and its .bak untouched
+  --force-write   Override editor-running and changed-on-disk safety checks
   --jianying      Use JianYing enum namespace (default: CapCut) for
                   transition, mask, text-anim, image-anim, add-effect, enums
 
@@ -267,6 +271,7 @@ Maintenance & inspection:
   concat     <projectA> <draftB> [--out <p>]   Append draftB onto projectA's timeline (id-safe)
   config                                       Show resolved .capcutrc + effective defaults
   describe                                      Emit the full command surface as JSON (agent tool spec)
+  diagnose   <project> [--bundle <report.json>] Inspect canonical draft files and divergence
 
 Animate:
   keyframe   <project> <id> <property> <time> <value>
@@ -555,8 +560,14 @@ interface Flags {
   audio?: string;
   fromSegment?: string;
   whisperCmd?: string;
+  whisperEngine?: "auto" | "openai" | "whisper-cpp" | "faster-whisper";
   whisperModel?: string;
   language?: string;
+  karaoke?: boolean;
+  maxWords?: number;
+  maxGapMs?: number;
+  noProbe?: boolean;
+  ffprobeCmd?: string;
   // translate
   to?: string;
   from?: string;
@@ -572,6 +583,11 @@ interface Flags {
   // serve
   queue?: string;
   failFast?: boolean;
+  workers?: number;
+  retries?: number;
+  timeoutMs?: number;
+  backoffMs?: number;
+  maxBufferMb?: number;
   version?: boolean;
   // relink / projects / timeline / restore
   dir?: string;
@@ -582,6 +598,12 @@ interface Flags {
   fps?: number;
   ffmpegCmd?: string;
   burnCaptions?: boolean;
+  allVideoTracks?: boolean;
+  forceWrite?: boolean;
+  bundle?: string;
+  continueOnError?: boolean;
+  check?: boolean;
+  plan?: boolean;
 }
 
 // Map CLI enum flags -> enums.json category key. Order matters for HELP text.
@@ -602,7 +624,7 @@ const ENUM_FLAG_MAP: Array<{ flag: string; category: Category }> = [
 ];
 
 function bashCompletion(): string {
-  const words = [...COMMANDS, ...GLOBAL_FLAGS].join(" ");
+  const words = completionWords(commandSpecs()).join(" ");
 
   return `# bash completion for capcut
 
@@ -619,7 +641,9 @@ complete -F _capcut capcut
 }
 
 function zshCompletion(): string {
-  const words = [...COMMANDS, ...GLOBAL_FLAGS].map((w) => `"${w}"`).join("\n    ");
+  const words = completionWords(commandSpecs())
+    .map((w) => `"${w}"`)
+    .join("\n    ");
 
   return `#compdef capcut
 
@@ -638,7 +662,9 @@ compdef _capcut capcut
 }
 
 function fishCompletion(): string {
-  return [...COMMANDS, ...GLOBAL_FLAGS].map((word) => `complete -c capcut -f -a "${word}"`).join("\n");
+  return completionWords(commandSpecs())
+    .map((word) => `complete -c capcut -f -a "${word}"`)
+    .join("\n");
 }
 
 function parseFlags(args: string[]): { positional: string[]; flags: Flags } {
@@ -796,10 +822,26 @@ function parseFlags(args: string[]): { positional: string[]; flags: Flags } {
       flags.fromSegment = args[++i];
     } else if (a === "--whisper-cmd" && i + 1 < args.length) {
       flags.whisperCmd = args[++i];
+    } else if (a === "--whisper-engine" && i + 1 < args.length) {
+      const engine = args[++i];
+      if (!["auto", "openai", "whisper-cpp", "faster-whisper"].includes(engine)) {
+        throw new Error("--whisper-engine must be auto|openai|whisper-cpp|faster-whisper");
+      }
+      flags.whisperEngine = engine as Flags["whisperEngine"];
     } else if (a === "--whisper-model" && i + 1 < args.length) {
       flags.whisperModel = args[++i];
     } else if (a === "--language" && i + 1 < args.length) {
       flags.language = args[++i];
+    } else if (a === "--karaoke") {
+      flags.karaoke = true;
+    } else if (a === "--max-words" && i + 1 < args.length) {
+      flags.maxWords = parseInt(args[++i], 10);
+    } else if (a === "--max-gap-ms" && i + 1 < args.length) {
+      flags.maxGapMs = parseFloat(args[++i]);
+    } else if (a === "--no-probe") {
+      flags.noProbe = true;
+    } else if (a === "--ffprobe-cmd" && i + 1 < args.length) {
+      flags.ffprobeCmd = args[++i];
     } else if (a === "--to" && i + 1 < args.length) {
       flags.to = args[++i];
     } else if (a === "--from" && i + 1 < args.length) {
@@ -818,6 +860,16 @@ function parseFlags(args: string[]): { positional: string[]; flags: Flags } {
       flags.queue = args[++i];
     } else if (a === "--fail-fast") {
       flags.failFast = true;
+    } else if (a === "--workers" && i + 1 < args.length) {
+      flags.workers = parseInt(args[++i], 10);
+    } else if (a === "--retries" && i + 1 < args.length) {
+      flags.retries = parseInt(args[++i], 10);
+    } else if (a === "--timeout" && i + 1 < args.length) {
+      flags.timeoutMs = parseInt(args[++i], 10);
+    } else if (a === "--backoff-ms" && i + 1 < args.length) {
+      flags.backoffMs = parseInt(args[++i], 10);
+    } else if (a === "--max-buffer-mb" && i + 1 < args.length) {
+      flags.maxBufferMb = parseFloat(args[++i]);
     } else if (a === "--dir" && i + 1 < args.length) {
       flags.dir = args[++i];
     } else if (a === "--step" && i + 1 < args.length) {
@@ -834,6 +886,18 @@ function parseFlags(args: string[]): { positional: string[]; flags: Flags } {
       flags.ffmpegCmd = args[++i];
     } else if (a === "--burn-captions") {
       flags.burnCaptions = true;
+    } else if (a === "--all-video-tracks") {
+      flags.allVideoTracks = true;
+    } else if (a === "--force-write") {
+      flags.forceWrite = true;
+    } else if (a === "--bundle" && i + 1 < args.length) {
+      flags.bundle = args[++i];
+    } else if (a === "--continue-on-error") {
+      flags.continueOnError = true;
+    } else if (a === "--check") {
+      flags.check = true;
+    } else if (a === "--plan") {
+      flags.plan = true;
     } else {
       const hit = ENUM_FLAG_MAP.find((f) => f.flag === a);
       if (hit) {
@@ -1224,13 +1288,19 @@ async function cmdAddAudio(draft: Draft, filePath: string, positional: string[],
   const audioPath = positional[2];
   const startStr = positional[3];
   const durationStr = positional[4];
-  if (!audioPath || !startStr || !durationStr)
-    die("Usage: capcut add-audio <project> <file-or-wikimedia-url> <start> <duration>");
+  if (!audioPath || !startStr) die("Usage: capcut add-audio <project> <file-or-wikimedia-url> <start> [duration]");
   // Wikimedia URLs go through the license-gated fetcher; locals pass through.
   const { localPath, asset, warning } = await resolveAssetPath(audioPath, filePath, "audio", flags.forceLicense);
-  const absPath = localPath.startsWith("/") ? localPath : `${process.cwd()}/${localPath}`;
+  const absPath = path.resolve(localPath);
   const start = parseTimeInput(startStr);
-  const duration = parseTimeInput(durationStr);
+  const media = flags.noProbe ? null : probeMedia(absPath, flags.ffprobeCmd);
+  const duration = durationStr ? parseTimeInput(durationStr) : media?.durationUs;
+  if (!duration || duration <= 0) {
+    die("Audio duration was omitted and ffprobe could not determine it. Pass duration explicitly or install ffprobe.");
+  }
+  if (durationStr && media?.durationUs && duration > media.durationUs + 10_000) {
+    die(`Requested duration ${duration}us exceeds source duration ${media.durationUs}us.`);
+  }
   const opts: AddAudioOptions = {
     path: absPath,
     start,
@@ -1248,6 +1318,8 @@ async function cmdAddAudio(draft: Draft, filePath: string, positional: string[],
     path: absPath,
     start_us: start,
     duration_us: duration,
+    duration_source: durationStr ? "argument" : "ffprobe",
+    media_probe: media,
   };
   if (asset) {
     payload.wikimedia = {
@@ -1267,12 +1339,23 @@ async function cmdAddVideo(draft: Draft, filePath: string, positional: string[],
   const videoPath = positional[2];
   const startStr = positional[3];
   const durationStr = positional[4];
-  if (!videoPath || !startStr || !durationStr)
-    die("Usage: capcut add-video <project> <file-or-wikimedia-url> <start> <duration>");
+  if (!videoPath || !startStr) die("Usage: capcut add-video <project> <file-or-wikimedia-url> <start> [duration]");
   const { localPath, asset, warning } = await resolveAssetPath(videoPath, filePath, "video", flags.forceLicense);
-  const absPath = localPath.startsWith("/") ? localPath : `${process.cwd()}/${localPath}`;
+  const absPath = path.resolve(localPath);
   const start = parseTimeInput(startStr);
-  const duration = parseTimeInput(durationStr);
+  const extension = path.extname(absPath).slice(1).toLowerCase();
+  const isPhoto = ["jpg", "jpeg", "png", "webp", "bmp", "tiff"].includes(extension);
+  const media = flags.noProbe ? null : probeMedia(absPath, flags.ffprobeCmd);
+  // ffprobe often reports a single image as a very short video stream. A
+  // photo's timeline duration is user-authored, so never infer or cap it from
+  // that synthetic stream duration.
+  const duration = durationStr ? parseTimeInput(durationStr) : isPhoto ? undefined : media?.durationUs;
+  if (!duration || duration <= 0) {
+    die("Video duration was omitted and ffprobe could not determine it. Photos still require an explicit duration.");
+  }
+  if (!isPhoto && durationStr && media?.durationUs && duration > media.durationUs + 10_000) {
+    die(`Requested duration ${duration}us exceeds source duration ${media.durationUs}us.`);
+  }
 
   // Resolve the source dimensions. Explicit --width/--height always win; otherwise
   // probe the file with ffprobe (best-effort) so portrait sources are not forced
@@ -1283,10 +1366,9 @@ async function cmdAddVideo(draft: Draft, filePath: string, positional: string[],
   let dimensionSource = width && height ? "flags" : "default";
   let dimensionWarning: string | undefined;
   if (!(width && height)) {
-    const probed = probeVideoDimensions(absPath);
-    if (probed) {
-      width = probed.width;
-      height = probed.height;
+    if (media?.width && media.height) {
+      width = media.width;
+      height = media.height;
       dimensionSource = "ffprobe";
     } else {
       dimensionWarning =
@@ -1312,9 +1394,11 @@ async function cmdAddVideo(draft: Draft, filePath: string, positional: string[],
     path: absPath,
     start_us: start,
     duration_us: duration,
+    duration_source: durationStr ? "argument" : "ffprobe",
     width: width ?? 1920,
     height: height ?? 1080,
     dimension_source: dimensionSource,
+    media_probe: media,
   };
   if (asset) {
     payload.wikimedia = {
@@ -1942,10 +2026,15 @@ function cmdCaption(draft: Draft, filePath: string, flags: Flags): void {
     audio: flags.audio,
     fromSegment: flags.fromSegment,
     whisperCmd: flags.whisperCmd,
+    whisperEngine: flags.whisperEngine,
     whisperModel: flags.whisperModel,
     language: flags.language,
     trackName: flags.trackName,
     styleRef: flags.styleRef,
+    karaoke: flags.karaoke,
+    maxWords: flags.maxWords,
+    maxChars: flags.maxChars,
+    maxGapMs: flags.maxGapMs,
   });
   saveDraft(filePath, draft);
   out(result, flags);
@@ -2050,6 +2139,11 @@ async function cmdServe(flags: Flags): Promise<void> {
     queuePath: flags.queue,
     cliPath: selfPath,
     failFast: flags.failFast,
+    workers: flags.workers,
+    retries: flags.retries,
+    timeoutMs: flags.timeoutMs,
+    backoffMs: flags.backoffMs,
+    maxBufferBytes: flags.maxBufferMb ? Math.round(flags.maxBufferMb * 1024 * 1024) : undefined,
   });
   // Write a final summary line at end (JSON only, stderr to avoid mixing with per-job results)
   process.stderr.write(`${JSON.stringify({ summary: result })}\n`);
@@ -2110,23 +2204,47 @@ function cmdBatch(draft: Draft, filePath: string, flags: Flags): void {
   const input = readFileSync(0, "utf-8").trim();
   if (!input) die("No input on stdin");
   const lines = input.split("\n");
-  let ok = 0;
-  let fail = 0;
-  for (const line of lines) {
+  let working = structuredClone(draft);
+  const errors: Array<{ line: number; input: string; error: string }> = [];
+  let succeeded = 0;
+  for (let index = 0; index < lines.length; index++) {
+    const line = lines[index];
     const trimmed = line.trim();
     if (!trimmed) continue;
     try {
       const op = JSON.parse(trimmed) as BatchOp;
-      execBatchOp(draft, filePath, op, flags);
-      ok++;
+      if (!op || typeof op !== "object" || typeof op.cmd !== "string") {
+        throw new Error("batch line must be an object with a string cmd field");
+      }
+      // Each operation runs against its own clone. A failing operation can
+      // never leave a partial mutation behind, even in --continue-on-error.
+      const candidate = structuredClone(working);
+      execBatchOp(candidate, filePath, op, flags);
+      working = candidate;
+      succeeded++;
     } catch (e) {
-      fail++;
       const msg = e instanceof Error ? e.message : String(e);
-      process.stderr.write(`${JSON.stringify({ error: msg, line: trimmed })}\n`);
+      errors.push({ line: index + 1, input: trimmed, error: msg });
+      if (!flags.continueOnError) break;
     }
   }
-  saveDraft(filePath, draft);
-  out({ ok: true, succeeded: ok, failed: fail }, flags);
+
+  if (errors.length > 0 && !flags.continueOnError) {
+    throw new Error(
+      `batch aborted at line ${errors[0].line}; no changes written: ${errors[0].error}. ` +
+        "Pass --continue-on-error to commit only successful operations.",
+    );
+  }
+
+  if (succeeded > 0) {
+    Object.assign(draft, working);
+    saveDraft(filePath, draft);
+  }
+  if (errors.length > 0) process.exitCode = 1;
+  out(
+    { ok: errors.length === 0, transactional: !flags.continueOnError, succeeded, failed: errors.length, errors },
+    flags,
+  );
 }
 
 function cmdDoctor(flags: Flags): boolean {
@@ -2146,6 +2264,28 @@ function cmdDoctor(flags: Flags): boolean {
     out(report, flags);
   }
   return report.ok;
+}
+
+function cmdDiagnose(projectPath: string | undefined, flags: Flags): void {
+  if (!projectPath) die("Usage: capcut diagnose <project> [--bundle <report.json>]");
+  const report = diagnoseDraftStore(projectPath);
+  if (flags.bundle) {
+    writeFileSync(flags.bundle, `${JSON.stringify(report, null, 2)}\n`, "utf-8");
+  }
+  if (flags.human) {
+    console.log(`Canonical: ${report.canonical}`);
+    console.log(`Version:   ${report.version ?? "unknown"}`);
+    console.log(`Diverged:  ${report.diverged ? "YES" : "no"}`);
+    console.log(`Editor:    ${report.editor_running.join(", ") || "not detected"}`);
+    console.log("");
+    for (const candidate of report.candidates) {
+      const state = !candidate.exists ? "missing" : candidate.parseable_timeline ? "timeline" : "unreadable";
+      console.log(`${candidate.file.padEnd(24)} ${state.padEnd(10)} ${String(candidate.size).padStart(9)} bytes`);
+    }
+    if (flags.bundle) console.log(`\nBundle: ${flags.bundle}`);
+  } else {
+    out({ ...report, bundle: flags.bundle ?? null }, flags);
+  }
 }
 
 function cmdTemplates(flags: Flags): void {
@@ -2216,7 +2356,11 @@ function cmdRestore(projectPath: string | undefined, flags: Flags): void {
       const avail = snaps.length ? `1..${snaps.length}` : "none yet";
       die(`No snapshot at --step ${flags.step}. Available: ${avail}. Try: capcut restore ${projectPath} --list`);
     }
-    if (!isDryRun()) copyFileSync(target.path, filePath);
+    if (!isDryRun()) {
+      copyFileSync(target.path, filePath);
+      const restored = loadDraft(filePath);
+      saveDraft(restored.filePath, restored.draft, { backup: false });
+    }
     out({ ok: true, restored: filePath, from: target.path, step: flags.step }, flags);
     return;
   }
@@ -2225,7 +2369,11 @@ function cmdRestore(projectPath: string | undefined, flags: Flags): void {
   if (!existsSync(bakPath)) {
     die(`No backup found at ${bakPath}. Nothing to restore (a .bak is written on the first edit).`);
   }
-  if (!isDryRun()) copyFileSync(bakPath, filePath);
+  if (!isDryRun()) {
+    copyFileSync(bakPath, filePath);
+    const restored = loadDraft(filePath);
+    saveDraft(restored.filePath, restored.draft, { backup: false });
+  }
   out({ ok: true, restored: filePath, from: bakPath }, flags);
 }
 
@@ -2441,6 +2589,7 @@ const SUMMARIES: Record<string, string> = {
   "add-effect": "Add a scene effect on its own track.",
   "save-template": "Extract a segment as a reusable template JSON.",
   "apply-template": "Stamp a template into a project with new timing/text.",
+  templates: "List bundled reusable templates.",
   batch: "Run multiple edits from stdin (JSONL), one file write.",
   "import-srt": "Import an SRT file/stdin as one text segment per cue.",
   "import-ass": "Import an ASS/SSA subtitle file as text segments.",
@@ -2452,6 +2601,7 @@ const SUMMARIES: Record<string, string> = {
   chroma: "Green-screen / chroma key a video segment, or --off.",
   enums: "List enum slugs (transitions, masks, effects, ...) by category.",
   doctor: "Environment preflight (Node, whisper, API key, project dir).",
+  diagnose: "Inspect canonical draft files, divergence, and editor-write safety.",
   prune: "Remove materials no segment references.",
   relink: "Repair broken media paths (--dir or --from/--to).",
   timeline: "Show the track/segment layout (JSON, or -H ASCII bars).",
@@ -2470,29 +2620,25 @@ const SUMMARIES: Record<string, string> = {
   render: "Render a low-res ffmpeg proxy preview (trim+speed+audio, --burn-captions); not CapCut's final render.",
 };
 
-const GLOBAL_FLAG_DOCS: Array<{ flag: string; description: string }> = [
-  { flag: "-H, --human", description: "Human-readable output instead of JSON." },
-  { flag: "-q, --quiet", description: "No stdout on success; exit code only." },
-  { flag: "-v, --version", description: "Print the installed CLI version." },
-  { flag: "--dry-run", description: "Preview a mutating command; write nothing." },
-  { flag: "--jianying", description: "Use the JianYing enum namespace." },
-];
-
 // `describe` emits a machine-readable tool spec for LLM/agent callers, so they
 // don't have to scrape --help. Names come from COMMANDS (source of truth);
 // summaries from SUMMARIES (test-enforced complete).
 function cmdDescribe(flags: Flags): void {
-  const commands = COMMANDS.map((name) => ({ name, summary: SUMMARIES[name] ?? "" }));
   out(
     {
       name: "capcut-cli",
       version: getCliVersion(),
+      schema_version: 2,
       description: "Edit CapCut/JianYing draft_content.json directly. JSON in, JSON out.",
-      global_flags: GLOBAL_FLAG_DOCS,
-      commands,
+      global_flags: GLOBAL_OPTION_SPECS,
+      commands: commandSpecs(),
     },
     flags,
   );
+}
+
+function commandSpecs() {
+  return buildCommandSpecs(COMMANDS, SUMMARIES);
 }
 
 // --- Config (.capcutrc) ---
@@ -2709,6 +2855,12 @@ function cmdCompile(positional: string[], flags: Flags): void {
     die((e as Error).message);
   }
 
+  if (flags.check || flags.plan) {
+    const plan = planCompile(spec, path.dirname(path.resolve(specPath)));
+    out({ ...plan, checked: true, write: false }, flags);
+    return;
+  }
+
   const cliDir = new URL(".", import.meta.url).pathname.replace(/\/dist\/$/, "");
   const externalTemplate = `${cliDir}/../CapCutAPI/template`;
   const bundledTemplate = `${cliDir}/templates/_init`;
@@ -2741,6 +2893,7 @@ function cmdRender(draft: Draft, filePath: string, flags: Flags): void {
     fps: flags.fps,
     ffmpegCmd: flags.ffmpegCmd,
     burnCaptions: flags.burnCaptions,
+    allVideoTracks: flags.allVideoTracks,
     dryRun: isDryRun(),
   };
   if (opts.dryRun) {
@@ -2759,7 +2912,7 @@ function cmdRender(draft: Draft, filePath: string, flags: Flags): void {
 async function main(): Promise<void> {
   const raw = process.argv.slice(2);
   if (raw.length === 0 || raw[0] === "--help" || raw[0] === "-h") {
-    console.log(HELP);
+    console.log(`${HELP}\n\nGenerated command index:\n${renderCommandIndex(commandSpecs())}`);
     process.exit(0);
   }
 
@@ -2770,6 +2923,7 @@ async function main(): Promise<void> {
 
   // Global --dry-run: gate every saveDraft write (see src/draft.ts).
   setDryRun(flags.dryRun === true);
+  setForceWrite(flags.forceWrite === true);
 
   if (flags.version) {
     console.log(getCliVersion());
@@ -2808,6 +2962,12 @@ async function main(): Promise<void> {
   // `doctor` inspects the environment, not a draft — no project needed.
   if (cmd === "doctor") {
     process.exit(cmdDoctor(flags) ? 0 : 1);
+  }
+
+  // `diagnose` must inspect unreadable/divergent sibling files before loadDraft.
+  if (cmd === "diagnose") {
+    cmdDiagnose(projectPath, flags);
+    process.exit(0);
   }
 
   // `restore` copies a backup/snapshot back over the draft — no loadDraft/parse needed.
@@ -2983,11 +3143,11 @@ async function main(): Promise<void> {
       cmdMaterialDetail(draft, positional[2], flags);
       break;
     case "add-audio":
-      requireArgs(positional, 5, "capcut add-audio <project> <file-or-wikimedia-url> <start> <duration>");
+      requireArgs(positional, 4, "capcut add-audio <project> <file-or-wikimedia-url> <start> [duration]");
       await cmdAddAudio(draft, filePath, positional, flags);
       break;
     case "add-video":
-      requireArgs(positional, 5, "capcut add-video <project> <file-or-wikimedia-url> <start> <duration>");
+      requireArgs(positional, 4, "capcut add-video <project> <file-or-wikimedia-url> <start> [duration]");
       await cmdAddVideo(draft, filePath, positional, flags);
       break;
     case "add-text":

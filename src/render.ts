@@ -30,6 +30,7 @@ export interface RenderOptions {
   fps?: number; // output fps override (default draft.fps or 30)
   ffmpegCmd?: string; // ffmpeg binary (default "ffmpeg")
   burnCaptions?: boolean; // draw text-track segments onto the video
+  allVideoTracks?: boolean; // composite overlay video tracks
   dryRun?: boolean; // build the plan, do not execute ffmpeg
 }
 
@@ -51,11 +52,45 @@ export interface RenderPlan {
   audioSegments: number;
   textOverlays: number;
   skipped: Array<{ segmentId: string; reason: string }>;
+  overlaySegments: number;
+  capabilities?: FfmpegCapabilities;
 }
 
 export interface RenderResult extends RenderPlan {
   ok: boolean;
   executed: boolean;
+}
+
+export interface FfmpegCapabilities {
+  available: boolean;
+  drawtext: boolean;
+  overlay: boolean;
+  x264: boolean;
+}
+
+export function probeFfmpegCapabilities(command = "ffmpeg"): FfmpegCapabilities {
+  try {
+    const filters = spawnSync(command, ["-hide_banner", "-filters"], {
+      encoding: "utf-8",
+      timeout: 10_000,
+      maxBuffer: 8 * 1024 * 1024,
+    });
+    const encoders = spawnSync(command, ["-hide_banner", "-encoders"], {
+      encoding: "utf-8",
+      timeout: 10_000,
+      maxBuffer: 8 * 1024 * 1024,
+    });
+    const filterText = `${filters.stdout ?? ""}${filters.stderr ?? ""}`;
+    const encoderText = `${encoders.stdout ?? ""}${encoders.stderr ?? ""}`;
+    return {
+      available: filters.status === 0,
+      drawtext: /\bdrawtext\b/.test(filterText),
+      overlay: /\boverlay\b/.test(filterText),
+      x264: /\blibx264\b/.test(encoderText),
+    };
+  } catch {
+    return { available: false, drawtext: false, overlay: false, x264: false };
+  }
 }
 
 function findVideoPath(draft: Draft, materialId: string): string | undefined {
@@ -82,6 +117,11 @@ function mainVideoSegments(draft: Draft): Segment[] {
   return [...track.segments].sort((a, b) => a.target_timerange.start - b.target_timerange.start);
 }
 
+function overlayVideoSegments(draft: Draft): Segment[] {
+  const tracks = draft.tracks.filter((track) => track.type === "video").slice(1);
+  return tracks.flatMap((track) => track.segments).sort((a, b) => a.target_timerange.start - b.target_timerange.start);
+}
+
 function audioSegments(draft: Draft): Segment[] {
   const segs: Segment[] = [];
   for (const t of draft.tracks) {
@@ -90,14 +130,23 @@ function audioSegments(draft: Draft): Segment[] {
   return segs.sort((a, b) => a.target_timerange.start - b.target_timerange.start);
 }
 
-function textSegments(draft: Draft): Array<{ seg: Segment; text: string }> {
-  const out: Array<{ seg: Segment; text: string }> = [];
+function textSegments(draft: Draft): Array<{ seg: Segment; text: string; color: string; fontSize: number; y: number }> {
+  const out: Array<{ seg: Segment; text: string; color: string; fontSize: number; y: number }> = [];
   for (const t of draft.tracks) {
     if (t.type !== "text") continue;
     for (const s of t.segments) {
       const mat = draft.materials.texts?.find((m) => m.id === s.material_id);
       const raw = typeof mat?.content === "string" ? extractText(mat.content) : "";
-      if (raw) out.push({ seg: s, text: raw });
+      if (raw) {
+        const material = mat as unknown as Record<string, unknown>;
+        out.push({
+          seg: s,
+          text: raw,
+          color: typeof material.text_color === "string" ? material.text_color.replace("#", "0x") : "white",
+          fontSize: Number(material.font_size ?? 15),
+          y: s.clip?.transform.y ?? -0.6,
+        });
+      }
     }
   }
   return out.sort((a, b) => a.seg.target_timerange.start - b.seg.target_timerange.start);
@@ -204,18 +253,71 @@ export function buildRenderPlan(draft: Draft, opts: RenderOptions): RenderPlan {
     filterParts.push(`${videoLabels.join("")}concat=n=${videoLabels.length}:v=1:a=0[${vOut}]`);
   }
 
+  // --- overlay video tracks ---
+  let overlaySegments = 0;
+  if (opts.allVideoTracks) {
+    for (const seg of overlayVideoSegments(draft)) {
+      const path = findVideoPath(draft, seg.material_id);
+      if (!path || !existsSync(path)) {
+        skipped.push({ segmentId: seg.id, reason: path ? `file missing: ${path}` : "no overlay material path" });
+        continue;
+      }
+      const photo = isPhoto(draft, seg.material_id);
+      const targetStart = round3(seg.target_timerange.start / US);
+      const targetDur = round3(seg.target_timerange.duration / US);
+      const idx = inputs.length;
+      inputs.push({ index: idx, path, kind: photo ? "photo" : "video" });
+      if (photo) inputArgs.push("-loop", "1", "-t", String(targetDur), "-i", path);
+      else inputArgs.push("-i", path);
+
+      const clip = seg.clip;
+      const scale = clip?.scale.x ?? 1;
+      const alpha = clip?.alpha ?? 1;
+      const rotation = clip?.rotation ?? 0;
+      const x = clip?.transform.x ?? 0;
+      const y = clip?.transform.y ?? 0;
+      const sourceStart = round3(seg.source_timerange.start / US);
+      const sourceDur = round3(seg.source_timerange.duration / US);
+      const speed = seg.speed || 1;
+      const label = `ovsrc${overlaySegments}`;
+      const filters = photo
+        ? [`trim=duration=${targetDur}`, "setpts=PTS-STARTPTS"]
+        : [
+            `trim=start=${sourceStart}:duration=${sourceDur}`,
+            speed === 1 ? "setpts=PTS-STARTPTS" : `setpts=(PTS-STARTPTS)/${round3(speed)}`,
+          ];
+      filters.push(
+        `scale=${width}:${height}:force_original_aspect_ratio=decrease`,
+        `scale=iw*${round3(scale)}:ih*${round3(scale)}`,
+        rotation === 0 ? "null" : `rotate=${round3(rotation)}*PI/180:c=none:ow=rotw(iw):oh=roth(ih)`,
+        "format=rgba",
+        alpha === 1 ? "null" : `colorchannelmixer=aa=${round3(alpha)}`,
+        `setpts=PTS+${targetStart}/TB`,
+      );
+      filterParts.push(`[${idx}:v]${filters.join(",")}[${label}]`);
+      const next = `ovout${overlaySegments}`;
+      filterParts.push(
+        `[${vOut}][${label}]overlay=x='(W-w)/2+(${round3(x)}*W/2)':` +
+          `y='(H-h)/2-(${round3(y)}*H/2)':enable='between(t,${targetStart},${round3(targetStart + targetDur)})':` +
+          `eof_action=pass[${next}]`,
+      );
+      vOut = next;
+      overlaySegments++;
+    }
+  }
+
   // --- captions (optional) ---
   const texts = opts.burnCaptions ? textSegments(draft) : [];
   let textOverlays = 0;
-  for (const { seg, text } of texts) {
+  for (const { seg, text, color, fontSize, y } of texts) {
     const t = escapeDrawtext(text);
     if (!t) continue;
     const start = round3(seg.target_timerange.start / US);
     const end = round3((seg.target_timerange.start + seg.target_timerange.duration) / US);
     const next = `vt${textOverlays}`;
     filterParts.push(
-      `[${vOut}]drawtext=text='${t}':fontcolor=white:fontsize=${Math.round(height / 18)}:` +
-        `box=1:boxcolor=black@0.5:boxborderw=8:x=(w-text_w)/2:y=h-(h/6):` +
+      `[${vOut}]drawtext=text='${t}':fontcolor=${color}:fontsize=${Math.max(12, Math.round((height / 640) * fontSize))}:` +
+        `box=1:boxcolor=black@0.5:boxborderw=8:x=(w-text_w)/2:y=(h-text_h)/2-(${round3(y)}*h/2):` +
         `enable='between(t,${start},${end})'[${next}]`,
     );
     vOut = next;
@@ -243,11 +345,19 @@ export function buildRenderPlan(draft: Draft, opts: RenderOptions): RenderPlan {
     const startMs = Math.round(seg.target_timerange.start / 1000);
     const vol = seg.volume ?? 1;
     const tempo = atempoFor(seg.speed || 1);
+    const fade = (draft.materials.audio_fades ?? []).find((item) =>
+      (seg.extra_material_refs ?? []).includes(String(item.id)),
+    ) as { fade_in_duration?: number; fade_out_duration?: number } | undefined;
+    const fadeIn = (fade?.fade_in_duration ?? 0) / US;
+    const fadeOut = (fade?.fade_out_duration ?? 0) / US;
+    const targetDuration = seg.target_timerange.duration / US;
     const chain = [
       `atrim=start=${srcStart}:duration=${srcDur}`,
       "asetpts=PTS-STARTPTS",
       tempo,
       vol !== 1 ? `volume=${round3(vol)}` : null,
+      fadeIn > 0 ? `afade=t=in:st=0:d=${round3(fadeIn)}` : null,
+      fadeOut > 0 ? `afade=t=out:st=${round3(Math.max(0, targetDuration - fadeOut))}:d=${round3(fadeOut)}` : null,
       `adelay=${startMs}|${startMs}`,
     ].filter(Boolean);
     const label = `a${idx}`;
@@ -297,13 +407,32 @@ export function buildRenderPlan(draft: Draft, opts: RenderOptions): RenderPlan {
     videoSegments: videoLabels.length,
     audioSegments: audioLabels.length,
     textOverlays,
+    overlaySegments,
     skipped,
   };
 }
 
 export function renderDraft(draft: Draft, filePath: string, opts: RenderOptions): RenderResult {
   const out = opts.out ?? join(dirname(filePath), "preview.mp4");
-  const plan = buildRenderPlan(draft, { ...opts, out });
+  const capabilities = probeFfmpegCapabilities(opts.ffmpegCmd ?? "ffmpeg");
+  if (!capabilities.available) {
+    throw new Error(
+      `render: ffmpeg is unavailable at '${opts.ffmpegCmd ?? "ffmpeg"}'. ` +
+        "Install ffmpeg or pass --ffmpeg-cmd <path>.",
+    );
+  }
+  const fallbackSkipped: Array<{ segmentId: string; reason: string }> = [];
+  const effective = { ...opts, out };
+  if (effective.burnCaptions && !capabilities.drawtext) {
+    effective.burnCaptions = false;
+    fallbackSkipped.push({ segmentId: "captions", reason: "ffmpeg lacks drawtext; caption burn disabled" });
+  }
+  if (effective.allVideoTracks && !capabilities.overlay) {
+    effective.allVideoTracks = false;
+    fallbackSkipped.push({ segmentId: "overlays", reason: "ffmpeg lacks overlay filter; extra video tracks disabled" });
+  }
+  const basePlan = buildRenderPlan(draft, effective);
+  const plan = { ...basePlan, capabilities, skipped: [...basePlan.skipped, ...fallbackSkipped] };
 
   if (opts.dryRun) {
     return { ...plan, ok: true, executed: false };

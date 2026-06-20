@@ -40,4 +40,34 @@ describe("capcut serve", () => {
     assert.match(first.stderr, /JSON parse error/);
     assert.equal(second.ok, true);
   });
+
+  it("captures JSON output larger than the platform pipe buffer", () => {
+    const job = `${JSON.stringify({ cmd: "enums", args: ["--filters", "--jianying"] })}\n`;
+    const r = spawnCli(["serve", "--max-buffer-mb", "2"], { input: job });
+    assert.equal(r.status, 0, r.stderr);
+    const result = JSON.parse(r.stdout.trim());
+    assert.equal(result.ok, true);
+    assert.ok(Array.isArray(result.stdout));
+    assert.ok(result.stdout.length > 100);
+  });
+
+  it("deduplicates stable job ids across concurrent workers", () => {
+    const job = JSON.stringify({ id: "same-job", cmd: "info", project: fix.path });
+    const r = spawnCli(["serve", "--workers", "2"], { input: `${job}\n${job}\n` });
+    assert.equal(r.status, 0, r.stderr);
+    const results = r.stdout.trim().split("\n").map(JSON.parse);
+    assert.equal(results.length, 2);
+    assert.ok(results.every((result) => result.ok));
+    assert.equal(results.filter((result) => result.deduplicated).length, 1);
+    const summary = JSON.parse(r.stderr.trim()).summary;
+    assert.equal(summary.deduplicated, 1);
+  });
+
+  it("retries failed jobs with exponential backoff", () => {
+    const job = `${JSON.stringify({ cmd: "definitely-not-a-command" })}\n`;
+    const r = spawnCli(["serve", "--retries", "1", "--backoff-ms", "1"], { input: job });
+    const result = JSON.parse(r.stdout.trim());
+    assert.equal(result.ok, false);
+    assert.equal(result.attempts, 2);
+  });
 });

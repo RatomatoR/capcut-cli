@@ -161,7 +161,8 @@ export function addTransition(
   const found = findSegment(draft, segmentId);
   if (!found) throw new Error(`Segment not found: ${segmentId}`);
   const seg = found.segment;
-  const transitions = (draft.materials.transitions ??= []);
+  draft.materials.transitions ??= [];
+  const transitions = draft.materials.transitions;
 
   // Refuse to stack transitions on one segment.
   const existing = (seg.extra_material_refs || []).find((r) =>
@@ -183,7 +184,8 @@ export function addTransition(
     resource_id: meta.resource_id,
     type: "transition",
   });
-  (seg.extra_material_refs ||= []).push(id);
+  seg.extra_material_refs ||= [];
+  seg.extra_material_refs.push(id);
   return { segmentId: seg.id, transition_id: id, name: meta.name, duration_us: dur };
 }
 
@@ -226,7 +228,8 @@ export function addMask(
   if (!found) throw new Error(`Segment not found: ${segmentId}`);
   const seg = found.segment;
 
-  const masks = (draft.materials.common_mask ??= [] as Array<Record<string, unknown>>);
+  draft.materials.common_mask ??= [] as Array<Record<string, unknown>>;
+  const masks = draft.materials.common_mask;
 
   // Refuse to stack masks on one segment.
   const existing = (seg.extra_material_refs || []).find((r) => masks.some((m) => (m as { id?: string }).id === r));
@@ -269,7 +272,8 @@ export function addMask(
     resource_id: meta.resource_id,
     type: "mask",
   });
-  (seg.extra_material_refs ||= []).push(id);
+  seg.extra_material_refs ||= [];
+  seg.extra_material_refs.push(id);
   return { segmentId: seg.id, mask_id: id, name: meta.name };
 }
 
@@ -285,7 +289,8 @@ export function setBgBlur(
   if (!found) throw new Error(`Segment not found: ${segmentId}`);
   const seg = found.segment;
 
-  const canvases = (draft.materials.canvases ??= [] as Array<Record<string, unknown>>);
+  draft.materials.canvases ??= [] as Array<Record<string, unknown>>;
+  const canvases = draft.materials.canvases;
 
   // Remove any existing canvas reference on this segment.
   const before = (seg.extra_material_refs || []).length;
@@ -580,7 +585,8 @@ export function addImageAnim(
   if (!found) throw new Error(`Segment not found: ${segmentId}`);
   const seg = found.segment;
 
-  const animsArr = (draft.materials.material_animations ??= [] as Array<Record<string, unknown>>);
+  draft.materials.material_animations ??= [] as Array<Record<string, unknown>>;
+  const animsArr = draft.materials.material_animations;
   const animsById = Object.fromEntries(animsArr.map((a) => [(a as { id: string }).id, a]));
 
   let container: { animations: Array<Record<string, unknown>>; id: string } | null = null;
@@ -600,7 +606,8 @@ export function addImageAnim(
       type: "sticker_animation",
     };
     animsArr.push(fresh);
-    (seg.extra_material_refs ||= []).push(id);
+    seg.extra_material_refs ||= [];
+    seg.extra_material_refs.push(id);
     container = fresh;
   }
 
@@ -695,7 +702,8 @@ export function addTextAnim(
   if (!found) throw new Error(`Segment not found: ${segmentId}`);
   const seg = found.segment;
 
-  const animsArr = (draft.materials.material_animations ??= [] as Array<Record<string, unknown>>);
+  draft.materials.material_animations ??= [] as Array<Record<string, unknown>>;
+  const animsArr = draft.materials.material_animations;
   const animsById = Object.fromEntries(
     animsArr.map((a) => [(a as { id: string }).id, a as { animations?: Array<Record<string, unknown>>; id: string }]),
   );
@@ -718,7 +726,8 @@ export function addTextAnim(
       type: "sticker_animation",
     };
     animsArr.push(fresh);
-    (seg.extra_material_refs ||= []).push(id);
+    seg.extra_material_refs ||= [];
+    seg.extra_material_refs.push(id);
     container = fresh;
   }
 
@@ -984,7 +993,8 @@ export function setBubble(
     type: "text_shape",
     value: 1.0,
   });
-  (seg.extra_material_refs ||= []).push(bubbleId);
+  seg.extra_material_refs ||= [];
+  seg.extra_material_refs.push(bubbleId);
 
   // Also stamp the bubble_* fields on the text material itself (some CapCut
   // versions read from there in addition to the filters[] entry).

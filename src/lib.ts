@@ -13,6 +13,8 @@
  *   saveDraft(filePath, draft);
  */
 
+export type { ArgumentSpec, CommandName, CommandSpec, OptionSpec } from "./command-specs.js";
+export { commandNames, GLOBAL_OPTION_SPECS } from "./command-specs.js";
 export type { CheckStatus, DoctorCheck, DoctorReport } from "./doctor.js";
 export { runDoctor } from "./doctor.js";
 export type {
@@ -43,5 +45,7 @@ export {
   lintExitCode,
   summarize,
 } from "./lint.js";
+export type { RunCommandRequest, RunCommandResult } from "./runner.js";
+export { runCommand } from "./runner.js";
 export type { AppSource, VersionInfo } from "./version.js";
 export { detectVersion } from "./version.js";
