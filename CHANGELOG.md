@@ -2,6 +2,12 @@
 
 All notable changes to capcut-cli are documented here. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); the project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.11.1] — 2026-06-20
+
+### Fixed
+
+- GitHub Actions on Windows now uses Node's built-in test discovery instead of relying on POSIX shell expansion of `test/*.test.mjs`.
+
 ## [0.11.0] — 2026-06-20
 
 A reliability and automation release spanning the full draft lifecycle. It closes the highest-value gaps found in the v0.10.1 repository audit while preserving the zero-runtime-dependency core.
