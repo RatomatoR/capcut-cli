@@ -28,7 +28,7 @@ _一个独立的、社区维护的 CapCut / 剪映草稿文件命令行工具。
 
 先跑 `capcut doctor` 检查环境（Node、Whisper、ffprobe、FFmpeg 能力、草稿目录）。
 
-**v0.11.0 可靠性版本** —— CapCut 8.7 多文件存储适配、原子/冲突安全写入、事务式 `batch`、命令契约 v2、`compile` v2、卡拉 OK 字幕、完整媒体探测、多视频轨代理预览，以及可靠的并发队列执行器。详见 [CHANGELOG](./CHANGELOG.md#0110--2026-06-20)。
+**当前版本：v0.11.3。** v0.11 系列加入 CapCut 8.7 多文件存储适配、原子/冲突安全写入、事务式 `batch`、命令契约 v2、`compile` v2、卡拉 OK 字幕、完整媒体探测、多视频轨代理预览，以及可靠的并发队列执行器。v0.11.2 修复了 Windows 盘符路径下的 `init`、`compile`、`serve`、ESM 导入与精确恢复；v0.11.3 同步更新中英文文档。详见 [v0.11.3 Release](https://github.com/renezander030/capcut-cli/releases/tag/v0.11.3)。
 
 **v0.6 新增** —— `doctor`（环境预检）、可导入的 Node 代码库（`import { … } from "capcut-cli"`）、官方 [Dockerfile](./Dockerfile)、在 CI 里检查草稿的 [GitHub Action](./action.yml)、三个新模板（`caption-pop`、`lower-third`、`hook-question`），以及覆盖 Node 18/20/22 的 CI 矩阵。
 
@@ -78,16 +78,18 @@ flowchart LR
 
 跟其他剪映 / CapCut 工具的差别：
 
-| 能力 | [`pyJianYingDraft`](https://github.com/GuanYixuan/pyJianYingDraft)（Python，仅剪映） | [`pyCapCut`](https://github.com/GuanYixuan/pyCapCut)（Python，仅 CapCut） | [`CapCutAPI`](https://github.com/sun-guannan/CapCutAPI)（Python + HTTP 服务） | `cutcli`（Go，闭源） | **`capcut-cli`**（Node，本仓库） |
+| 能力 | [`pyJianYingDraft`](https://github.com/GuanYixuan/pyJianYingDraft)（Python，仅剪映） | [`pyCapCut`](https://github.com/GuanYixuan/pyCapCut)（Python，仅 CapCut） | [`VectCutAPI`](https://github.com/sun-guannan/VectCutAPI)（Python + HTTP 服务，原 CapCutAPI） | `cutcli`（Go，闭源） | **`capcut-cli`**（Node，本仓库） |
 |---|:---:|:---:|:---:|:---:|:---:|
 | 草稿审查（`info` / `tracks` / `materials` / `segments` / `texts`） | 部分 | 部分 | ❌ | ❌ | ✅ |
 | 从零创建草稿 | ✅ | ✅ | ✅ | ✅ | ✅ |
+| 声明式 spec → 草稿（一次 `compile`） | ❌ | ❌ | ❌ | ❌ | ✅（v0.10.0） |
+| 不打开 CapCut 预览编辑（本地 FFmpeg 代理） | ❌ | ❌ | ❌ | ❌ | ✅（v0.10.0） |
 | 装饰命令（`keyframe` / `transition` / `mask` / `text-anim` / `image-anim`） | ✅ | ✅ | ✅ | ✅ | ✅（v0.3.0） |
 | SRT 字幕导入 → 逐条文本片段 | ❌ | ❌ | ✅ | ❌ | ✅（v0.3.0） |
 | 多样式文本（字级高亮字幕） | 部分 | 部分 | ❌ | ❌ | ✅（v0.3.0） |
 | 大模型友好的枚举发现 | ❌ | ❌ | 部分 | ❌ | ✅ — 13 类 × 2 命名空间 |
 | CapCut + 剪映 双命名空间 | 仅剪映 | 仅 CapCut | 都支持 | 部分 | 都支持（`--jianying` 切换） |
-| 模板（save / apply） | 部分 | 部分 | ❌ | ❌ | ✅ — 内置 3 个模板 |
+| 模板（save / apply） | 部分 | 部分 | ❌ | ❌ | ✅ — 内置 6 个模板 |
 | Schema 文档 | 部分 | 部分 | 简略 | 无 | 完整（[`docs/draft-schema/`](./docs/draft-schema/)） |
 | Wikimedia Commons URL + 版权检查 | ❌ | ❌ | ❌ | ❌ | ✅（v0.3.0） |
 | 运行时依赖 | 多个 Python 包 | 多个 Python 包 | Flask + Python | 无（Go 二进制） | **零**（仅 Node ≥ 18 内置 API） |
@@ -134,7 +136,7 @@ flowchart LR
 
 ### 导入 & 发现
 - ✅ `import-srt` — SRT 一条 cue 一个文本片段；支持文件 / stdin / `--style-ref` 镜像样式
-- ✅ `enums` — 12 个分类 × 2 个命名空间，从仓库内 `enums.json` 读，**无需联网**
+- ✅ `enums` — 13 个分类 × 2 个命名空间，从仓库内 `enums.json` 读，**无需联网**
 - ✅ `describe` v2 — 参数类型、默认值、枚举、写入属性、前置条件、输出与退出码
 - ✅ `compile` v2 — 稳定 ref、装饰器、模板、字幕、关键帧、淡入淡出与 `--check` / `--plan`
 
@@ -153,7 +155,7 @@ flowchart LR
 - ✅ `-q` / `--quiet` 静默模式（仅返回码）
 
 ### 质量保障
-- ✅ 200+ 个 `node:test` 测试（[`test/`](./test/)），覆盖 Node 18/20/22 与 Ubuntu/macOS/Windows smoke matrix
+- ✅ 205 个 `node:test` 测试（[`test/`](./test/)）；Linux 覆盖 Node 18/20/22，Ubuntu/macOS/Windows 均运行完整 Node 20 测试套件
 - ✅ Husky [pre-commit 钩子](./.husky/pre-commit) —— Biome lint（仅暂存文件）+ 完整测试
 - ✅ Schema 参考文档（[`docs/draft-schema/`](./docs/draft-schema/)，7 个文件 ~3700 行）
 - ✅ Claude Code 插件（`/plugin marketplace add https://github.com/renezander030/capcut-cli`），详见英文 [README · Claude Code plugin](./README.md#claude-code-plugin)
@@ -278,7 +280,7 @@ echo '{"cmd":"set-text","id":"a1b2c3","text":"第一行已修正"}
 
 ## 模板复用 — 开箱即用
 
-`templates/` 目录内置 3 个常用模板，安装后即可直接使用：
+`templates/` 目录内置 6 个常用模板：`gold-title`、`end-card`、`subscribe-cta`、`caption-pop`、`lower-third`、`hook-question`。下面展示前三个：
 
 ```bash
 # 大标题（黄色 + 黑边 + 阴影，适合开场)
@@ -330,7 +332,9 @@ capcut set-text ./project a1b2c3 "新文字" -q
 
 ## 工作原理
 
-直接读写 `draft_content.json`。所有写入操作前自动创建 `.bak` 备份。
+CapCut / 剪映不同版本可能把有效时间线放在 `draft_content.json`、`draft_info.json`、`draft_meta_info.json` 或 `template-2.tmp`。版本感知存储层会选择规范来源、比较所有可读副本，并通过临时文件 → `fsync` → 原子重命名同步写入；每个目标都有 `.bak` 与历史快照。可先运行 `capcut diagnose <project>` 查看选择结果与分歧。
+
+如果检测到编辑器仍在运行或文件在加载后被其他进程修改，CLI 会拒绝写入。关闭 CapCut / 剪映后重试；只有明确接受覆盖风险时才使用 `--force-write`。
 
 时间单位内部用微秒（`start_us`、`duration_us`），命令行接受 `1.5s`、`500ms`、`1:00`、`1:30:45` 等格式自动转换。
 

@@ -2,6 +2,12 @@
 
 All notable changes to capcut-cli are documented here. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); the project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.11.3] — 2026-06-20
+
+### Documentation
+
+- Synchronized the English and Chinese READMEs with the shipped v0.11 surface: version-aware storage, v0.11.2 Windows fixes, six templates, 13 enum categories, 205 tests, the full cross-platform CI matrix, and the current GitHub Action reference.
+
 ## [0.11.2] — 2026-06-20
 
 ### Fixed

@@ -30,7 +30,7 @@ Run `capcut doctor` first to verify Node, whisper, ffprobe/FFmpeg capabilities, 
 
 See the [changelog](./CHANGELOG.md) and [releases](https://github.com/renezander030/capcut-cli/releases) for what's new in each version.
 
-**v0.11.0 reliability release:** CapCut 8.7 multi-file storage, atomic/conflict-safe writes, transactional batch, command-schema v2, compile v2, karaoke captions, full media probing, multi-track proxy composition, and a concurrent retrying automation runner.
+**Current release: v0.11.3.** The v0.11 line adds CapCut 8.7 multi-file storage, atomic/conflict-safe writes, transactional batch, command-schema v2, compile v2, karaoke captions, full media probing, multi-track proxy composition, and a concurrent retrying automation runner. v0.11.2 fixed Windows drive-letter paths across `init`, `compile`, `serve`, ESM consumers, and exact-byte restore; v0.11.3 synchronizes the English and Chinese documentation. See the [v0.11.3 release](https://github.com/renezander030/capcut-cli/releases/tag/v0.11.3).
 
 ## Workflow
 
@@ -60,7 +60,7 @@ How `capcut-cli` differs from the other CapCut / JianYing tooling:
 | Multi-style text (word-level highlight captions) | partial | partial | ❌ | ❌ | ✅ (v0.3.0) |
 | Enum discovery for AI agents | ❌ | ❌ | partial | ❌ | ✅ — 13 categories × 2 namespaces |
 | CapCut + JianYing namespaces in one binary | JianYing only | CapCut only | both | partial | both via `--jianying` |
-| Templates (save/apply) | partial | partial | ❌ | ❌ | ✅ — 3 shipped templates |
+| Templates (save/apply) | partial | partial | ❌ | ❌ | ✅ — 6 shipped templates |
 | Schema docs | partial | partial | minimal | none | full ([`docs/draft-schema/`](./docs/draft-schema/)) |
 | Wikimedia Commons URLs with license gate | ❌ | ❌ | ❌ | ❌ | ✅ (v0.3.0) |
 | Runtime deps | several Python deps | several Python deps | Flask + Python | none (Go binary) | **zero** (Node ≥ 18 built-ins only) |
@@ -81,11 +81,13 @@ A capability map; see [Commands](#commands) for syntax.
 - **Captions & translate** — `caption` supports OpenAI Whisper, whisper.cpp, and faster-whisper plus word-timestamp `--karaoke`; `import-srt` / `import-ass`; `translate` (Anthropic-API multi-language clone).
 - **Templates** — `save-template` / `apply-template`; six ship in [`templates/`](./templates/) (`gold-title`, `end-card`, `subscribe-cta`, `hook-question`, `lower-third`, `caption-pop`).
 - **Resilience** — `diagnose` (canonical storage/divergence report) · atomic synchronized writes · conflict/editor guards · `version` · `lint` · `migrate` · `decrypt`; [schema reference](./docs/draft-schema/) + [version matrix](./docs/version-support.md).
-- **Discover** — `enums` — 12 categories × 2 namespaces, no network.
+- **Discover** — `enums` — 13 categories × 2 namespaces, no network.
 - **Integrate** — `describe` command-contract v2, typed `runCommand()` [library](#use-as-a-node-library), generated [command reference](./docs/command-reference.md), [Dockerfile](./Dockerfile), [GitHub Action](#github-action--lint-drafts-in-ci), concurrent/retrying `serve`, `export --batch`, completions, and the [Claude Code plugin](#claude-code-plugin).
 - **Output** — JSON by default (pipe to `jq`), `-H` table, `-q` quiet. Defaults (`drafts` dir, `jianying`, `cols`) can live in a `.capcutrc`; `capcut config` shows the resolved values.
 
 **Cross-platform:** CapCut **and** JianYing in one binary (`--jianying` switches the enum namespace); macOS · Windows · Linux; pure Node ≥ 18, zero runtime deps.
+
+**Verified:** 205 `node:test` checks; Node 18/20/22 on Linux; and the complete Node 20 suite on Ubuntu, macOS, and Windows in GitHub Actions.
 
 ### Roadmap
 - ⬜ Validate the v0.11 CapCut 8.7 storage adapter against a reporter-provided Windows project bundle and close [#35](https://github.com/renezander030/capcut-cli/issues/35).
@@ -176,7 +178,7 @@ cat jobs.jsonl | docker run --rm -i -v "$PWD:/work" capcut-cli serve
 Gate caption quality (overlaps, line length, missing files) on every push. `lint` exits `2` on errors, which fails the job:
 
 ```yaml
-- uses: renezander030/capcut-cli@v0.6
+- uses: renezander030/capcut-cli@v0.11.2
   with:
     project: ./drafts/my-short
     args: --max-chars 32 --max-cue-secs 6
@@ -608,7 +610,7 @@ Completes command names and global flags (`--jianying`, `-H`/`--human`, `-q`/`--
 
 ## How it works
 
-CapCut stores projects as JSON (`draft_content.json` on Windows, `draft_info.json` on macOS). This CLI reads and modifies that JSON directly. It preserves the original file's indentation style on save.
+CapCut stores projects in local JSON-like timeline files. Depending on the app version and project, the active timeline may be in `draft_content.json`, `draft_info.json`, `draft_meta_info.json`, or `template-2.tmp`. The version-aware store discovers the canonical source, compares every readable sibling, and synchronizes them atomically while preserving each file's envelope and indentation style. Run `capcut diagnose <project>` to inspect the decision before writing.
 
 Typical project location:
 - **Windows**: `C:\Users\<you>\AppData\Local\CapCut\User Data\Projects\com.lveditor.draft\<id>\`
@@ -620,7 +622,7 @@ Close the project in CapCut before editing, reopen after. CapCut reads the JSON 
 
 | Symptom | Cause & fix |
 |---|---|
-| **Edits vanish / project looks unchanged** | CapCut was open. It keeps its own copy of the draft in memory and overwrites your file when it next saves. **Close the project in CapCut, run the CLI, then reopen.** This is the single most common gotcha. |
+| **Edits vanish / project looks unchanged** | CapCut was open. It keeps its own copy of the draft in memory and can overwrite external changes. The CLI refuses managed-draft writes when CapCut/JianYing is detected; **close the editor, run the CLI, then reopen.** Use `--force-write` only when you intentionally accept the overwrite risk. |
 | **Track / layer order looks scrambled in CapCut** | Older builds wrote tracks in command-call order, but CapCut lays out the timeline from the tracks-array order. Recent builds normalize the array to the canonical layer order (video → audio → overlays → text) on every save. Update, re-run the edit, reopen. ([#21](https://github.com/renezander030/capcut-cli/issues/21)) |
 | **Need to undo an edit** | `capcut restore <project>` reverts the last write. Earlier writes are recoverable too: `capcut restore <project> --list` shows the snapshot history (kept in `<draftdir>/.capcut-cli-history/`, last 20), and `--step N` rolls back N writes. Preview any command first with `--dry-run` to avoid the round-trip. |
 | **`caption` fails: whisper not found** | `caption` shells out to a whisper binary. Install one (`pip install openai-whisper`, `brew install whisper-cpp`, or faster-whisper) or pass `--whisper-cmd <path>`. |
