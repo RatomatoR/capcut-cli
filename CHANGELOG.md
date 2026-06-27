@@ -2,6 +2,19 @@
 
 All notable changes to capcut-cli are documented here. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); the project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.12.0] — 2026-06-27
+
+### Added
+
+- `quickstart <name> [--video <f>] [--audio <f>] [--srt <f>]` — the one-command path from a single file to an editable draft. Creates the draft, adds the input (durations from ffprobe when available, a 5s placeholder otherwise), lints it with the same checks as `lint`, inspects the storage layout like `diagnose`, and prints the exact open-in-CapCut step. Exit 0 when created and lint-clean, 2 when created with lint errors. Reduces first-run friction for a CLI that now has 50+ commands.
+- `fixture <project> --out <dir>` — build a shareable, redacted compatibility bundle. Copies only the timeline JSON (never `assets/` media), redacts user home paths and email addresses, and writes a reporter README plus a diagnose report. Automates the "attach a sanitized project folder" step in the version-support flow so reporters can safely contribute the real CapCut 8.7 (issue #35) fixtures the storage adapter still needs.
+- `replace-media <project> <segment-id> <new-file> [--retime]` — swap a segment's source clip in place (placeholder/proxy > final render) while preserving its timeline position, timing, effects, and keyframes. Copies the file into `assets/` and refreshes intrinsic duration/dimensions via ffprobe. Distinct from `relink`, which only repairs broken paths by basename. Warns when the new clip is shorter than the segment uses; `--retime` fits the segment to the new clip. Honors `--dry-run` (no write, no copy). This is the assemble-with-placeholders-then-swap-in-finals workflow that fits the CLI's local, deterministic, agent-drivable positioning.
+
+### Documentation
+
+- `docs/jianying-encryption.md` — decision record for JianYing 6.0+ draft encryption: detect, do not decrypt, with the rationale (legal posture, algorithm in flux) and the tripwires that would reopen the decision. `capcut decrypt` now links to it.
+- `docs/version-support.md` — the reporting flow and the CapCut 8.7 row now reference `capcut fixture` for one-command sanitized bundles.
+
 ## [0.11.3] — 2026-06-20
 
 ### Documentation

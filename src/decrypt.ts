@@ -62,7 +62,7 @@ export function detectEncryption(filePath: string): EncryptionReport {
     size,
     reason: "File does not start with '{' and is not parseable as JSON — likely JianYing 6.0+ AES-encrypted payload",
     fix: [
-      "JianYing 6.0+ encrypts draft_content.json. capcut-cli cannot decrypt yet — the algorithm has legal posture implications and the community-known approach is in flux.",
+      "JianYing 6.0+ encrypts draft_content.json. capcut-cli detects but does not decrypt it by design — see docs/jianying-encryption.md for the decision and the tripwires to revisit.",
       "",
       "Workarounds (in order of preference):",
       "  1. Pin JianYing to 5.9.x and block auto-update (Windows: delete update.exe + VEDetector.exe). See docs/version-support.md.",

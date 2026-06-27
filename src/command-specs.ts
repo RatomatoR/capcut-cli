@@ -177,11 +177,14 @@ const usages = {
   enums: "capcut enums <category-flag> [--jianying]",
   doctor: "capcut doctor",
   diagnose: "capcut diagnose <project> [--bundle <report.json>]",
+  fixture: "capcut fixture <project> --out <dir>",
   restore: "capcut restore <project> [--step <number> | --list]",
   serve: "capcut serve [--queue <path>] [options]",
   decrypt: "capcut decrypt <project-or-file>",
   export: "capcut export <drafts-dir> --batch [options]",
+  "replace-media": "capcut replace-media <project> <segment-id> <new-file> [--retime]",
   init: "capcut init <name> [--template <dir>] [--drafts <dir>]",
+  quickstart: "capcut quickstart <name> [--video <f>] [--audio <f>] [--srt <f>] [--drafts <dir>]",
   compile: "capcut compile <spec.json> [--out <draftdir>] [--check | --plan]",
   render: "capcut render <project> [--out <preview.mp4>] [options]",
 } as const satisfies Record<string, string>;
@@ -332,6 +335,11 @@ const optionsByCommand: Record<string, OptionSpec[]> = {
   ],
   concat: [OUT],
   diagnose: [option("bundle", ["--bundle"], "path", "Write a redacted JSON diagnostic bundle.")],
+  fixture: [option("out", ["--out"], "path", "Output directory for the sanitized bundle.")],
+  "replace-media": [
+    option("retime", ["--retime"], "boolean", "Fit the segment to the new clip instead of preserving in/out."),
+    option("ffprobe_cmd", ["--ffprobe-cmd"], "path", "ffprobe binary for duration/dimension detection."),
+  ],
   restore: [
     option("step", ["--step"], "number", "Snapshot number."),
     option("list", ["--list"], "boolean", "List snapshots."),
@@ -352,6 +360,14 @@ const optionsByCommand: Record<string, OptionSpec[]> = {
   init: [
     option("template", ["--template"], "path", "Template directory."),
     option("drafts", ["--drafts"], "path", "Draft root directory."),
+  ],
+  quickstart: [
+    option("video", ["--video"], "path", "Video or image to add."),
+    option("audio", ["--audio"], "path", "Audio file to add."),
+    option("srt", ["--srt"], "path", "SRT subtitles to add as caption segments."),
+    option("drafts", ["--drafts"], "path", "Draft root directory."),
+    option("template", ["--template"], "path", "Template directory."),
+    option("ffprobe_cmd", ["--ffprobe-cmd"], "path", "ffprobe binary for duration detection."),
   ],
   compile: [
     OUT,
@@ -409,10 +425,12 @@ const mutating = new Set([
   "chroma",
   "prune",
   "relink",
+  "replace-media",
   "concat",
   "restore",
   "export",
   "init",
+  "quickstart",
   "compile",
 ]);
 

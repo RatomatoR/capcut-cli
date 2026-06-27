@@ -18,7 +18,7 @@ Run `capcut version <project>` for schema flags and `capcut diagnose <project> -
 |---|---|---|---|
 | 6.2.8 | fixture-tested | supported | Canonical fixture in `test/draft_content.json`; full command suite. |
 | 6.5–8.0 | expected-compatible | unverified | No committed app-created fixtures. Enum/schema changes appear additive. |
-| 8.7 Windows | reported + synthetic-tested | adapter shipped, real validation pending | Issue #35 reports that `draft_content.json` edits may be ignored in favour of `template-2.tmp` / `draft_meta_info.json`. v0.11 discovers nested/string JSON timeline envelopes, selects modern storage, synchronizes every readable target, and provides `diagnose --bundle`. A reporter-provided real folder is still required before marking this fixture-tested. |
+| 8.7 Windows | reported + synthetic-tested | adapter shipped, real validation pending | Issue #35 reports that `draft_content.json` edits may be ignored in favour of `template-2.tmp` / `draft_meta_info.json`. v0.11 discovers nested/string JSON timeline envelopes, selects modern storage, synchronizes every readable target, and provides `diagnose --bundle` and `fixture --out` (one-command sanitized bundle). A reporter-provided real folder is still required before marking this fixture-tested. |
 | 9.x | expected-compatible | unverified | `common_masks` may coexist with legacy mask fields. Use `version`, `diagnose`, and `migrate`; do not treat this row as desktop-app verification. |
 
 There is no blanket “6.x–9.x tested” claim. Only versions with committed fixtures receive that label.
@@ -61,6 +61,6 @@ Writes use same-directory temporary files, fsync, and rename. Before committing,
 2. Run `capcut diagnose <project> --bundle support.json`.
 3. Run `capcut version <project>`.
 4. Open an issue with app version, OS, exact command, JSON error, and `support.json`.
-5. If possible, attach a sanitized project folder. Remove private media and paths first.
+5. If possible, attach a sanitized project folder. Run `capcut fixture <project> --out <dir>` to build one automatically: it copies only the timeline JSON (no media), redacts user home paths and emails, and writes a README plus a diagnose report. Review the files before sharing.
 
 A version moves to **fixture-tested** only after the sanitized fixture and regression test are committed.

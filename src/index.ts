@@ -79,10 +79,13 @@ import {
   setMixMode,
   uuid,
 } from "./factory.js";
+import { sanitizeDraftBundle } from "./fixture.js";
 import { DEFAULT_LINT_OPTIONS, type LintOptions, lintDraft, lintExitCode, summarize } from "./lint.js";
 import { migrateDraft } from "./migrate.js";
 import { probeMedia } from "./probe.js";
+import { runQuickstart } from "./quickstart.js";
 import { buildRenderPlan, renderDraft } from "./render.js";
+import { replaceMedia } from "./replace.js";
 import { serveQueue } from "./serve.js";
 import { addSfx } from "./sfx.js";
 import { parseSrt } from "./srt.js";
@@ -141,6 +144,7 @@ export const COMMANDS = [
   "chroma",
   "prune",
   "relink",
+  "replace-media",
   "timeline",
   "projects",
   "diff",
@@ -151,11 +155,13 @@ export const COMMANDS = [
   "enums",
   "doctor",
   "diagnose",
+  "fixture",
   "restore",
   "serve",
   "decrypt",
   "export",
   "init",
+  "quickstart",
   "compile",
   "render",
 ] as const;
@@ -203,6 +209,12 @@ Create:
              Create a new empty draft from template. Defaults:
                --template   bundled minimal template (no external repo needed)
                --drafts     ~/Movies/CapCut/User Data/Projects/com.lveditor.draft
+  quickstart <name> [--video <f>] [--audio <f>] [--srt <f>] [--drafts <dir>]
+             One-command first draft: create + add one input + lint + print the
+             exact "open in CapCut" step. The fastest path from a file to an
+             editable project. Pass at least one of --video / --audio / --srt.
+             Durations come from ffprobe when available (5s placeholder if not).
+             Exit codes: 0 created & lint-clean · 2 created but lint errors
   compile    <spec.json> [--out <draftdir>] [--drafts <dir>]
              Build a whole draft from a declarative JSON spec (the inverse of
              describe). Times are in seconds. Media paths resolve relative to
@@ -265,6 +277,11 @@ Edit:
 Maintenance & inspection:
   prune      <project>                          Remove materials no segment references
   relink     <project> --dir <d> | --from <p> --to <q>  Repair broken media paths
+  replace-media <project> <segment-id> <new-file> [--retime]
+             Swap a segment's source clip (placeholder > final render) while
+             keeping its timeline position, timing, effects, and keyframes.
+             Refreshes duration/dimensions via ffprobe. --retime fits the
+             segment to the new clip; default preserves the original in/out.
   timeline   <project> [--cols N]               Show track/segment layout (JSON, or -H ASCII bars)
   projects   [query] [--drafts <dir>] [--names] List CapCut/JianYing draft folders on disk
   diff       <projectA> <projectB>             Compare two drafts (added/removed/changed)
@@ -272,6 +289,9 @@ Maintenance & inspection:
   config                                       Show resolved .capcutrc + effective defaults
   describe                                      Emit the full command surface as JSON (agent tool spec)
   diagnose   <project> [--bundle <report.json>] Inspect canonical draft files and divergence
+  fixture    <project> --out <dir>              Build a shareable, redacted compatibility bundle
+             (timeline JSON only, no media; home paths + emails redacted) to
+             attach to a version-support issue like #35.
 
 Animate:
   keyframe   <project> <id> <property> <time> <value>
@@ -568,6 +588,11 @@ interface Flags {
   maxGapMs?: number;
   noProbe?: boolean;
   ffprobeCmd?: string;
+  // quickstart
+  video?: string;
+  srt?: string;
+  // replace-media
+  retime?: boolean;
   // translate
   to?: string;
   from?: string;
@@ -842,6 +867,12 @@ function parseFlags(args: string[]): { positional: string[]; flags: Flags } {
       flags.noProbe = true;
     } else if (a === "--ffprobe-cmd" && i + 1 < args.length) {
       flags.ffprobeCmd = args[++i];
+    } else if (a === "--video" && i + 1 < args.length) {
+      flags.video = args[++i];
+    } else if (a === "--srt" && i + 1 < args.length) {
+      flags.srt = args[++i];
+    } else if (a === "--retime") {
+      flags.retime = true;
     } else if (a === "--to" && i + 1 < args.length) {
       flags.to = args[++i];
     } else if (a === "--from" && i + 1 < args.length) {
@@ -2458,6 +2489,21 @@ function cmdRelink(draft: Draft, filePath: string, flags: Flags): void {
   out({ ok: true, relinked: relinked.length, still_missing: missing, present: ok, changes: relinked }, flags);
 }
 
+// `replace-media` swaps a segment's source file in place (placeholder > final),
+// preserving its timeline position, timing, effects, and keyframes.
+function cmdReplaceMedia(draft: Draft, filePath: string, positional: string[], flags: Flags): void {
+  const result = replaceMedia(draft, filePath, {
+    segmentId: positional[2],
+    newPath: positional[3],
+    ffprobeCmd: flags.ffprobeCmd,
+    retime: flags.retime,
+    dryRun: isDryRun(),
+  });
+  saveDraft(filePath, draft); // no-ops under --dry-run
+  out(result, flags);
+  if (!flags.quiet && result.warning) process.stderr.write(`Warning: ${result.warning}\n`);
+}
+
 // `timeline` shows the track/segment layout. JSON default returns structured
 // lanes (with computed columns); -H renders ASCII bars scaled to --cols (def 60).
 function cmdTimeline(draft: Draft, flags: Flags): void {
@@ -2557,6 +2603,9 @@ function cmdProjects(positional: string[], flags: Flags): void {
 // serializes these into a machine-readable tool spec. The test asserts every
 // COMMANDS name has an entry here, so a new command can't ship undescribed.
 const SUMMARIES: Record<string, string> = {
+  quickstart: "One-command first draft: create + add one input + lint + print the open-in-CapCut step.",
+  fixture: "Build a shareable, redacted compatibility bundle (timeline JSON only) for a version-support issue.",
+  "replace-media": "Swap a segment's source file (placeholder > final) keeping its timing, effects, and keyframes.",
   info: "Project overview + material summary.",
   version: "Detect CapCut/JianYing version, schema flags, and support status.",
   lint: "Schema-aware checks (overlaps, line length, missing files); exit 0/1/2 for CI.",
@@ -2975,6 +3024,20 @@ async function main(): Promise<void> {
     process.exit(0);
   }
 
+  // `fixture` reads raw (possibly modern-storage) files and writes a redacted bundle — no loadDraft.
+  if (cmd === "fixture") {
+    if (!projectPath) die("Usage: capcut fixture <project> --out <dir>");
+    if (!flags.out) die("Missing --out <dir>. Usage: capcut fixture <project> --out <dir>");
+    const report = sanitizeDraftBundle(projectPath, flags.out);
+    out(report, flags);
+    if (!flags.quiet) {
+      const total = Object.values(report.redaction_kinds).reduce((a, b) => a + b, 0);
+      process.stderr.write(`Sanitized bundle: ${report.out_dir} (${report.files.length} files, ${total} redactions)\n`);
+      process.stderr.write(`Review the files, then attach the folder to issue #35.\n`);
+    }
+    process.exit(0);
+  }
+
   // `restore` copies a backup/snapshot back over the draft — no loadDraft/parse needed.
   if (cmd === "restore") {
     cmdRestore(projectPath, flags);
@@ -3062,6 +3125,40 @@ async function main(): Promise<void> {
     process.exit(0);
   }
 
+  // `quickstart` creates a draft (like init) and adds one input — projectPath is the name.
+  if (cmd === "quickstart") {
+    const name = projectPath; // positional[1] is the name
+    if (!name) {
+      die("Missing name. Usage: capcut quickstart <name> [--video <f>] [--audio <f>] [--srt <f>] [--drafts <dir>]");
+    }
+    const cliDir = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
+    const externalTemplate = path.resolve(cliDir, "..", "CapCutAPI", "template");
+    const bundledTemplate = path.join(cliDir, "templates", "_init");
+    let templateDir = flags.template ?? externalTemplate;
+    if (!flags.template && !existsSync(templateDir) && existsSync(bundledTemplate)) {
+      templateDir = bundledTemplate;
+    }
+    const draftsDir = flags.drafts ?? `${process.env.HOME || "~"}/Movies/CapCut/User Data/Projects/com.lveditor.draft`;
+    const result = runQuickstart({
+      name,
+      templateDir,
+      draftsDir,
+      video: flags.video,
+      audio: flags.audio,
+      srt: flags.srt,
+      ffprobeCmd: flags.ffprobeCmd,
+    });
+    out(result, flags);
+    if (!flags.quiet) {
+      for (const step of result.steps) {
+        process.stderr.write(`${step.ok ? "✓" : "✗"} ${step.step}: ${step.detail}\n`);
+      }
+      process.stderr.write("\nNext:\n");
+      for (const line of result.open_hint) process.stderr.write(`  ${line}\n`);
+    }
+    process.exit(result.ok ? 0 : 2);
+  }
+
   // `compile` builds a brand-new draft from a declarative spec — no existing project.
   if (cmd === "compile") {
     cmdCompile(positional, flags);
@@ -3081,6 +3178,10 @@ async function main(): Promise<void> {
       break;
     case "relink":
       cmdRelink(draft, filePath, flags);
+      break;
+    case "replace-media":
+      requireArgs(positional, 4, "capcut replace-media <project> <segment-id> <new-file> [--retime]");
+      cmdReplaceMedia(draft, filePath, positional, flags);
       break;
     case "timeline":
       cmdTimeline(draft, flags);
