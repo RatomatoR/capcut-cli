@@ -64,6 +64,18 @@ JSON by default (pipe to `jq`); add `-H` for a human-readable table. Pass `--jia
 
 **Full reference** for every command, option, and exit code: **[docs/command-reference.md](./docs/command-reference.md)**.
 
+## Sponsor
+
+capcut-cli is MIT and free forever. Sponsoring funds faster releases and same-week support for new CapCut / JianYing versions — and unlocks power-user extras:
+
+- **$5/mo · Supporter** — sponsors-only release notes plus your name in `BACKERS.md`. Keep the project moving.
+- **$25/mo · Pro** — invite to the private `capcut-cli-pro` repo: premium template and caption-style packs, the full Claude viral-shorts pipeline, ready-to-run `compile` specs, and early-access builds. Plus priority issue triage.
+- **$100/mo · Team** — everything in Pro for up to 5 teammates, written commercial-use confirmation, your logo in this README, and priority fast-tracking of the features your team needs.
+
+[**Become a sponsor →**](https://github.com/sponsors/renezander030)
+
+> Using capcut-cli at work? The Team tier pays for itself the first afternoon it saves your engineers.
+
 ## How it works
 
 CapCut/JianYing store each project as local JSON. capcut-cli loads that store, validates against a version-aware schema, applies your edit, and writes it back atomically (with a `.bak`). No project files are uploaded anywhere; nothing runs as a service. See [docs/version-support.md](./docs/version-support.md) for the CapCut/JianYing versions and schema flags it understands.
