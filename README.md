@@ -540,8 +540,6 @@ capcut add-text ./teaser.json 0s 5s "MYCENAE" --font-size 24 --color "#FFD700"
 capcut add-text ./teaser.json 55s 5s "Full video in description" --font-size 14
 ```
 
-> **Cutting long-form into viral Shorts is what I built this for.** The full pipeline — picking the right 60-second story, writing hooks that hold attention, the Claude skill that orchestrates `capcut-cli` end-to-end — is the [Viral Story Shorts Blueprint](https://renezander.gumroad.com/l/viral-youtube-shorts-blueprint?utm_source=capcut-cli&utm_medium=readme&utm_campaign=cut-section).
-
 ### Batch
 
 Multiple edits, one JSON parse, one file write:
@@ -661,10 +659,7 @@ End-to-end recipes in [`examples/`](./examples/):
 
 ## What's next
 
-- **Want the full viral-shorts system, not just the CLI?** Get the [Viral Story Shorts Blueprint + Claude Skill](https://renezander.gumroad.com/l/viral-youtube-shorts-blueprint?utm_source=capcut-cli&utm_medium=readme&utm_campaign=footer) — the complete pipeline I use to ship Shorts at volume.
 - **By the same author**: [draftcat](https://github.com/renezander030/draftcat) — governed AI pipelines for service businesses (Go, MIT). Same design DNA: single binary, no API needed, structured JSON boundary between agent and tool.
-- **Author**: I'm Rene Zander — I build AI-driven content automation systems. More guides at [renezander.com](https://renezander.com/?utm_source=capcut-cli&utm_medium=readme&utm_campaign=author).
-- **Hire me** for AI/automation work: [renezander.com/contact](https://renezander.com/contact/?utm_source=capcut-cli&utm_medium=readme&utm_campaign=hire).
 
 ## Trademarks
 
