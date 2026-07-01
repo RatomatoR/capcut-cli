@@ -34,6 +34,24 @@ npm run dev -- info ./some-project   # run from source via tsx
 
 Bugs: include the command, the relevant slice of `draft_content.json`, the CapCut/JianYing version (`capcut version <project>`), and what you expected vs. saw. Feature requests: describe the workflow it unblocks. A scoped issue with acceptance criteria is the fastest path to a merge.
 
+## Give your agent the map (optional)
+
+If you run a coding agent (Claude Code, pi, …) over your checkout while working on
+the source, [`pi-codegraph`](https://github.com/renezander030/pi-codegraph) hands it
+derived knowledge of *this codebase as it is now* — the call graph, the command
+pattern, and the blast radius of a change — so it stops re-reading the whole repo
+every session.
+
+```bash
+pi-codegraph trust --repo . --label capcut-cli
+pi-codegraph index --repo .
+pi-codegraph arch -H                     # the command pattern + the busiest helpers
+pi-codegraph trace saveDraft --inbound   # the commands that persist a draft, as a template
+pi-codegraph impact                      # before touching a core helper, what your change breaks
+```
+
+Entirely optional and external — nothing in the project depends on it.
+
 ## License
 
 By contributing you agree your work is licensed under the project's [MIT License](./LICENSE).
