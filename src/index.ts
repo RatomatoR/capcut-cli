@@ -456,7 +456,10 @@ Templates:
              (font, colors, shadow/border/background box, alignment/position,
              bubble, text ranges). Apply with --preset on add-text,
              text-style, or caption; explicit CLI flags override preset
-             values.
+             values (including per-range colours/sizes for the span they
+             cover). A preset applies in full: a preset WITHOUT text ranges
+             resets the target to one uniform style, clearing any existing
+             karaoke/highlight ranges. Honors --dry-run (no file written).
   templates
              Show available templates in the template library.
              Use -H for a table.
@@ -1601,6 +1604,17 @@ function presetWithFlagOverrides(preset: TextStylePreset, flags: Flags): TextSty
     if (flags.x !== undefined) p.transform.x = flags.x;
     if (flags.y !== undefined) p.transform.y = flags.y;
   }
+  // --color / --font-size cover the whole cue, so they must also win over any
+  // preset text_ranges (karaoke/highlight blocks). Otherwise applyTextPreset's
+  // setTextRanges pass runs LAST and re-stamps the preset's per-range colours
+  // and sizes over the flag values just mirrored into styles[0] — silently
+  // defeating the documented "explicit flags override preset values" contract.
+  if (p.text_ranges && p.text_ranges.length > 0) {
+    for (const r of p.text_ranges) {
+      if (flags.color !== undefined) r.font_color = flags.color;
+      if (flags.fontSize !== undefined) r.font_size = flags.fontSize;
+    }
+  }
   return p;
 }
 
@@ -2023,8 +2037,11 @@ function cmdMakePreset(draft: Draft, positional: string[], flags: Flags): void {
   if (!flags.out)
     die("Missing --out <path>. Usage: capcut make-preset <project> <text-segment-id> --out <preset.json>");
   const { preset, segmentId, materialId, captured } = extractTextPreset(draft, segId);
-  writeFileSync(flags.out, JSON.stringify(preset, null, 2), "utf-8");
-  out({ ok: true, segment_id: segmentId, material_id: materialId, captured, out: flags.out }, flags);
+  // Honor --dry-run: preview the extraction without touching the preset file
+  // (which may be an existing preset the user only meant to inspect).
+  const written = !isDryRun();
+  if (written) writeFileSync(flags.out, JSON.stringify(preset, null, 2), "utf-8");
+  out({ ok: true, segment_id: segmentId, material_id: materialId, captured, out: flags.out, written }, flags);
 }
 
 // --- Phase 4: multi-style text ranges ---
