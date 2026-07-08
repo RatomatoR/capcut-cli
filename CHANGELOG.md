@@ -2,6 +2,12 @@
 
 All notable changes to capcut-cli are documented here. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); the project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.13.1] — 2026-07-08
+
+### Documentation
+
+- Refreshed the README hero / `media/og-card.png` social card (EN + zh reference the same asset). Docs-only release; no code changes since 0.13.0.
+
 ## [0.13.0] — 2026-07-08
 
 Six features in one release — the top of the opportunity backlog, bundled. Two build on prior art from the [capcut-cli-david](https://github.com/Davidb-2107/capcut-cli-david) fork (thanks @Davidb-2107); see #36.
