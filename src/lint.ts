@@ -20,14 +20,24 @@ export interface LintIssue {
   };
 }
 
-// Codes that lintDraft can mechanically repair via fixDraft. Any issue whose
-// code appears here is emitted with fixable:true.
+// Codes that lintDraft can mechanically repair via fixDraft. Membership here
+// is necessary but not sufficient for fixable:true — line-too-long and
+// caption-gap-too-small are additionally stamped per instance, so an issue is
+// only marked fixable when fixDraft can actually clear that exact instance.
 //
 // Deliberately NOT here: missing-material and missing-file (the only safe
 // repair would delete user timeline content or guess a path — report-only;
 // `relink` and `replace` are the intended repairs), and unknown-effect-slug
 // (repair would mean guessing which resource the author meant).
 const FIXABLE_CODES = new Set<string>(["cue-too-long", "caption-overlap", "caption-gap-too-small", "line-too-long"]);
+
+// Floor for any duration --fix writes: 100ms = three frames at the 30fps
+// draft default. Below roughly one frame (33,333us at 30fps) CapCut cannot
+// render the caption at all, so a "repair" that short would silently delete
+// it from playback. Pass 3 skips shrinks that would land under this floor and
+// the corresponding caption-gap-too-small issue is reported with
+// fixable:false instead.
+export const MIN_CAPTION_DURATION_US = 100_000;
 
 export interface LintOptions {
   maxCharsPerLine: number;
@@ -83,7 +93,10 @@ export function lintDraft(draft: Draft, opts: LintOptions = DEFAULT_LINT_OPTIONS
             severity: "warning",
             code: "line-too-long",
             message: `Caption ${shortId(s.id)} has ${line.length}-char line (>${opts.maxCharsPerLine}): "${line.slice(0, 50)}…"`,
-            fixable: FIXABLE_CODES.has("line-too-long"),
+            fixable:
+              FIXABLE_CODES.has("line-too-long") &&
+              mat !== undefined &&
+              canFixLineTooLong(mat.content, opts.maxCharsPerLine),
             location: { track: track.name, segment_id: s.id },
           });
           break;
@@ -103,11 +116,15 @@ export function lintDraft(draft: Draft, opts: LintOptions = DEFAULT_LINT_OPTIONS
             location: { track: track.name, segment_id: s.id },
           });
         } else if (gap > 0 && gap < opts.minGapBetweenCaptionsUs) {
+          // Fixable only when pass 3's shrink leaves the earlier caption at or
+          // above MIN_CAPTION_DURATION_US — otherwise the repair would crush
+          // it to an unrenderable sliver, so it is report-only.
+          const shrunkDuration = s.target_timerange.duration - (opts.minGapBetweenCaptionsUs - gap);
           issues.push({
             severity: "warning",
             code: "caption-gap-too-small",
             message: `Captions ${shortId(s.id)} and ${shortId(next.id)} are ${Math.round(gap / 1000)}ms apart (<${opts.minGapBetweenCaptionsUs / 1000}ms)`,
-            fixable: FIXABLE_CODES.has("caption-gap-too-small"),
+            fixable: FIXABLE_CODES.has("caption-gap-too-small") && shrunkDuration >= MIN_CAPTION_DURATION_US,
             location: { track: track.name, segment_id: s.id },
           });
         }
@@ -136,14 +153,18 @@ export function lintDraft(draft: Draft, opts: LintOptions = DEFAULT_LINT_OPTIONS
 
   // Effect/filter/animation resource ids the bundled enum table doesn't know.
   // CapCut silently drops unknown resource ids (GuanYixuan/pyCapCut#12), so
-  // surface them before the app eats them. Report-only: a repair would mean
-  // guessing which resource the author meant.
+  // surface them before the app eats them. Severity is info, not warning: the
+  // bundled table only covers ids the CLI itself can write, while drafts made
+  // in the CapCut app routinely use store-downloaded effects no table could
+  // ever cover — a warning here would flip exit codes (0 -> 1) on perfectly
+  // valid UI-authored drafts. Report-only: a repair would mean guessing which
+  // resource the author meant.
   const known = knownEffectIds();
   const pushUnknown = (kind: string, name: string, badId: string, materialId: string) => {
     issues.push({
-      severity: "warning",
+      severity: "info",
       code: "unknown-effect-slug",
-      message: `${kind} "${name}" (material ${shortId(materialId)}) uses effect_id ${badId} not in the bundled enum table — CapCut may silently ignore it`,
+      message: `${kind} "${name}" (material ${shortId(materialId)}) uses effect_id ${badId} not in the bundled enum table — fine for store effects added in the CapCut app, but ids the CLI wrote from a stale slug may be silently ignored`,
       fixable: FIXABLE_CODES.has("unknown-effect-slug"),
       location: { material_id: materialId },
     });
@@ -280,7 +301,9 @@ export function fixDraft(draft: Draft, opts: LintOptions = DEFAULT_LINT_OPTIONS)
 
   // Pass 3: widen under-min gaps by pulling the earlier caption's end back —
   // the same mutation direction as pass 2, so it can never create a new
-  // overlap or move a start. Skipped when the shrink would erase the caption.
+  // overlap or move a start. Skipped when the shrink would leave the caption
+  // under MIN_CAPTION_DURATION_US: a sub-frame sliver is as gone as a deleted
+  // caption, so those issues stay reported (with fixable:false) instead.
   if (opts.minGapBetweenCaptionsUs > 0) {
     for (const track of getTracksByType(draft, "text")) {
       const segs = [...track.segments].sort((a, b) => a.target_timerange.start - b.target_timerange.start);
@@ -291,7 +314,7 @@ export function fixDraft(draft: Draft, opts: LintOptions = DEFAULT_LINT_OPTIONS)
         const gap = next.target_timerange.start - end;
         if (gap > 0 && gap < opts.minGapBetweenCaptionsUs) {
           const newDuration = s.target_timerange.duration - (opts.minGapBetweenCaptionsUs - gap);
-          if (newDuration <= 0) continue;
+          if (newDuration < MIN_CAPTION_DURATION_US) continue;
           const oldDuration = s.target_timerange.duration;
           s.target_timerange.duration = newDuration;
           if (s.source_timerange && s.source_timerange.duration === oldDuration) {
@@ -334,6 +357,26 @@ export function fixDraft(draft: Draft, opts: LintOptions = DEFAULT_LINT_OPTIONS)
   return { fixed, remaining };
 }
 
+// True when pass 4's re-wrap would actually clear a line-too-long issue on
+// this material — the per-instance half of the fixable stamp. Three ways it
+// cannot: content isn't JSON, or has no non-empty string `text` (the checker's
+// extractText then measures a fallback string the fixer never touches), or
+// re-wrapping still leaves an over-cap line (space-less text such as CJK
+// captions, or single words longer than the cap — wrapping only swaps spaces
+// for newlines, so those stay reported).
+function canFixLineTooLong(content: string, maxChars: number): boolean {
+  let parsed: { text?: unknown };
+  try {
+    parsed = JSON.parse(content);
+  } catch {
+    return false;
+  }
+  if (typeof parsed.text !== "string" || parsed.text === "") return false;
+  return rewrapText(parsed.text, maxChars)
+    .split(/\r?\n/)
+    .every((line) => line.length <= maxChars);
+}
+
 // Re-wrap only lines that exceed maxChars; existing line breaks are kept.
 function rewrapText(text: string, maxChars: number): string {
   return text
@@ -343,23 +386,26 @@ function rewrapText(text: string, maxChars: number): string {
 }
 
 // Greedy word wrap that only swaps spaces for newlines (1:1, length-neutral).
-// A multi-space separator keeps its extra spaces at the end of the broken line.
+// Each break replaces one space with '\n', picked so the emitted line never
+// exceeds maxChars — inside a multi-space run the surplus spaces land after
+// the break instead of overflowing the broken line. A segment with no space
+// at or before the cap (an over-long word, space-less CJK text) is emitted
+// unchanged, so re-running the wrap is always a no-op and --fix converges.
 function wrapLine(line: string, maxChars: number): string {
-  const tokens = line.split(/( +)/); // words at even indices, space runs at odd
-  let out = tokens[0] ?? "";
-  let lineLen = out.length;
-  for (let i = 1; i < tokens.length; i += 2) {
-    const sep = tokens[i];
-    const word = tokens[i + 1] ?? "";
-    if (lineLen > 0 && lineLen + sep.length + word.length > maxChars) {
-      out += `${sep.slice(0, -1)}\n${word}`;
-      lineLen = word.length;
-    } else {
-      out += sep + word;
-      lineLen += sep.length + word.length;
+  let out = "";
+  let rest = line;
+  while (rest.length > maxChars) {
+    // Break at the last space that keeps the emitted line within maxChars…
+    let brk = rest.lastIndexOf(" ", maxChars);
+    if (brk === -1) {
+      // …or after an unbreakable over-long head, at the first space past it.
+      brk = rest.indexOf(" ", maxChars);
+      if (brk === -1) break;
     }
+    out += `${rest.slice(0, brk)}\n`;
+    rest = rest.slice(brk + 1);
   }
-  return out;
+  return out + rest;
 }
 
 function issueKey(i: LintIssue): string {

@@ -200,10 +200,16 @@ Overview (start here):
                --max-cue-secs <n>  Caption duration cap (default 7)
                --min-gap-ms <n>    Min gap between captions (default 0)
                --no-check-paths    Skip local-file existence checks
-               --fix               Auto-repair mechanically-fixable issues
-                                   (cue-too-long, caption-overlap). Combine
-                                   with --dry-run to preview without writing.
-             Exit codes: 0 clean · 1 warnings · 2 errors
+               --fix               Auto-repair issues stamped fixable:true
+                                   (cue-too-long, caption-overlap,
+                                   caption-gap-too-small, line-too-long).
+                                   Never shrinks a caption below 100ms and
+                                   never splits words; instances it cannot
+                                   repair are reported with fixable:false.
+                                   Combine with --dry-run to preview.
+             Exit codes: 0 clean · 1 warnings · 2 errors. Info-level issues
+             (e.g. unknown-effect-slug, which store-downloaded effects from
+             the CapCut app trigger legitimately) never affect the exit code.
 
 Browse:
   segments   <project> [--track <type>]         List segments with timing
