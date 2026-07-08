@@ -187,6 +187,7 @@ const usages = {
   quickstart: "capcut quickstart <name> [--video <f>] [--audio <f>] [--srt <f>] [--drafts <dir>]",
   compile: "capcut compile <spec.json> [--out <draftdir>] [--check | --plan]",
   render: "capcut render <project> [--out <preview.mp4>] [options]",
+  "detect-scenes": "capcut detect-scenes <video> [options]",
 } as const satisfies Record<string, string>;
 
 export type CommandName = keyof typeof usages;
@@ -384,6 +385,15 @@ const optionsByCommand: Record<string, OptionSpec[]> = {
     option("burn_captions", ["--burn-captions"], "boolean", "Burn captions."),
     option("all_video_tracks", ["--all-video-tracks"], "boolean", "Composite every video track."),
   ],
+  "detect-scenes": [
+    option("threshold", ["--threshold"], "number", "Scene-change score a cut must exceed (0..1).", { default: 0.4 }),
+    option("min_gap", ["--min-gap"], "number", "Merge cuts closer than this many seconds, keeping the strongest.", {
+      default: 2,
+    }),
+    option("limit", ["--limit"], "number", "Keep only the N strongest cuts."),
+    option("ffmpeg_cmd", ["--ffmpeg-cmd"], "path", "FFmpeg binary."),
+    option("json", ["--json"], "boolean", "Force JSON output (the default; overrides -H)."),
+  ],
 };
 optionsByCommand["image-anim"] = optionsByCommand["text-anim"];
 
@@ -439,7 +449,7 @@ const textOutputs = new Set(["export-srt", "completions"]);
 const fileOutputs = new Set(["render", "translate", "compile", "cut", "save-template"]);
 
 function inferType(name: string): ArgumentType {
-  if (/project|file|path|dir|template|audio|image|srt|ass|spec|draft/i.test(name)) return "path";
+  if (/project|file|path|dir|template|audio|video|image|srt|ass|spec|draft/i.test(name)) return "path";
   if (/^(id|segment-id|resource-id)$/.test(name)) return "id";
   if (/start|end|duration|offset|time/.test(name)) return "time";
   if (/level|multiplier|alpha|value/.test(name)) return "number";
@@ -472,7 +482,7 @@ export function buildCommandSpecs(commands: readonly string[], summaries: Record
   return commands.map((name) => {
     const usage = usages[name as CommandName] ?? `capcut ${name} <project>`;
     const prerequisites: string[] = [];
-    if (name === "render") prerequisites.push("ffmpeg");
+    if (name === "render" || name === "detect-scenes") prerequisites.push("ffmpeg");
     if (["add-video", "add-audio", "compile"].includes(name)) prerequisites.push("ffprobe (optional)");
     if (name === "caption") prerequisites.push("whisper CLI");
     if (name === "translate") prerequisites.push("ANTHROPIC_API_KEY or --api-key");
