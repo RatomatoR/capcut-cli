@@ -425,8 +425,9 @@ function buildTextContent(text: string, fontSize: number, color: [number, number
 }
 
 // Fields on a text material that describe *styling* (not content or timing).
-// Used by import-srt --style-ref to mirror an existing caption's look.
-const STYLE_FIELDS = [
+// Used by import-srt --style-ref to mirror an existing caption's look, and by
+// make-preset (src/preset.ts) as the set of material fields a preset carries.
+export const STYLE_FIELDS = [
   "alignment",
   "font_size",
   "text_color",

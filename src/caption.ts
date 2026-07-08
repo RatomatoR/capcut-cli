@@ -6,6 +6,7 @@ import { join } from "node:path";
 import { setTextRanges } from "./decorators.js";
 import type { Draft, Segment, Track } from "./draft.js";
 import { findSegment } from "./draft.js";
+import { captionStyleFromPreset, type TextStylePreset } from "./preset.js";
 import { parseSrt } from "./srt.js";
 
 export interface CaptionOptions {
@@ -16,6 +17,7 @@ export interface CaptionOptions {
   language?: string; // ISO code; default "auto"
   trackName?: string; // default "captions"
   styleRef?: string; // segment ID whose styling to copy
+  preset?: TextStylePreset; // make-preset file whose base style to apply
   whisperEngine?: "auto" | "openai" | "whisper-cpp" | "faster-whisper";
   karaoke?: boolean;
   maxWords?: number;
@@ -65,6 +67,9 @@ export interface CaptionResult {
  *   4. Create captions track + real subtitle material per cue
  */
 export function captionDraft(draft: Draft, opts: CaptionOptions): CaptionResult {
+  if (opts.styleRef && opts.preset) {
+    throw new Error("--style-ref and --preset are mutually exclusive. Pass one style source.");
+  }
   const audio = resolveAudio(draft, opts);
   const transcription = runWhisper(audio, opts);
   const cues = opts.karaoke
@@ -81,7 +86,11 @@ export function captionDraft(draft: Draft, opts: CaptionOptions): CaptionResult 
 
   const trackName = opts.trackName ?? "captions";
   const styleSource = opts.styleRef ? findSegment(draft, opts.styleRef) : null;
-  const baseStyle = styleSource ? extractTextStyle(draft, styleSource.segment.material_id) : defaultCaptionStyle();
+  const baseStyle = styleSource
+    ? extractTextStyle(draft, styleSource.segment.material_id)
+    : opts.preset
+      ? captionStyleFromPreset(opts.preset)
+      : defaultCaptionStyle();
 
   let track = draft.tracks.find((t) => t.type === "text" && t.name === trackName);
   if (!track) {

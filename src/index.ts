@@ -82,6 +82,7 @@ import {
 import { sanitizeDraftBundle } from "./fixture.js";
 import { DEFAULT_LINT_OPTIONS, fixDraft, type LintOptions, lintDraft, lintExitCode, summarize } from "./lint.js";
 import { migrateDraft } from "./migrate.js";
+import { applyTextPreset, extractTextPreset, loadPresetFile, type TextStylePreset } from "./preset.js";
 import { probeMedia } from "./probe.js";
 import { runQuickstart } from "./quickstart.js";
 import { buildRenderPlan, renderDraft } from "./render.js";
@@ -132,6 +133,7 @@ export const COMMANDS = [
   "add-effect",
   "save-template",
   "apply-template",
+  "make-preset",
   "templates",
   "batch",
   "import-srt",
@@ -264,6 +266,8 @@ Add:
                --align <0|1|2>    Left/center/right (default: 1)
                --x <n> --y <n>    Position (-1 to 1, default: 0,0)
                --track-name <s>   Track name (default: "text")
+               --preset <file>    Apply a make-preset style preset; explicit
+                                  flags override preset values
 
 Edit:
   set-text   <project> <id> <text>              Change text content
@@ -324,6 +328,8 @@ Animate:
                --border-width --border-color --border-alpha
                --bg-color --bg-alpha --bg-style --bg-round-radius
                --bg-width --bg-height --bg-h-offset --bg-v-offset
+               --preset <file>  Apply a make-preset style preset; explicit
+                                flags override preset values
   text-ranges <project> <id> --styles @path.json  |  --styles '<inline-json>'
              Multi-colour text — write multiple styles to one text segment.
              JSON array of { "start": int, "end": int,
@@ -392,7 +398,13 @@ Templates:
   apply-template <project> <template.json> <start> <duration> [text override]
              Stamp a template into a project at the given time
              Options: --x <n> --y <n> (override position)
-  templates  
+  make-preset <project> <text-segment-id> --out <preset.json>
+             Extract the text styling of a segment as a reusable preset
+             (font, colors, shadow/border/background box, alignment/position,
+             bubble, text ranges). Apply with --preset on add-text,
+             text-style, or caption; explicit CLI flags override preset
+             values.
+  templates
              Show available templates in the template library.
              Use -H for a table.
 
@@ -418,6 +430,8 @@ Caption (v0.4 — real subtitle objects, fixes import-srt mimicry):
                --language <code>    ISO code or "auto" (default)
                --track-name <s>     Caption track name (default: "captions")
                --style-ref <seg-id> Mirror styling from existing text segment
+               --preset <file>      Base style from a make-preset file
+                                    (same coverage as --style-ref)
 
 Translate (v0.4 — multi-language draft clone):
   translate  <project> --to <lang> --out <path> [options]
@@ -572,6 +586,8 @@ interface Flags {
   font?: string;
   // text-ranges
   styles?: string;
+  // make-preset / --preset
+  preset?: string;
   // wikimedia
   forceLicense?: boolean;
   // lint
@@ -835,6 +851,8 @@ function parseFlags(args: string[]): { positional: string[]; flags: Flags } {
       flags.jianying = true;
     } else if (a === "--styles" && i + 1 < args.length) {
       flags.styles = args[++i];
+    } else if (a === "--preset" && i + 1 < args.length) {
+      flags.preset = args[++i];
     } else if (a === "--force-license") {
       flags.forceLicense = true;
     } else if (a === "--max-chars" && i + 1 < args.length) {
@@ -1455,11 +1473,26 @@ async function cmdAddVideo(draft: Draft, filePath: string, positional: string[],
   out(payload, flags);
 }
 
+// Explicit CLI flags beat preset values: stamp the flag values over a clone of
+// the preset before applying, so the apply step is the single writer.
+function presetWithFlagOverrides(preset: TextStylePreset, flags: Flags): TextStylePreset {
+  const p = structuredClone(preset);
+  if (flags.fontSize !== undefined) p.style.font_size = flags.fontSize;
+  if (flags.color !== undefined) p.style.text_color = flags.color;
+  if (flags.align !== undefined) p.style.alignment = flags.align;
+  if (p.transform) {
+    if (flags.x !== undefined) p.transform.x = flags.x;
+    if (flags.y !== undefined) p.transform.y = flags.y;
+  }
+  return p;
+}
+
 function cmdAddText(draft: Draft, filePath: string, positional: string[], flags: Flags): void {
   const startStr = positional[2];
   const durationStr = positional[3];
   const text = positional.slice(4).join(" ");
   if (!text) die("Missing text. Usage: capcut add-text <project> <start> <duration> <text>");
+  const preset = flags.preset ? loadPresetFile(flags.preset) : null;
   const start = parseTimeInput(startStr);
   const duration = parseTimeInput(durationStr);
   const opts: AddTextOptions = {
@@ -1474,6 +1507,7 @@ function cmdAddText(draft: Draft, filePath: string, positional: string[], flags:
     trackName: flags.trackName,
   };
   const result = addText(draft, filePath, opts);
+  if (preset) applyTextPreset(draft, result.segmentId, presetWithFlagOverrides(preset, flags));
   saveDraft(filePath, draft);
   out(
     {
@@ -1484,6 +1518,7 @@ function cmdAddText(draft: Draft, filePath: string, positional: string[], flags:
       text,
       start_us: start,
       duration_us: duration,
+      ...(flags.preset ? { preset: flags.preset } : {}),
     },
     flags,
   );
@@ -1618,10 +1653,20 @@ function cmdTextStyle(draft: Draft, filePath: string, positional: string[], flag
     bgHOffset: flags.bgHOffset,
     bgVOffset: flags.bgVOffset,
   };
+  const applied: string[] = [];
+  let materialId = "";
+  if (flags.preset) {
+    const presetResult = applyTextPreset(draft, segId, loadPresetFile(flags.preset));
+    materialId = presetResult.materialId;
+    applied.push(...presetResult.applied);
+  }
+  // Explicit flags run after the preset so they override its values.
   const result = setTextStyle(draft, segId, opts);
-  if (result.applied.length === 0) die(`No styling flags provided. See 'capcut --help'.`);
+  materialId = result.materialId;
+  applied.push(...result.applied);
+  if (applied.length === 0) die(`No styling flags provided. See 'capcut --help'.`);
   saveDraft(filePath, draft);
-  out({ ok: true, id: segId, material_id: result.materialId, applied: result.applied }, flags);
+  out({ ok: true, id: segId, material_id: materialId, applied }, flags);
 }
 
 function cmdTextAnim(draft: Draft, filePath: string, positional: string[], flags: Flags): void {
@@ -1837,6 +1882,17 @@ function cmdApplyTemplate(draft: Draft, filePath: string, positional: string[], 
     },
     flags,
   );
+}
+
+// Read-only sibling of save-template: extracts a text segment's styling as a
+// portable preset JSON for --preset on add-text / text-style / caption.
+function cmdMakePreset(draft: Draft, positional: string[], flags: Flags): void {
+  const segId = positional[2];
+  if (!flags.out)
+    die("Missing --out <path>. Usage: capcut make-preset <project> <text-segment-id> --out <preset.json>");
+  const { preset, segmentId, materialId, captured } = extractTextPreset(draft, segId);
+  writeFileSync(flags.out, JSON.stringify(preset, null, 2), "utf-8");
+  out({ ok: true, segment_id: segmentId, material_id: materialId, captured, out: flags.out }, flags);
 }
 
 // --- Phase 4: multi-style text ranges ---
@@ -2099,6 +2155,7 @@ function cmdCaption(draft: Draft, filePath: string, flags: Flags): void {
     language: flags.language,
     trackName: flags.trackName,
     styleRef: flags.styleRef,
+    preset: flags.preset ? loadPresetFile(flags.preset) : undefined,
     karaoke: flags.karaoke,
     maxWords: flags.maxWords,
     maxChars: flags.maxChars,
@@ -2680,6 +2737,7 @@ const SUMMARIES: Record<string, string> = {
   "add-effect": "Add a scene effect on its own track.",
   "save-template": "Extract a segment as a reusable template JSON.",
   "apply-template": "Stamp a template into a project with new timing/text.",
+  "make-preset": "Extract a text segment's styling as a reusable preset JSON (apply via --preset).",
   templates: "List bundled reusable templates.",
   batch: "Run multiple edits from stdin (JSONL), one file write.",
   "import-srt": "Import an SRT file/stdin as one text segment per cue.",
@@ -3364,6 +3422,10 @@ async function main(): Promise<void> {
     case "apply-template":
       requireArgs(positional, 5, "capcut apply-template <project> <template.json> <start> <duration>");
       cmdApplyTemplate(draft, filePath, positional, flags);
+      break;
+    case "make-preset":
+      requireArgs(positional, 3, "capcut make-preset <project> <text-segment-id> --out <preset.json>");
+      cmdMakePreset(draft, positional, flags);
       break;
     case "batch":
       cmdBatch(draft, filePath, flags);
