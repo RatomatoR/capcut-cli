@@ -1045,7 +1045,7 @@
           ],
           "type": "enum",
           "required": false,
-          "description": "Interpolation easing to adjacent keyframes.",
+          "description": "Interpolation easing to adjacent keyframes. Needs an adjacent keyframe on the same property; a lone eased keyframe stays linear (warns).",
           "values": [
             "linear",
             "ease-in",
@@ -3746,11 +3746,11 @@
     },
     {
       "name": "sync-timelines",
-      "summary": "Reconcile timeline mirrors (template-2.tmp, draft_info.json) drifted from draft_content.json (plan by default; --apply writes).",
-      "usage": "capcut sync-timelines <project> [--apply]",
+      "summary": "Reconcile drifted timeline mirrors (template-2.tmp, draft_info.json) from a read-only draft_content.json (plan with mtimes by default; --apply rewrites only the drifted mirrors).",
+      "usage": "capcut sync-timelines <project-dir> [--apply]",
       "positionals": [
         {
-          "name": "project",
+          "name": "project-dir",
           "type": "path",
           "required": true
         }
@@ -3763,7 +3763,7 @@
           ],
           "type": "boolean",
           "required": false,
-          "description": "Write the reconciled timelines (default: print the plan only)."
+          "description": "Rewrite only the drifted mirror files from draft_content.json (default: print the plan only)."
         }
       ],
       "mutates": true,
@@ -4329,6 +4329,15 @@
           "description": "FFmpeg binary."
         },
         {
+          "name": "ffprobe_cmd",
+          "flags": [
+            "--ffprobe-cmd"
+          ],
+          "type": "path",
+          "required": false,
+          "description": "ffprobe binary for the video-stream duration (falls back to the container duration without it)."
+        },
+        {
           "name": "json",
           "flags": [
             "--json"
@@ -4340,7 +4349,8 @@
       ],
       "mutates": false,
       "prerequisites": [
-        "ffmpeg"
+        "ffmpeg",
+        "ffprobe (optional)"
       ],
       "output": {
         "type": "object",
