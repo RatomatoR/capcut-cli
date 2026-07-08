@@ -87,6 +87,7 @@ import { probeMedia } from "./probe.js";
 import { runQuickstart } from "./quickstart.js";
 import { buildRenderPlan, renderDraft } from "./render.js";
 import { replaceMedia } from "./replace.js";
+import { detectScenes, timecode } from "./scenes.js";
 import { serveQueue } from "./serve.js";
 import { addSfx } from "./sfx.js";
 import { collapseKaraokeRuns, cueWords, parseSrt, renderSrt, renderVtt, type SegmentCue } from "./srt.js";
@@ -166,6 +167,7 @@ export const COMMANDS = [
   "quickstart",
   "compile",
   "render",
+  "detect-scenes",
 ] as const;
 
 const HELP = `capcut-cli -- fast edits to CapCut projects
@@ -237,6 +239,22 @@ Preview:
                --burn-captions    Draw text-track segments onto the video
                --ffmpeg-cmd <p>   ffmpeg binary (default ffmpeg)
                --dry-run          Print the ffmpeg plan; do not execute
+
+Analyze:
+  detect-scenes <video> [--threshold <n>] [--min-gap <s>] [--limit <n>]
+             Detect scene-change cut points in a raw video file (ffmpeg scene
+             filter — deterministic, no draft needed). Prints each cut as
+             seconds + hh:mm:ss.mmm + score, plus the resulting segment list
+             in seconds AND microseconds (the draft-native unit), ready to
+             seed a long-form-to-shorts split: feed the segments into
+             "capcut compile" (one clip per segment) or "capcut cut".
+             Detection only — it never touches a draft. Options:
+               --threshold <n>    Scene score a cut must exceed, 0..1 (default 0.4)
+               --min-gap <s>      Merge cuts closer than <s> seconds, keeping
+                                  the strongest (default 2)
+               --limit <n>        Keep only the <n> strongest cuts
+               --ffmpeg-cmd <p>   ffmpeg binary (default ffmpeg)
+               --json             Force JSON output (the default; overrides -H)
 
 Add:
   add-audio  <project> <file-or-wikimedia-url> <start> <duration> [options]
@@ -659,6 +677,11 @@ interface Flags {
   check?: boolean;
   plan?: boolean;
   apply?: boolean;
+  // detect-scenes
+  threshold?: number;
+  minGap?: number;
+  limit?: number;
+  json?: boolean;
 }
 
 // Map CLI enum flags -> enums.json category key. Order matters for HELP text.
@@ -977,6 +1000,14 @@ function parseFlags(args: string[]): { positional: string[]; flags: Flags } {
       flags.plan = true;
     } else if (a === "--apply") {
       flags.apply = true;
+    } else if (a === "--threshold" && i + 1 < args.length) {
+      flags.threshold = parseFloat(args[++i]);
+    } else if (a === "--min-gap" && i + 1 < args.length) {
+      flags.minGap = parseFloat(args[++i]);
+    } else if (a === "--limit" && i + 1 < args.length) {
+      flags.limit = parseInt(args[++i], 10);
+    } else if (a === "--json") {
+      flags.json = true;
     } else {
       const hit = ENUM_FLAG_MAP.find((f) => f.flag === a);
       if (hit) {
@@ -2858,6 +2889,8 @@ const SUMMARIES: Record<string, string> = {
   init: "Create a new empty draft from a template.",
   compile: "Build a draft from a declarative JSON spec (the inverse of describe).",
   render: "Render a low-res ffmpeg proxy preview (trim+speed+audio, --burn-captions); not CapCut's final render.",
+  "detect-scenes":
+    "Detect scene-change cut points in a video (ffmpeg scene filter); prints cuts + segments to seed compile/cut.",
 };
 
 // `describe` emits a machine-readable tool spec for LLM/agent callers, so they
@@ -3147,6 +3180,49 @@ function cmdRender(draft: Draft, filePath: string, flags: Flags): void {
   if (!flags.quiet) process.stderr.write(`Rendered: ${result.output}\n`);
 }
 
+function cmdDetectScenes(positional: string[], flags: Flags): void {
+  const videoPath = positional[1];
+  if (!videoPath) {
+    die("Missing video. Usage: capcut detect-scenes <video> [--threshold <0..1>] [--min-gap <seconds>] [--limit <n>]");
+  }
+  const threshold = flags.threshold ?? 0.4;
+  if (!Number.isFinite(threshold) || threshold <= 0 || threshold > 1) die("--threshold must be in (0, 1]");
+  const minGap = flags.minGap ?? 2;
+  if (!Number.isFinite(minGap) || minGap < 0) die("--min-gap must be >= 0 seconds");
+  if (flags.limit !== undefined && (!Number.isFinite(flags.limit) || flags.limit < 1)) {
+    die("--limit must be a positive integer");
+  }
+  const report = detectScenes(videoPath, {
+    threshold,
+    minGap,
+    limit: flags.limit,
+    ffmpegCmd: flags.ffmpegCmd,
+  });
+  // --json forces machine output even when a config/alias turned on --human.
+  if (flags.human && !flags.json) {
+    console.log(`Video:     ${report.video}`);
+    console.log(`Duration:  ${report.duration === null ? "unknown" : formatDuration(report.duration_us ?? 0)}`);
+    console.log(
+      `Threshold: ${report.threshold}  (min gap ${report.min_gap}s${report.limit ? `, limit ${report.limit}` : ""})`,
+    );
+    console.log(`Cuts:      ${report.cuts.length}`);
+    for (const [i, c] of report.cuts.entries()) {
+      console.log(`  ${String(i + 1).padStart(3)}  ${c.timecode}  score ${c.score.toFixed(3)}`);
+    }
+    console.log(`Segments:  ${report.segments.length}`);
+    for (const [i, s] of report.segments.entries()) {
+      const end = s.end === null ? "end" : timecode(s.end);
+      const dur = s.duration_us === null ? "?" : formatDuration(s.duration_us);
+      console.log(`  ${String(i + 1).padStart(3)}  ${timecode(s.start)} - ${end}  ${dur}`);
+    }
+    console.log(
+      "Next: pipe the segments into `capcut compile` (one clip per segment) or `capcut cut` to split the video.",
+    );
+    return;
+  }
+  out(report, flags);
+}
+
 // --- Main ---
 
 async function main(): Promise<void> {
@@ -3355,6 +3431,12 @@ async function main(): Promise<void> {
   // `compile` builds a brand-new draft from a declarative spec — no existing project.
   if (cmd === "compile") {
     cmdCompile(positional, flags);
+    process.exit(0);
+  }
+
+  // `detect-scenes` analyzes a raw video file for cut points — no draft needed.
+  if (cmd === "detect-scenes") {
+    cmdDetectScenes(positional, flags);
     process.exit(0);
   }
 
