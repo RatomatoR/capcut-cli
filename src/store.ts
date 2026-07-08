@@ -2,7 +2,7 @@ import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { existsSync, readFileSync, statSync } from "node:fs";
 import { platform } from "node:os";
-import { dirname, join, resolve } from "node:path";
+import { basename, dirname, join, resolve } from "node:path";
 import type { Draft } from "./draft.js";
 
 const STANDARD_FILES = ["draft_content.json", "draft_info.json", "draft_meta_info.json", "template-2.tmp"] as const;
@@ -291,6 +291,7 @@ export interface TimelineSyncTarget {
   file: string;
   state: "canonical" | "in_sync" | "drifted";
   envelope: string;
+  mtime: string | null;
   timeline_hash: string | null;
   guid: string | null;
   guid_drifted: boolean;
@@ -311,9 +312,21 @@ export interface TimelineSyncPlan {
   version: string | null;
   modern_storage: boolean;
   in_sync: boolean;
+  /** Drifted mirrors whose mtime is newer than draft_content.json's. CapCut
+   * >= 8.7 writes the mirrors on save, so a newer drifted mirror may hold app
+   * edits that a canonical -> mirror repair would roll back. */
+  newer_mirrors: string[];
+  canonical_stale: boolean;
   targets: TimelineSyncTarget[];
   drifted: string[];
   unreconcilable: TimelineSyncUnreconcilable[];
+}
+
+export interface TimelineSyncResult {
+  plan: TimelineSyncPlan;
+  canonicalDraft: Draft;
+  canonicalCandidate: DraftCandidate;
+  driftedCandidates: DraftCandidate[];
 }
 
 function syncTarget(candidate: DraftCandidate, state: TimelineSyncTarget["state"], guidDrifted: boolean) {
@@ -321,6 +334,7 @@ function syncTarget(candidate: DraftCandidate, state: TimelineSyncTarget["state"
     file: candidate.name,
     state,
     envelope: candidate.envelopePath.length === 0 ? "root" : candidate.envelopePath.join("."),
+    mtime: candidate.mtime,
     timeline_hash: candidate.timelineHash,
     guid: candidate.draft?.id ?? null,
     guid_drifted: guidDrifted,
@@ -332,13 +346,25 @@ function syncTarget(candidate: DraftCandidate, state: TimelineSyncTarget["state"
 /**
  * Plan for `sync-timelines` (issue #39, symptom #35): draft_content.json is
  * canonical; every other readable timeline target is compared against it by
- * timeline hash. Direction is always draft_content.json -> mirror, never
- * inferred from mtimes (copy tools and sync clients rewrite those). A mirror
- * file that exists but holds no readable timeline (binary/encrypted
- * template-2.tmp) cannot be reconciled and is reported as such instead of
- * being silently skipped.
+ * timeline hash. Direction is always draft_content.json -> mirror, but each
+ * target's mtime is surfaced: CapCut >= 8.7 writes the mirrors on save, so a
+ * drifted mirror NEWER than draft_content.json may hold app edits that the
+ * repair would roll back (canonical_stale / newer_mirrors flag this; --apply
+ * refuses without --force-write). A mirror file that exists but holds no
+ * readable timeline (binary/encrypted template-2.tmp) cannot be reconciled
+ * and is reported as such instead of being silently skipped. Accepts a
+ * project directory or its draft_content.json path; any other explicitly
+ * named file is rejected so the plan and the write always cover the same
+ * target set.
  */
-export function planTimelineSync(input: string): TimelineSyncPlan {
+export function planTimelineSync(input: string): TimelineSyncResult {
+  const resolved = resolve(input);
+  if (existsSync(resolved) && statSync(resolved).isFile() && basename(resolved) !== "draft_content.json") {
+    throw new Error(
+      `sync-timelines reconciles a project's mirror files from draft_content.json and cannot target ${basename(resolved)} directly. ` +
+        `Pass the project directory instead: capcut sync-timelines ${dirname(resolved)}`,
+    );
+  }
   const store = discoverDraftStore(input);
   const canonical = store.targets.find((candidate) => candidate.name === "draft_content.json");
   if (!canonical?.draft) {
@@ -347,9 +373,13 @@ export function planTimelineSync(input: string): TimelineSyncPlan {
         "Run `capcut diagnose <project>` to inspect what is on disk.",
     );
   }
+  const canonicalDraft = canonical.draft;
+  const canonicalMtime = canonical.mtime ? Date.parse(canonical.mtime) : Number.NaN;
 
   const targets: TimelineSyncTarget[] = [syncTarget(canonical, "canonical", false)];
   const drifted: string[] = [];
+  const driftedCandidates: DraftCandidate[] = [];
+  const newerMirrors: string[] = [];
   const unreconcilable: TimelineSyncUnreconcilable[] = [];
   for (const candidate of store.candidates) {
     if (!candidate.exists || candidate.path === canonical.path) continue;
@@ -366,20 +396,34 @@ export function planTimelineSync(input: string): TimelineSyncPlan {
       continue;
     }
     const inSync = candidate.timelineHash === canonical.timelineHash;
-    targets.push(syncTarget(candidate, inSync ? "in_sync" : "drifted", candidate.draft.id !== canonical.draft.id));
-    if (!inSync) drifted.push(candidate.name);
+    targets.push(syncTarget(candidate, inSync ? "in_sync" : "drifted", candidate.draft.id !== canonicalDraft.id));
+    if (!inSync) {
+      drifted.push(candidate.name);
+      driftedCandidates.push(candidate);
+      const mirrorMtime = candidate.mtime ? Date.parse(candidate.mtime) : Number.NaN;
+      if (Number.isFinite(canonicalMtime) && Number.isFinite(mirrorMtime) && mirrorMtime > canonicalMtime) {
+        newerMirrors.push(candidate.name);
+      }
+    }
   }
 
   return {
-    project_dir: store.projectDir,
-    canonical: canonical.name,
-    canonical_path: canonical.path,
-    version: store.version,
-    modern_storage: store.modernStorage,
-    in_sync: drifted.length === 0,
-    targets,
-    drifted,
-    unreconcilable,
+    plan: {
+      project_dir: store.projectDir,
+      canonical: canonical.name,
+      canonical_path: canonical.path,
+      version: store.version,
+      modern_storage: store.modernStorage,
+      in_sync: drifted.length === 0,
+      newer_mirrors: newerMirrors,
+      canonical_stale: newerMirrors.length > 0,
+      targets,
+      drifted,
+      unreconcilable,
+    },
+    canonicalDraft,
+    canonicalCandidate: canonical,
+    driftedCandidates,
   };
 }
 
@@ -389,7 +433,8 @@ export function diagnoseDraftStore(input: string): DraftStoreReport {
   const actions: string[] = [];
   if (store.diverged)
     actions.push(
-      "Timeline files diverge. Close CapCut, then run `capcut sync-timelines <project> --apply` to reconcile them from draft_content.json.",
+      "Timeline files diverge. Close CapCut and back up the project folder, then run `capcut sync-timelines <project>` " +
+        "(plan only) to review each file's mtime and the write targets before deciding whether to --apply.",
     );
   if (store.modernStorage && !store.targets.some((candidate) => candidate.name === "template-2.tmp")) {
     actions.push(

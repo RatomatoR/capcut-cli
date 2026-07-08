@@ -1,10 +1,20 @@
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
-import { chmodSync, copyFileSync, existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import {
+  chmodSync,
+  copyFileSync,
+  existsSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  utimesSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { after, describe, it } from "node:test";
-import { editorProcesses } from "../dist/store.js";
+import { assertTargetsUnchangedOnDisk } from "../dist/draft.js";
+import { editorProcesses, planTimelineSync } from "../dist/store.js";
 import { spawnCli } from "./helpers/spawn-cli.mjs";
 
 // The canonical timeline: what the CLI wrote to draft_content.json (issue #35:
@@ -38,11 +48,28 @@ function staleDraft() {
 
 // Drift fixture: draft_content.json is canonical/newer; template-2.tmp (string-
 // JSON envelope) and draft_info.json (root envelope) still hold the old timeline.
+// The mirrors' mtimes are set into the past to model the issue-#35 scenario the
+// repair exists for: the CLI edited draft_content.json AFTER the app last wrote
+// the mirrors.
 function driftedFixture() {
   const dir = mkdtempSync(join(tmpdir(), "capcut-sync-"));
   writeFileSync(join(dir, "draft_content.json"), JSON.stringify(canonicalDraft(), null, 2));
   writeFileSync(join(dir, "template-2.tmp"), JSON.stringify({ draft_content: JSON.stringify(staleDraft()) }, null, 2));
   writeFileSync(join(dir, "draft_info.json"), JSON.stringify(staleDraft(), null, 2));
+  const past = new Date(Date.now() - 3_600_000);
+  utimesSync(join(dir, "template-2.tmp"), past, past);
+  utimesSync(join(dir, "draft_info.json"), past, past);
+  return { dir, cleanup: () => rmSync(dir, { recursive: true, force: true }) };
+}
+
+// Direction-hazard fixture: the drifted mirror is NEWER than draft_content.json
+// (the CapCut >= 8.7 app wrote it on save after the canonical file went stale).
+function staleCanonicalFixture() {
+  const dir = mkdtempSync(join(tmpdir(), "capcut-sync-"));
+  writeFileSync(join(dir, "draft_content.json"), JSON.stringify(canonicalDraft(), null, 2));
+  writeFileSync(join(dir, "draft_info.json"), JSON.stringify(staleDraft(), null, 2));
+  const past = new Date(Date.now() - 3_600_000);
+  utimesSync(join(dir, "draft_content.json"), past, past);
   return { dir, cleanup: () => rmSync(dir, { recursive: true, force: true }) };
 }
 
@@ -62,7 +89,12 @@ describe("sync-timelines", () => {
     const info = r.json.targets.find((t) => t.file === "draft_info.json");
     assert.equal(info.state, "drifted");
     assert.equal(info.guid_drifted, true, "the pre-open mirror's stale GUID must be flagged");
+    for (const target of r.json.targets) {
+      assert.equal(typeof target.mtime, "string", `${target.file} must report its mtime`);
+    }
+    assert.equal(r.json.canonical_stale, false, "mirrors older than draft_content.json are the normal direction");
     assert.match(r.stderr, /--apply/);
+    assert.match(r.stderr, /mtime/, "the human plan must surface mtimes");
     assert.equal(readFileSync(join(f.dir, "template-2.tmp"), "utf-8"), tmpBefore, "plan must not write");
     assert.equal(readFileSync(join(f.dir, "draft_info.json"), "utf-8"), infoBefore, "plan must not write");
   });
@@ -110,7 +142,7 @@ describe("sync-timelines", () => {
     assert.match(r.stderr, /already agree/);
   });
 
-  it("--apply --dry-run previews without writing", () => {
+  it("--apply --dry-run previews without writing and does not claim reconciliation", () => {
     const f = driftedFixture();
     after(f.cleanup);
     const infoBefore = readFileSync(join(f.dir, "draft_info.json"), "utf-8");
@@ -119,7 +151,14 @@ describe("sync-timelines", () => {
     assert.equal(r.status, 0, `stderr: ${r.stderr}`);
     assert.equal(r.json.dryRun, true);
     assert.equal(r.json.applied, false);
+    assert.deepEqual(r.json.reconciled, [], "dry-run must not claim reconciliation");
+    assert.deepEqual(r.json.backups, []);
+    assert.deepEqual(r.json.would_reconcile.sort(), ["draft_info.json", "template-2.tmp"]);
+    assert.equal(r.json.in_sync, false);
+    assert.doesNotMatch(r.stderr, /Reconciled/, "dry-run stderr must not assert a repair happened");
+    assert.match(r.stderr, /plan only/i);
     assert.equal(readFileSync(join(f.dir, "draft_info.json"), "utf-8"), infoBefore, "dry-run must not write");
+    assert.ok(!existsSync(join(f.dir, "draft_info.json.bak")), "dry-run must not create backups");
   });
 
   it("reports an unreadable template-2.tmp as unreconcilable instead of pretending success", () => {
@@ -136,7 +175,10 @@ describe("sync-timelines", () => {
     assert.match(plan.stderr, /WARNING template-2\.tmp/);
 
     const r = spawnCli(["sync-timelines", f.dir, "--apply"]);
-    assert.equal(r.status, 0, `stderr: ${r.stderr}`);
+    assert.equal(r.status, 2, "an unreconcilable mirror must exit 2, not pretend success");
+    assert.equal(r.json.ok, false, "the file CapCut trusts may still hold the stale timeline");
+    assert.equal(r.json.in_sync, false, "in_sync must not be asserted when a mirror could not be reconciled");
+    assert.equal(r.json.applied, true);
     assert.deepEqual(r.json.reconciled, ["draft_info.json"], "only the readable mirror is repaired");
     assert.equal(r.json.unreconcilable[0].file, "template-2.tmp");
     assert.match(r.stderr, /WARNING template-2\.tmp/);
@@ -146,12 +188,146 @@ describe("sync-timelines", () => {
       "binary mirror left untouched",
     );
 
-    // The remaining unreconcilable mirror keeps ok=false honesty on later runs.
+    // Idempotent verdict: a re-run on the unchanged state reports the same
+    // ok/in_sync/exit outcome as the apply that left it there.
     const again = spawnCli(["sync-timelines", f.dir]);
-    assert.equal(again.status, 0);
-    assert.equal(again.json.in_sync, true);
+    assert.equal(again.status, 2, "the unreconcilable state must keep reporting exit 2");
+    assert.equal(again.json.in_sync, false);
     assert.equal(again.json.ok, false, "an unreconcilable mirror must not be reported as fully ok");
     assert.match(again.json.message, /cannot be reconciled/);
+  });
+
+  it("plan warns when draft_content.json is older than a drifted mirror", () => {
+    const f = staleCanonicalFixture();
+    after(f.cleanup);
+
+    const r = spawnCli(["sync-timelines", f.dir]);
+    assert.equal(r.status, 0, `stderr: ${r.stderr}`);
+    assert.equal(r.json.canonical_stale, true);
+    assert.deepEqual(r.json.newer_mirrors, ["draft_info.json"]);
+    for (const target of r.json.targets) {
+      assert.equal(typeof target.mtime, "string", `${target.file} must report its mtime`);
+    }
+    assert.match(r.stderr, /WARNING: draft_content\.json .* is OLDER/);
+    assert.match(r.stderr, /--force-write/);
+  });
+
+  it("--apply refuses to roll back a mirror newer than draft_content.json unless --force-write", () => {
+    const f = staleCanonicalFixture();
+    after(f.cleanup);
+    const infoBefore = readFileSync(join(f.dir, "draft_info.json"), "utf-8");
+
+    const refused = spawnCli(["sync-timelines", f.dir, "--apply"]);
+    assert.equal(refused.status, 1, "the older-canonical direction must refuse without --force-write");
+    assert.match(refused.stderr, /OLDER/);
+    assert.match(refused.stderr, /--force-write/);
+    assert.equal(readFileSync(join(f.dir, "draft_info.json"), "utf-8"), infoBefore, "refusal must not write");
+    assert.ok(!existsSync(join(f.dir, "draft_info.json.bak")), "refusal must not create backups");
+
+    const forced = spawnCli(["sync-timelines", f.dir, "--apply", "--force-write"]);
+    assert.equal(forced.status, 0, `stderr: ${forced.stderr}`);
+    assert.equal(JSON.parse(readFileSync(join(f.dir, "draft_info.json"), "utf-8")).id, "guid-canonical");
+  });
+
+  it("diagnose recommends the plan form with a back-up caution, never a blind --apply", () => {
+    const f = driftedFixture();
+    after(f.cleanup);
+
+    const r = spawnCli(["diagnose", f.dir]);
+    assert.equal(r.status, 0, `stderr: ${r.stderr}`);
+    const advice = r.json.next_actions.join(" ");
+    assert.match(advice, /back up/i, "divergence advice must retain a back-up caution");
+    assert.match(advice, /`capcut sync-timelines <project>`/, "divergence advice must recommend the plan form");
+    assert.ok(
+      !advice.includes("sync-timelines <project> --apply"),
+      "diagnose must not recommend a destructive one-liner",
+    );
+  });
+
+  it("rejects an explicitly named custom draft file, symmetrically for plan and --apply", () => {
+    const dir = mkdtempSync(join(tmpdir(), "capcut-sync-"));
+    after(() => rmSync(dir, { recursive: true, force: true }));
+    writeFileSync(join(dir, "draft_content.json"), JSON.stringify(canonicalDraft(), null, 2));
+    writeFileSync(join(dir, "A.json"), JSON.stringify(staleDraft(), null, 2));
+    writeFileSync(join(dir, "draft_info.json"), JSON.stringify(staleDraft(), null, 2));
+    const past = new Date(Date.now() - 3_600_000);
+    utimesSync(join(dir, "A.json"), past, past);
+    utimesSync(join(dir, "draft_info.json"), past, past);
+
+    const plan = spawnCli(["sync-timelines", join(dir, "A.json")]);
+    assert.equal(plan.status, 1);
+    assert.match(plan.stderr, /cannot target A\.json/);
+    assert.match(plan.stderr, /project directory/);
+
+    const apply = spawnCli(["sync-timelines", join(dir, "A.json"), "--apply"]);
+    assert.equal(apply.status, 1, "apply must reject the same inputs the plan rejects");
+    assert.match(apply.stderr, /cannot target A\.json/);
+    assert.equal(JSON.parse(readFileSync(join(dir, "A.json"), "utf-8")).id, "guid-mirror-stale");
+    assert.equal(JSON.parse(readFileSync(join(dir, "draft_info.json"), "utf-8")).id, "guid-mirror-stale");
+    assert.ok(!existsSync(join(dir, "A.json.bak")), "rejection must not write anything");
+    assert.ok(!existsSync(join(dir, "draft_info.json.bak")), "rejection must not write anything");
+
+    // The canonical file itself is an accepted alias for the directory form.
+    const accepted = spawnCli(["sync-timelines", join(dir, "draft_content.json")]);
+    assert.equal(accepted.status, 0, `stderr: ${accepted.stderr}`);
+    assert.deepEqual(accepted.json.drifted, ["draft_info.json"]);
+  });
+
+  it("--apply writes exactly the drifted mirrors: canonical and in-sync targets stay untouched", () => {
+    const dir = mkdtempSync(join(tmpdir(), "capcut-sync-"));
+    after(() => rmSync(dir, { recursive: true, force: true }));
+    // Canonical draft with tracks deliberately NOT in the CLI's TRACK_RANK
+    // order ([text, video]); the repair must copy it verbatim, not re-sort it.
+    const draft = canonicalDraft();
+    draft.tracks = [
+      { id: "T1", type: "text", name: "text", attribute: 0, segments: [] },
+      { id: "V1", type: "video", name: "video", attribute: 0, segments: [] },
+    ];
+    writeFileSync(join(dir, "draft_content.json"), JSON.stringify(draft, null, 2));
+    // In-sync mirror: the same timeline inside its envelope.
+    writeFileSync(join(dir, "template-2.tmp"), JSON.stringify({ draft_content: JSON.stringify(draft) }, null, 2));
+    // Drifted mirror, older than the canonical file.
+    writeFileSync(join(dir, "draft_info.json"), JSON.stringify(staleDraft(), null, 2));
+    const past = new Date(Date.now() - 3_600_000);
+    utimesSync(join(dir, "draft_info.json"), past, past);
+    // Pre-existing restore points the repair must not destroy.
+    writeFileSync(join(dir, "draft_content.json.bak"), "canonical-restore-point");
+    writeFileSync(join(dir, "template-2.tmp.bak"), "insync-restore-point");
+    const canonicalBefore = readFileSync(join(dir, "draft_content.json"), "utf-8");
+    const templateBefore = readFileSync(join(dir, "template-2.tmp"), "utf-8");
+
+    const r = spawnCli(["sync-timelines", dir, "--apply"]);
+    assert.equal(r.status, 0, `stderr: ${r.stderr}`);
+    assert.deepEqual(r.json.reconciled, ["draft_info.json"]);
+    assert.deepEqual(r.json.backups, ["draft_info.json.bak"], "backups must list only files actually written");
+    // draft_content.json is a read-only source: byte-identical, no track re-sort.
+    assert.equal(readFileSync(join(dir, "draft_content.json"), "utf-8"), canonicalBefore, "canonical rewritten");
+    assert.deepEqual(
+      JSON.parse(readFileSync(join(dir, "draft_content.json"), "utf-8")).tracks.map((t) => t.type),
+      ["text", "video"],
+      "the canonical track order must survive --apply",
+    );
+    // In-sync mirror untouched; the drifted mirror received the canonical timeline as-is.
+    assert.equal(readFileSync(join(dir, "template-2.tmp"), "utf-8"), templateBefore, "in-sync mirror rewritten");
+    const info = JSON.parse(readFileSync(join(dir, "draft_info.json"), "utf-8"));
+    assert.equal(info.id, "guid-canonical");
+    assert.deepEqual(
+      info.tracks.map((t) => t.type),
+      ["text", "video"],
+    );
+    // Pre-existing restore points survive; only the written mirror got a new .bak.
+    assert.equal(readFileSync(join(dir, "draft_content.json.bak"), "utf-8"), "canonical-restore-point");
+    assert.equal(readFileSync(join(dir, "template-2.tmp.bak"), "utf-8"), "insync-restore-point");
+    assert.ok(readFileSync(join(dir, "draft_info.json.bak"), "utf-8").includes("before-cli-edit"));
+  });
+
+  it("apply's concurrency guard rejects files changed between the plan read and the write", () => {
+    const f = driftedFixture();
+    after(f.cleanup);
+    const { canonicalCandidate, driftedCandidates } = planTimelineSync(f.dir);
+    const contentPath = join(f.dir, "draft_content.json");
+    writeFileSync(contentPath, `${readFileSync(contentPath, "utf-8")}\n`);
+    assert.throws(() => assertTargetsUnchangedOnDisk([canonicalCandidate, ...driftedCandidates]), /changed on disk/);
   });
 
   it("errors when draft_content.json is missing (no canonical source)", () => {

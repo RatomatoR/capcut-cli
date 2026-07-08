@@ -14,6 +14,7 @@ import {
 } from "node:fs";
 import { basename, dirname, join, resolve } from "node:path";
 import {
+  type DraftCandidate,
   type DraftStore,
   discoverDraftStore,
   editorProcesses,
@@ -217,47 +218,32 @@ export function listSnapshots(filePath: string): Array<{ step: number; index: nu
     .map((s, i) => ({ step: i + 1, index: s.index, path: s.path }));
 }
 
-export function saveDraft(filePath: string, draft: Draft, options: { backup?: boolean } = {}): void {
-  if (dryRun) {
-    // Normalize in memory (so any read-back is consistent) but write nothing.
-    sortTracks(draft);
-    return;
-  }
-
-  const resolved = resolve(filePath);
-  const context = loadContexts.get(resolved) ?? { store: discoverDraftStore(filePath) };
-  const { store } = context;
-
-  if (!forceWrite && isManagedDraftPath(filePath)) {
-    const running = editorProcesses();
-    if (running.length > 0) {
+// Optimistic concurrency check: never silently overwrite a file changed by
+// CapCut, another CLI process, or a sync client since the candidates were read.
+export function assertTargetsUnchangedOnDisk(targets: DraftCandidate[]): void {
+  for (const target of targets) {
+    if (!target.exists || target.raw === null) continue;
+    const current = readFileSync(target.path, "utf-8");
+    if (current !== target.raw) {
       throw new Error(
-        `${running.join(" / ")} is running. Close the editor before writing this managed draft, ` +
-          "or pass --force-write if you accept that the app may overwrite the change.",
+        `Draft changed on disk after it was loaded: ${target.name}. ` +
+          "Reload and retry, or pass --force-write to overwrite intentionally.",
       );
     }
   }
+}
 
-  // Optimistic concurrency check: never silently overwrite a file changed by
-  // CapCut, another CLI process, or a sync client since loadDraft read it.
-  if (!forceWrite) {
-    for (const target of store.targets) {
-      if (!target.exists || target.raw === null) continue;
-      const current = readFileSync(target.path, "utf-8");
-      if (current !== target.raw) {
-        throw new Error(
-          `Draft changed on disk after it was loaded: ${target.name}. ` +
-            "Reload and retry, or pass --force-write to overwrite intentionally.",
-        );
-      }
-    }
-  }
-
-  sortTracks(draft);
+// Transactional multi-target write: serialize `draft` into each target's own
+// envelope, then temp+fsync+rename with a `.bak` (and history snapshot) per
+// file actually written, rolling back on a partial commit. Writes EXACTLY the
+// given targets — callers decide the write set (saveDraft: every readable
+// sibling; sync-timelines: only the drifted mirrors). No-ops under --dry-run.
+export function commitDraftTargets(targets: DraftCandidate[], draft: Draft, options: { backup?: boolean } = {}): void {
+  if (dryRun) return;
 
   // Prepare every replacement before renaming any target. This keeps the
   // multi-file write as close to a transaction as the filesystem allows.
-  const prepared = store.targets.map((target, index) => {
+  const prepared = targets.map((target, index) => {
     const content = serializeDraftCandidate(target, draft);
     const temp = `${target.path}.capcut-cli-${process.pid}-${Date.now()}-${index}.tmp`;
     writeAndSync(temp, content);
@@ -286,6 +272,33 @@ export function saveDraft(filePath: string, draft: Draft, options: { backup?: bo
     }
     throw error;
   }
+}
+
+export function saveDraft(filePath: string, draft: Draft, options: { backup?: boolean } = {}): void {
+  if (dryRun) {
+    // Normalize in memory (so any read-back is consistent) but write nothing.
+    sortTracks(draft);
+    return;
+  }
+
+  const resolved = resolve(filePath);
+  const context = loadContexts.get(resolved) ?? { store: discoverDraftStore(filePath) };
+  const { store } = context;
+
+  if (!forceWrite && isManagedDraftPath(filePath)) {
+    const running = editorProcesses();
+    if (running.length > 0) {
+      throw new Error(
+        `${running.join(" / ")} is running. Close the editor before writing this managed draft, ` +
+          "or pass --force-write if you accept that the app may overwrite the change.",
+      );
+    }
+  }
+
+  if (!forceWrite) assertTargetsUnchangedOnDisk(store.targets);
+
+  sortTracks(draft);
+  commitDraftTargets(store.targets, draft, options);
 
   // Refresh hashes/raw snapshots so a library caller can save the same loaded
   // draft more than once without tripping its own conflict guard.
