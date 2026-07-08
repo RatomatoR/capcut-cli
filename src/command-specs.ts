@@ -178,6 +178,7 @@ const usages = {
   doctor: "capcut doctor",
   diagnose: "capcut diagnose <project> [--bundle <report.json>]",
   fixture: "capcut fixture <project> --out <dir>",
+  "sync-timelines": "capcut sync-timelines <project> [--apply]",
   restore: "capcut restore <project> [--step <number> | --list]",
   serve: "capcut serve [--queue <path>] [options]",
   decrypt: "capcut decrypt <project-or-file>",
@@ -336,6 +337,9 @@ const optionsByCommand: Record<string, OptionSpec[]> = {
   concat: [OUT],
   diagnose: [option("bundle", ["--bundle"], "path", "Write a redacted JSON diagnostic bundle.")],
   fixture: [option("out", ["--out"], "path", "Output directory for the sanitized bundle.")],
+  "sync-timelines": [
+    option("apply", ["--apply"], "boolean", "Write the reconciled timelines (default: print the plan only)."),
+  ],
   "replace-media": [
     option("retime", ["--retime"], "boolean", "Fit the segment to the new clip instead of preserving in/out."),
     option("ffprobe_cmd", ["--ffprobe-cmd"], "path", "ffprobe binary for duration/dimension detection."),
@@ -426,6 +430,7 @@ const mutating = new Set([
   "prune",
   "relink",
   "replace-media",
+  "sync-timelines",
   "concat",
   "restore",
   "export",
