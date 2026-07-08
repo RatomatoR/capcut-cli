@@ -281,14 +281,120 @@ export function isManagedDraftPath(path: string): boolean {
   return path.replace(/\\/g, "/").toLowerCase().includes("/com.lveditor.draft/");
 }
 
+// Files CapCut may read as its timeline source instead of draft_content.json:
+// template-2.tmp (>= 8.7 storage) and draft_info.json (the pre-open mirror of a
+// CLI-built draft). draft_meta_info.json without a timeline is normal
+// registration metadata, not a mirror, so it is never flagged unreconcilable.
+const MIRROR_FILES = new Set<string>(["draft_info.json", "template-2.tmp"]);
+
+export interface TimelineSyncTarget {
+  file: string;
+  state: "canonical" | "in_sync" | "drifted";
+  envelope: string;
+  timeline_hash: string | null;
+  guid: string | null;
+  guid_drifted: boolean;
+  tracks?: number;
+  segments?: number;
+}
+
+export interface TimelineSyncUnreconcilable {
+  file: string;
+  reason: string;
+  workaround: string;
+}
+
+export interface TimelineSyncPlan {
+  project_dir: string;
+  canonical: string;
+  canonical_path: string;
+  version: string | null;
+  modern_storage: boolean;
+  in_sync: boolean;
+  targets: TimelineSyncTarget[];
+  drifted: string[];
+  unreconcilable: TimelineSyncUnreconcilable[];
+}
+
+function syncTarget(candidate: DraftCandidate, state: TimelineSyncTarget["state"], guidDrifted: boolean) {
+  return {
+    file: candidate.name,
+    state,
+    envelope: candidate.envelopePath.length === 0 ? "root" : candidate.envelopePath.join("."),
+    timeline_hash: candidate.timelineHash,
+    guid: candidate.draft?.id ?? null,
+    guid_drifted: guidDrifted,
+    tracks: candidate.draft?.tracks.length,
+    segments: candidate.draft?.tracks.reduce((sum, track) => sum + track.segments.length, 0),
+  };
+}
+
+/**
+ * Plan for `sync-timelines` (issue #39, symptom #35): draft_content.json is
+ * canonical; every other readable timeline target is compared against it by
+ * timeline hash. Direction is always draft_content.json -> mirror, never
+ * inferred from mtimes (copy tools and sync clients rewrite those). A mirror
+ * file that exists but holds no readable timeline (binary/encrypted
+ * template-2.tmp) cannot be reconciled and is reported as such instead of
+ * being silently skipped.
+ */
+export function planTimelineSync(input: string): TimelineSyncPlan {
+  const store = discoverDraftStore(input);
+  const canonical = store.targets.find((candidate) => candidate.name === "draft_content.json");
+  if (!canonical?.draft) {
+    throw new Error(
+      "sync-timelines needs a readable draft_content.json (the canonical timeline source). " +
+        "Run `capcut diagnose <project>` to inspect what is on disk.",
+    );
+  }
+
+  const targets: TimelineSyncTarget[] = [syncTarget(canonical, "canonical", false)];
+  const drifted: string[] = [];
+  const unreconcilable: TimelineSyncUnreconcilable[] = [];
+  for (const candidate of store.candidates) {
+    if (!candidate.exists || candidate.path === canonical.path) continue;
+    if (!candidate.parseable || !candidate.draft) {
+      if (MIRROR_FILES.has(candidate.name)) {
+        unreconcilable.push({
+          file: candidate.name,
+          reason: candidate.error ?? "no readable timeline",
+          workaround:
+            "The CLI cannot reconcile this file. Build a redacted bundle with `capcut fixture <project> --out <dir>` " +
+            "and attach it to issue #35 so support for this storage layout can be added.",
+        });
+      }
+      continue;
+    }
+    const inSync = candidate.timelineHash === canonical.timelineHash;
+    targets.push(syncTarget(candidate, inSync ? "in_sync" : "drifted", candidate.draft.id !== canonical.draft.id));
+    if (!inSync) drifted.push(candidate.name);
+  }
+
+  return {
+    project_dir: store.projectDir,
+    canonical: canonical.name,
+    canonical_path: canonical.path,
+    version: store.version,
+    modern_storage: store.modernStorage,
+    in_sync: drifted.length === 0,
+    targets,
+    drifted,
+    unreconcilable,
+  };
+}
+
 export function diagnoseDraftStore(input: string): DraftStoreReport {
   const store = discoverDraftStore(input);
   const running = editorProcesses();
   const actions: string[] = [];
   if (store.diverged)
-    actions.push("Timeline files diverge. Close CapCut, back up the project, then run a dry-run edit before writing.");
+    actions.push(
+      "Timeline files diverge. Close CapCut, then run `capcut sync-timelines <project> --apply` to reconcile them from draft_content.json.",
+    );
   if (store.modernStorage && !store.targets.some((candidate) => candidate.name === "template-2.tmp")) {
-    actions.push("CapCut >= 8.7 detected without a readable template-2.tmp timeline; attach this report to issue #35.");
+    actions.push(
+      "CapCut >= 8.7 detected without a readable template-2.tmp timeline; run `capcut sync-timelines <project>` to see which targets can be reconciled.",
+    );
   }
   if (running.length > 0) actions.push(`Close ${running.join(" / ")} before editing this managed draft.`);
   if (actions.length === 0)
