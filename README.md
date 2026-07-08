@@ -24,6 +24,8 @@ JSON in, JSON out: every command reads and writes the local draft store directly
 - **Library** — `import { loadDraft, lintDraft, saveDraft } from "capcut-cli"` (typed, zero-dep)
 - **Queue runner** — `capcut serve` reads JSONL jobs from stdin, for [n8n / Make / Coze](./examples/serve-automation.md)
 
+> **New in v0.13.0:** timeline-mirror repair for CapCut ≥ 8.7 (`sync-timelines`), word-level subtitle export (`export-srt --granularity word`, SRT + VTT), CapCut-native keyframe easing (`keyframe --easing`), deterministic scene-cut detection (`detect-scenes`), portable text-style presets (`make-preset` + `--preset`), and `lint --fix` auto-repair. Full details in the [changelog](./CHANGELOG.md).
+
 ## Install
 
 **Prerequisites:** Node ≥ 18 (built-ins only — no native modules). Optional tools unlock specific commands: Whisper for `caption`, FFmpeg for `render`, ffprobe for automatic media metadata, and `ANTHROPIC_API_KEY` for `translate`.

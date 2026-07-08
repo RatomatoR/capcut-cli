@@ -24,6 +24,8 @@ JSON 进、JSON 出：每个命令都直接读写本地草稿存储，不用 MCP
 - **库（Library）** —— `import { loadDraft, lintDraft, saveDraft } from "capcut-cli"`（带类型、零依赖）
 - **队列执行器** —— `capcut serve` 从 stdin 读取 JSONL 任务，对接 [n8n / Make / Coze](./examples/serve-automation.md)
 
+> **v0.13.0 新增：** CapCut ≥ 8.7 时间线镜像修复（`sync-timelines`）、逐词字幕导出（`export-srt --granularity word`，支持 SRT + VTT）、CapCut 原生关键帧缓动（`keyframe --easing`）、确定性镜头切分检测（`detect-scenes`）、可移植文字样式预设（`make-preset` + `--preset`），以及 `lint --fix` 自动修复。完整说明见 [更新日志](./CHANGELOG.md)。
+
 ## 安装
 
 **前置要求：** Node ≥ 18（仅用内置模块，无原生依赖）。可选工具解锁特定命令：Whisper 用于 `caption`，FFmpeg 用于 `render`，ffprobe 用于自动读取媒体元数据，`ANTHROPIC_API_KEY` 用于 `translate`。
