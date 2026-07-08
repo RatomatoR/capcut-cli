@@ -440,6 +440,36 @@ const optionsByCommand: Record<string, OptionSpec[]> = {
 };
 optionsByCommand["image-anim"] = optionsByCommand["text-anim"];
 
+// Flags introduced in this release. parseFlags is a single flat global pass, so
+// a value-consuming flag added here would otherwise be stripped from ANY
+// command's free-text positionals (e.g. an add-text body containing the
+// substring "--limit 5"). These are scoped to the commands that declare them:
+//   --easing            -> keyframe
+//   --granularity, --format -> export-srt
+//   --preset            -> add-text, text-style, caption
+//   --apply             -> sync-timelines
+//   --threshold, --min-gap, --limit, --json -> detect-scenes
+// Everywhere else they fall through to the positional stream verbatim, matching
+// pre-release behaviour where these tokens were unknown and preserved.
+export const RELEASE_SCOPED_FLAGS: ReadonlySet<string> = new Set([
+  "--apply",
+  "--easing",
+  "--format",
+  "--granularity",
+  "--json",
+  "--limit",
+  "--min-gap",
+  "--preset",
+  "--threshold",
+]);
+
+/** True when `command` declares `flag` among its command-specific options. */
+export function commandDeclaresFlag(command: string | undefined, flag: string): boolean {
+  if (command === undefined) return false;
+  const opts = optionsByCommand[command];
+  return opts?.some((o) => o.flags.includes(flag)) ?? false;
+}
+
 const mutating = new Set([
   "set-text",
   "shift",
