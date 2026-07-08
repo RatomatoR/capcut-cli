@@ -169,6 +169,138 @@ describe("keyframe --easing: rejection", () => {
   });
 });
 
+// v0.13.0 review: `easing in EASING_PROFILES` matched inherited
+// Object.prototype members, so EASING_PROFILES[easing] resolved to an
+// inherited function whose ratios are undefined — Math.round(undefined ×
+// interval) = NaN, serialized by JSON.stringify as `"x": null` control
+// points, with exit 0. Every prototype name must be rejected up front.
+describe("keyframe --easing: inherited prototype names are rejected", () => {
+  const fix = tmpDraft();
+  after(() => fix.cleanup());
+
+  for (const name of ["hasOwnProperty", "toString", "constructor", "valueOf", "__proto__", "isPrototypeOf"]) {
+    it(`rejects '${name}' on the flag`, () => {
+      const r = spawnCli(["keyframe", fix.path, SEG, "uniform_scale", "3s", "1.3", "--easing", name]);
+      assert.equal(r.status, 1);
+      assert.match(r.stderr, new RegExp(`Unsupported keyframe easing: ${name}`));
+    });
+  }
+
+  it("rejects a prototype name on a batch line and leaves the draft uncorrupted", () => {
+    // Mirrors the reviewer's reproduction: two keyframes with easing
+    // "toString" used to exit 0 and write "x": null into draft_content.json.
+    const lines = [
+      JSON.stringify({ property: "uniform_scale", time: 0, value: "1.0", easing: "toString" }),
+      JSON.stringify({ property: "uniform_scale", time: 3000000, value: "1.3", easing: "toString" }),
+    ].join("\n");
+    const r = spawnCli(["keyframe", fix.path, SEG, "--batch"], { input: lines });
+    assert.equal(r.status, 1);
+    assert.match(r.stderr, /Unsupported keyframe easing: toString/);
+    const raw = readFileSync(fix.path, "utf-8");
+    assert.ok(!/"x":\s*null/.test(raw), "draft contains null control points");
+    assert.equal(keyframeList(fix.path, "UNIFORM_SCALE").length, 0);
+  });
+
+  it("rejects inherited prototype names as keyframe properties too", () => {
+    const r = spawnCli(["keyframe", fix.path, SEG, "toString", "0s", "1.0"]);
+    assert.equal(r.status, 1);
+    assert.match(r.stderr, /Unsupported keyframe property: toString/);
+  });
+});
+
+// v0.13.0 review: a plain (linear) insert skipped the neighbour handle
+// updates entirely, so an eased pair kept facing handles computed against the
+// OLD prev→next interval — t=0's right handle reached 1.6s into a segment now
+// only 1s long (overshoot toward ~1.47 + snap-back in CapCut).
+describe("keyframe: linear insert between an eased pair clears stale handles", () => {
+  it("resets both neighbours' facing handles (and curveType when bare)", () => {
+    const fix = tmpDraft();
+    after(() => fix.cleanup());
+    assert.equal(spawnCli(["keyframe", fix.path, SEG, "uniform_scale", "0s", "1.0"]).status, 0);
+    assert.equal(spawnCli(["keyframe", fix.path, SEG, "uniform_scale", "5s", "1.5", "--easing", "ease-out"]).status, 0);
+    // Sanity: the eased pair carries the reviewer-observed handle first.
+    let list = keyframeList(fix.path, "UNIFORM_SCALE");
+    assert.deepEqual(list[0].right_control, { x: 1600000, y: 0.47 });
+
+    // v0.12-style plain insert between the pair.
+    assert.equal(spawnCli(["keyframe", fix.path, SEG, "uniform_scale", "1s", "1.1"]).status, 0);
+    list = keyframeList(fix.path, "UNIFORM_SCALE");
+    assert.equal(list.length, 3);
+    // No handle may point at a keyframe that is no longer the segment
+    // neighbour: both split sub-segments render linear.
+    assert.deepEqual(
+      list.map((k) => ({ t: k.time_offset, curve: k.curveType, left: k.left_control, right: k.right_control })),
+      [
+        { t: 0, curve: "Line", left: { x: 0, y: 0 }, right: { x: 0, y: 0 } },
+        { t: 1000000, curve: "Line", left: { x: 0, y: 0 }, right: { x: 0, y: 0 } },
+        { t: 5000000, curve: "Line", left: { x: 0, y: 0 }, right: { x: 0, y: 0 } },
+      ],
+    );
+  });
+
+  it("keeps easing on segments the insert does not split", () => {
+    const fix = tmpDraft();
+    after(() => fix.cleanup());
+    // Oracle triplet at 0 / 5s / 8.133333s ease-out, then a linear insert at
+    // 6s: only the 5s→8.13s segment is split; the 0→5s easing must survive.
+    for (const { time, value } of [
+      { time: 0, value: "1.0" },
+      { time: 5000000, value: "1.3" },
+      { time: 8133333, value: "1.0" },
+    ]) {
+      const line = JSON.stringify({ property: "scale_x", time, value, easing: "ease-out" });
+      assert.equal(spawnCli(["keyframe", fix.path, SEG, "--batch"], { input: line }).status, 0);
+    }
+    assert.equal(spawnCli(["keyframe", fix.path, SEG, "scale_x", "6s", "1.1"]).status, 0);
+    const list = keyframeList(fix.path, "KFTypeScaleX");
+    assert.equal(list.length, 4);
+    // 0→5s eased segment untouched.
+    assert.equal(list[0].curveType, "FreeCurveInOut");
+    assert.deepEqual(list[0].right_control, { x: 1600000, y: 0.282 });
+    assert.deepEqual(list[1].left_control, { x: -2000000, y: 0 });
+    // 5s keyframe keeps its incoming handle but loses the stale outgoing one.
+    assert.equal(list[1].curveType, "FreeCurveInOut");
+    assert.deepEqual(list[1].right_control, { x: 0, y: 0 });
+    // Inserted keyframe and the old segment end are fully linear now.
+    assert.equal(list[2].curveType, "Line");
+    assert.equal(list[3].curveType, "Line");
+    assert.deepEqual(list[3].left_control, { x: 0, y: 0 });
+  });
+});
+
+// v0.13.0 review: a lone --easing keyframe used to stamp curveType
+// FreeCurveInOut with zero-length handles — a curve marker its handles
+// contradict, and no signal that the requested easing encoded nothing.
+describe("keyframe --easing: lone keyframe has no neighbour to ease against", () => {
+  const fix = tmpDraft();
+  after(() => fix.cleanup());
+
+  it("stays Line, exits 0, and warns on stderr", () => {
+    const r = spawnCli(["keyframe", fix.path, SEG, "alpha", "2s", "0.5", "--easing", "ease-out"]);
+    assert.equal(r.status, 0, `stderr: ${r.stderr}`);
+    assert.match(r.stderr, /no adjacent keyframe to ease against/);
+    assert.equal(r.json.warnings.length, 1);
+    const list = keyframeList(fix.path, "KFTypeAlpha");
+    assert.equal(list.length, 1);
+    assert.equal(list[0].curveType, "Line");
+    assert.deepEqual(list[0].left_control, { x: 0, y: 0 });
+    assert.deepEqual(list[0].right_control, { x: 0, y: 0 });
+  });
+
+  it("picks up the curve when the pair keyframe arrives with an easing", () => {
+    const r = spawnCli(["keyframe", fix.path, SEG, "alpha", "5s", "1.0", "--easing", "ease-out"]);
+    assert.equal(r.status, 0, `stderr: ${r.stderr}`);
+    assert.equal(r.json.warnings, undefined);
+    const list = keyframeList(fix.path, "KFTypeAlpha");
+    assert.equal(list.length, 2);
+    // 0.32 × 3s interval; y = round(0.94 × (1.0 − 0.5), 6).
+    assert.equal(list[0].curveType, "FreeCurveInOut");
+    assert.deepEqual(list[0].right_control, { x: 960000, y: 0.47 });
+    assert.equal(list[1].curveType, "FreeCurveInOut");
+    assert.deepEqual(list[1].left_control, { x: -1200000, y: 0 });
+  });
+});
+
 describe("ken-burns.sh easing default", () => {
   function runKenBurns(fix, extra = []) {
     return spawnSync("bash", [KEN_BURNS, fix.path, SEG, "1.0", "1.2", "0", "-0.1", "0", "-0.05", "3s", ...extra], {

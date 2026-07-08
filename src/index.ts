@@ -350,7 +350,12 @@ Animate:
              Values: "1.5", "50%" (alpha/volume), "45deg" (rotation),
                      "+0.5"/"-0.3" (saturation/contrast/brightness)
              Easing: linear (default), ease-in, ease-out, ease-in-out — written
-                     as CapCut bezier handles (ease-out = the UI's "Cubic Out")
+                     as CapCut bezier handles (ease-out = the UI's "Cubic Out").
+                     Easing needs an adjacent keyframe on the same property: a
+                     lone eased keyframe stays linear (warns) and picks up the
+                     curve when its pair is added with an easing. A linear
+                     insert between eased keyframes resets the neighbours'
+                     facing handles, so both new sub-segments render linear.
 
   transition <project> <id> <slug> [--duration <s>]
              Attach a transition to a video/image segment. Slug examples:
@@ -1671,7 +1676,17 @@ function cmdKeyframe(draft: Draft, filePath: string, positional: string[], flags
 
   const result = addKeyframes(draft, segId, inputs, flags.easing);
   saveDraft(filePath, draft);
-  out({ ok: true, id: result.segmentId, added: result.added, lists: result.lists }, flags);
+  for (const warning of result.warnings) process.stderr.write(`Warning: ${warning}\n`);
+  out(
+    {
+      ok: true,
+      id: result.segmentId,
+      added: result.added,
+      lists: result.lists,
+      ...(result.warnings.length ? { warnings: result.warnings } : {}),
+    },
+    flags,
+  );
 }
 
 function cmdTransition(draft: Draft, filePath: string, positional: string[], flags: Flags): void {

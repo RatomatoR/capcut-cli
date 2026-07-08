@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { after, describe, it } from "node:test";
@@ -176,5 +176,57 @@ describe("compile", () => {
     const r = spawnCli(["compile", p, "--out", join(s.dir, "X")]);
     assert.notEqual(r.status, 0);
     assert.match(r.stderr, /not valid JSON/);
+  });
+});
+
+// v0.13.0 review: validateSpec never checked the keyframe `easing` field, so
+// `compile --check` exited 0 on a spec the real compile would reject — and the
+// real compile only threw AFTER initDraft had seeded the draft directory,
+// leaving an orphan half-built draft that CapCut lists.
+describe("compile: keyframe easing pre-flight", () => {
+  const specWithEasing = (easing) => ({
+    name: "K",
+    tracks: [{ type: "video", items: [{ path: "clip1.mp4", start: 0, duration: 2, ref: "v1" }] }],
+    operations: [{ op: "keyframe", target: "v1", property: "uniform_scale", time: 1, value: 1.2, easing }],
+  });
+
+  it("--check rejects an invalid easing instead of green-lighting it", () => {
+    const s = setup();
+    after(s.cleanup);
+    const spec = writeSpec(s.dir, specWithEasing("cubic-out"));
+    const r = spawnCli(["compile", spec, "--check"]);
+    assert.equal(r.status, 1);
+    assert.match(r.stderr, /Unsupported keyframe easing: cubic-out/);
+  });
+
+  it("real compile fails before initDraft writes anything (no orphan draft dir)", () => {
+    const s = setup();
+    after(s.cleanup);
+    const spec = writeSpec(s.dir, specWithEasing("cubic-out"));
+    const out = join(s.dir, "outdraft");
+    const r = spawnCli(["compile", spec, "--out", out]);
+    assert.equal(r.status, 1);
+    assert.match(r.stderr, /Unsupported keyframe easing: cubic-out/);
+    assert.equal(existsSync(out), false, "orphan half-built draft dir left behind");
+  });
+
+  it("rejects inherited prototype names in specs too", () => {
+    const s = setup();
+    after(s.cleanup);
+    const spec = writeSpec(s.dir, specWithEasing("hasOwnProperty"));
+    const r = spawnCli(["compile", spec, "--check"]);
+    assert.equal(r.status, 1);
+    assert.match(r.stderr, /Unsupported keyframe easing: hasOwnProperty/);
+  });
+
+  it("--check and compile both accept every supported easing", () => {
+    const s = setup();
+    after(s.cleanup);
+    const spec = writeSpec(s.dir, specWithEasing("ease-out"));
+    assert.equal(spawnCli(["compile", spec, "--check"]).status, 0);
+    const out = join(s.dir, "Built");
+    const r = spawnCli(["compile", spec, "--out", out]);
+    assert.equal(r.status, 0, r.stderr);
+    assert.equal(r.json.ok, true);
   });
 });
