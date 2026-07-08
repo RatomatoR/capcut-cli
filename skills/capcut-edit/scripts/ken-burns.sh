@@ -6,12 +6,15 @@
 #     <start-scale> <end-scale> \
 #     <tx-start> <tx-end> \
 #     <ty-start> <ty-end> \
-#     <duration>
+#     <duration> [easing]
 #
 #   <start/end-scale>  uniform scale values (1.0 = no zoom, 1.2 = 20% zoom-in)
 #   <tx-start/tx-end>  horizontal position in half-canvas units (-1..1, 0 = center)
 #   <ty-start/ty-end>  vertical position in half-canvas units (-1..1)
 #   <duration>         time string (e.g. 3s, 500ms)
+#   [easing]           linear | ease-in | ease-out | ease-in-out
+#                      default ease-out — the easing CapCut's own UI applies to
+#                      a ken-burns zoom ("Cubic Out")
 #
 # Writes 6 keyframes total via `capcut keyframe --batch`: uniform_scale,
 # position_x, position_y — each with a start keyframe at t=0 and an end
@@ -20,8 +23,8 @@
 
 set -euo pipefail
 
-if [[ $# -ne 9 ]]; then
-  echo "Usage: $0 <project> <segment-id> <start-scale> <end-scale> <tx-start> <tx-end> <ty-start> <ty-end> <duration>" >&2
+if [[ $# -lt 9 || $# -gt 10 ]]; then
+  echo "Usage: $0 <project> <segment-id> <start-scale> <end-scale> <tx-start> <tx-end> <ty-start> <ty-end> <duration> [easing]" >&2
   exit 2
 fi
 
@@ -34,6 +37,7 @@ tx_end="$6"
 ty_start="$7"
 ty_end="$8"
 duration="$9"
+easing="${10:-ease-out}"
 
 script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cli="$script_dir/../../../dist/index.js"
@@ -43,7 +47,7 @@ if [[ ! -f "$cli" ]]; then
   exit 1
 fi
 
-node "$cli" keyframe "$project" "$segment_id" --batch <<EOF
+node "$cli" keyframe "$project" "$segment_id" --batch --easing "$easing" <<EOF
 {"property":"uniform_scale","time":"0","value":"$start_scale"}
 {"property":"uniform_scale","time":"$duration","value":"$end_scale"}
 {"property":"position_x","time":"0","value":"$tx_start"}

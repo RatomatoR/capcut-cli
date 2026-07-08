@@ -114,7 +114,7 @@ export type CompileOperation =
       trackName?: string;
       jianying?: boolean;
     }
-  | { op: "keyframe"; target: string; property: string; time: number; value: number }
+  | { op: "keyframe"; target: string; property: string; time: number; value: number; easing?: string }
   | { op: "audio-fade"; target: string; fadeIn?: number; fadeOut?: number }
   | { op: "text-style"; target: string; style: TextStyleOptions }
   | { op: "text-ranges"; target: string; ranges: TextRangeInput[] }
@@ -439,7 +439,12 @@ export function compileDraft(spec: CompileSpec, opts: CompileOptions): CompileRe
         break;
       case "keyframe":
         addKeyframes(draft, resolveRef(operation.target), [
-          { property: operation.property, timeUs: Math.round(operation.time * US), value: operation.value },
+          {
+            property: operation.property,
+            timeUs: Math.round(operation.time * US),
+            value: operation.value,
+            easing: operation.easing,
+          },
         ]);
         break;
       case "audio-fade":
