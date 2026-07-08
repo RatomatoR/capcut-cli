@@ -429,6 +429,12 @@ const optionsByCommand: Record<string, OptionSpec[]> = {
     }),
     option("limit", ["--limit"], "number", "Keep only the N strongest cuts."),
     option("ffmpeg_cmd", ["--ffmpeg-cmd"], "path", "FFmpeg binary."),
+    option(
+      "ffprobe_cmd",
+      ["--ffprobe-cmd"],
+      "path",
+      "ffprobe binary for the video-stream duration (falls back to the container duration without it).",
+    ),
     option("json", ["--json"], "boolean", "Force JSON output (the default; overrides -H)."),
   ],
 };
@@ -521,7 +527,7 @@ export function buildCommandSpecs(commands: readonly string[], summaries: Record
     const usage = usages[name as CommandName] ?? `capcut ${name} <project>`;
     const prerequisites: string[] = [];
     if (name === "render" || name === "detect-scenes") prerequisites.push("ffmpeg");
-    if (["add-video", "add-audio", "compile"].includes(name)) prerequisites.push("ffprobe (optional)");
+    if (["add-video", "add-audio", "compile", "detect-scenes"].includes(name)) prerequisites.push("ffprobe (optional)");
     if (name === "caption") prerequisites.push("whisper CLI");
     if (name === "translate") prerequisites.push("ANTHROPIC_API_KEY or --api-key");
     if (["add-video", "add-audio"].includes(name)) prerequisites.push("network for Wikimedia URLs only");

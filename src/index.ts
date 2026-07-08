@@ -258,12 +258,18 @@ Analyze:
              in seconds AND microseconds (the draft-native unit), ready to
              seed a long-form-to-shorts split: feed the segments into
              "capcut compile" (one clip per segment) or "capcut cut".
-             Detection only — it never touches a draft. Options:
+             The final segment ends at the VIDEO stream's real duration
+             (read via ffprobe), so it never overruns the video when a
+             longer audio track pads the container; without ffprobe it
+             falls back to the container duration and duration_source
+             says so. Detection only — it never touches a draft. Options:
                --threshold <n>    Scene score a cut must exceed, 0..1 (default 0.4)
                --min-gap <s>      Merge cuts closer than <s> seconds, keeping
                                   the strongest (default 2)
                --limit <n>        Keep only the <n> strongest cuts
                --ffmpeg-cmd <p>   ffmpeg binary (default ffmpeg)
+               --ffprobe-cmd <p>  ffprobe binary for the video-stream
+                                  duration (default ffprobe)
                --json             Force JSON output (the default; overrides -H)
 
 Add:
@@ -3338,11 +3344,20 @@ function cmdDetectScenes(positional: string[], flags: Flags): void {
     minGap,
     limit: flags.limit,
     ffmpegCmd: flags.ffmpegCmd,
+    ffprobeCmd: flags.ffprobeCmd,
   });
   // --json forces machine output even when a config/alias turned on --human.
   if (flags.human && !flags.json) {
     console.log(`Video:     ${report.video}`);
-    console.log(`Duration:  ${report.duration === null ? "unknown" : formatDuration(report.duration_us ?? 0)}`);
+    const durationNote =
+      report.duration_source === "video-stream"
+        ? " (video stream)"
+        : report.duration_source === "container"
+          ? " (container header — ffprobe unavailable; may include audio past the video track)"
+          : "";
+    console.log(
+      `Duration:  ${report.duration === null ? "unknown" : formatDuration(report.duration_us ?? 0)}${durationNote}`,
+    );
     console.log(
       `Threshold: ${report.threshold}  (min gap ${report.min_gap}s${report.limit ? `, limit ${report.limit}` : ""})`,
     );
