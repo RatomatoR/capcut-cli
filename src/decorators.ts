@@ -53,16 +53,21 @@ export function keyframeEasings(): string[] {
   return ["linear", ...Object.keys(EASING_PROFILES)];
 }
 
-function resolveEasing(easing: string | undefined): EasingName {
+// Exported so compile's spec validation pre-flights the exact same check
+// (and error message) the real keyframe write performs. Object.hasOwn, not
+// `in`: inherited Object.prototype names ("hasOwnProperty", "toString",
+// "constructor", ...) must NOT pass — EASING_PROFILES[name] would resolve to
+// an inherited function whose ratios are undefined and NaN-corrupt the draft.
+export function resolveEasing(easing: string | undefined): EasingName {
   if (easing === undefined) return "linear";
-  if (easing !== "linear" && !(easing in EASING_PROFILES)) {
+  if (easing !== "linear" && !Object.hasOwn(EASING_PROFILES, easing)) {
     throw new Error(`Unsupported keyframe easing: ${easing}. Supported: ${keyframeEasings().join(", ")}`);
   }
   return easing as EasingName;
 }
 
 export function parseKeyframeValue(property: string, value: string): number {
-  if (!(property in PROPERTY_MAP)) {
+  if (!Object.hasOwn(PROPERTY_MAP, property)) {
     throw new Error(`Unsupported keyframe property: ${property}. Supported: ${Object.keys(PROPERTY_MAP).join(", ")}`);
   }
   const v = value.trim();
@@ -141,22 +146,58 @@ interface KeyframeListObject {
   property_type: string;
 }
 
+// Nearest existing keyframes strictly before/after the given time — the two
+// segment neighbours whose facing handles an insert at that time affects.
+function findNeighbours(
+  list: KeyframeEntry[],
+  timeOffset: number,
+): { prev: KeyframeEntry | undefined; next: KeyframeEntry | undefined } {
+  let prev: KeyframeEntry | undefined;
+  let next: KeyframeEntry | undefined;
+  for (const k of list) {
+    if (k.time_offset < timeOffset && (!prev || k.time_offset > prev.time_offset)) prev = k;
+    if (k.time_offset > timeOffset && (!next || k.time_offset < next.time_offset)) next = k;
+  }
+  return { prev, next };
+}
+
+const isZeroControl = (c: ControlPoint): boolean => c.x === 0 && c.y === 0;
+
+// Inserting a LINEAR keyframe between two keyframes invalidates the handles
+// that faced across the old prev→next segment: prev's outgoing and next's
+// incoming handles were computed against an interval/Δ that no longer exists,
+// so left as-is they can point past the inserted keyframe (overshoot + snap
+// back in CapCut). Clear the facing handles — the inserted keyframe's easing
+// wins, mirroring applyEasing — and drop a neighbour back to "Line" when it is
+// left with no handles at all, so curveType never contradicts the handles.
+function clearFacingHandles(list: KeyframeEntry[], timeOffset: number): void {
+  const { prev, next } = findNeighbours(list, timeOffset);
+  if (prev) {
+    prev.right_control = { x: 0, y: 0 };
+    if (isZeroControl(prev.left_control)) prev.curveType = "Line";
+  }
+  if (next) {
+    next.left_control = { x: 0, y: 0 };
+    if (isZeroControl(next.right_control)) next.curveType = "Line";
+  }
+}
+
 // Stamp the inserted keyframe and retro-update the facing handles of its two
 // neighbours so the easing applies to both adjacent segments — the easing of
 // the inserted keyframe wins, matching CapCut UI behaviour when a preset is
-// applied to a keyframe.
-function applyEasing(list: KeyframeEntry[], entry: KeyframeEntry, easing: Exclude<EasingName, "linear">): void {
+// applied to a keyframe. Returns false (leaving the entry as "Line") when the
+// list has no neighbour to ease against: a lone keyframe encodes no curve, and
+// stamping FreeCurveInOut with zero-length handles would write a curve-type
+// marker its handles contradict. The stamp happens later instead, when the
+// pair's second keyframe is inserted with an easing and retro-updates this one.
+function applyEasing(list: KeyframeEntry[], entry: KeyframeEntry, easing: Exclude<EasingName, "linear">): boolean {
   const profile = EASING_PROFILES[easing];
   const rightY = (fromValue: number, toValue: number): number =>
     easing === "ease-out" ? Math.round(EASE_OUT_RIGHT_Y_RATIO * (toValue - fromValue) * 1e6) / 1e6 : 0;
 
+  const { prev, next } = findNeighbours(list, entry.time_offset);
+  if (!prev && !next) return false;
   entry.curveType = "FreeCurveInOut";
-  let prev: KeyframeEntry | undefined;
-  let next: KeyframeEntry | undefined;
-  for (const k of list) {
-    if (k.time_offset < entry.time_offset && (!prev || k.time_offset > prev.time_offset)) prev = k;
-    if (k.time_offset > entry.time_offset && (!next || k.time_offset < next.time_offset)) next = k;
-  }
   if (prev) {
     const interval = entry.time_offset - prev.time_offset;
     prev.curveType = "FreeCurveInOut";
@@ -175,6 +216,7 @@ function applyEasing(list: KeyframeEntry[], entry: KeyframeEntry, easing: Exclud
       y: rightY(entry.values[0], next.values[0]),
     };
   }
+  return true;
 }
 
 export function addKeyframes(
@@ -182,7 +224,7 @@ export function addKeyframes(
   segmentId: string,
   keyframes: KeyframeInput[],
   easing?: string,
-): { segmentId: string; added: number; lists: Array<{ property: string; count: number }> } {
+): { segmentId: string; added: number; lists: Array<{ property: string; count: number }>; warnings: string[] } {
   resolveEasing(easing); // fail fast even when every keyframe overrides it
   const found = findSegment(draft, segmentId);
   if (!found) throw new Error(`Segment not found: ${segmentId}`);
@@ -192,9 +234,10 @@ export function addKeyframes(
     (seg as Record<string, unknown>).common_keyframes = [];
   }
   const commonKeyframes = seg.common_keyframes as KeyframeListObject[];
+  const warnings: string[] = [];
 
   for (const kf of keyframes) {
-    const propEnum = PROPERTY_MAP[kf.property];
+    const propEnum = Object.hasOwn(PROPERTY_MAP, kf.property) ? PROPERTY_MAP[kf.property] : undefined;
     if (!propEnum) {
       throw new Error(
         `Unsupported keyframe property: ${kf.property}. Supported: ${Object.keys(PROPERTY_MAP).join(", ")}`,
@@ -220,7 +263,16 @@ export function addKeyframes(
       time_offset: kf.timeUs,
       values: [kf.value],
     };
-    if (kfEasing !== "linear") applyEasing(list.keyframe_list, entry, kfEasing);
+    if (kfEasing !== "linear") {
+      if (!applyEasing(list.keyframe_list, entry, kfEasing)) {
+        warnings.push(
+          `easing '${kfEasing}' for ${kf.property} at ${kf.timeUs}us has no adjacent keyframe to ease against; ` +
+            `wrote a linear keyframe — it picks up the curve when its pair keyframe is added with an easing`,
+        );
+      }
+    } else {
+      clearFacingHandles(list.keyframe_list, entry.time_offset);
+    }
     list.keyframe_list.push(entry);
     list.keyframe_list.sort((a, b) => a.time_offset - b.time_offset);
   }
@@ -230,7 +282,7 @@ export function addKeyframes(
     return { property: prop, count: l.keyframe_list.length };
   });
 
-  return { segmentId: seg.id, added: keyframes.length, lists: summary };
+  return { segmentId: seg.id, added: keyframes.length, lists: summary, warnings };
 }
 
 // --- Phase 1: transition / mask / bg-blur / text-style / text-anim ---

@@ -3,6 +3,7 @@ import { basename, dirname, isAbsolute, resolve } from "node:path";
 import {
   addKeyframes,
   addTransition,
+  resolveEasing,
   setTextRanges,
   setTextStyle,
   type TextRangeInput,
@@ -252,6 +253,19 @@ function validateSpec(spec: unknown): asserts spec is CompileSpec {
         throw new Error(`compile: operations[${index}].target must reference a declared item ref`);
       }
     }
+    // Pre-flight the keyframe easing with the exact validation the real write
+    // performs, so --check rejects what compile would reject and a bad easing
+    // never fails AFTER initDraft seeded the draft directory (orphan dir).
+    if (op.op === "keyframe" && op.easing !== undefined) {
+      if (typeof op.easing !== "string") {
+        throw new Error(`compile: operations[${index}].easing must be a string`);
+      }
+      try {
+        resolveEasing(op.easing);
+      } catch (e) {
+        throw new Error(`compile: operations[${index}]: ${(e as Error).message}`);
+      }
+    }
   }
 }
 
@@ -438,14 +452,16 @@ export function compileDraft(spec: CompileSpec, opts: CompileOptions): CompileRe
         segments++;
         break;
       case "keyframe":
-        addKeyframes(draft, resolveRef(operation.target), [
-          {
-            property: operation.property,
-            timeUs: Math.round(operation.time * US),
-            value: operation.value,
-            easing: operation.easing,
-          },
-        ]);
+        warnings.push(
+          ...addKeyframes(draft, resolveRef(operation.target), [
+            {
+              property: operation.property,
+              timeUs: Math.round(operation.time * US),
+              value: operation.value,
+              easing: operation.easing,
+            },
+          ]).warnings,
+        );
         break;
       case "audio-fade":
         setAudioFade(draft, resolveRef(operation.target), {

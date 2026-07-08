@@ -233,10 +233,16 @@ const optionsByCommand: Record<string, OptionSpec[]> = {
   cut: [OUT],
   keyframe: [
     option("batch", ["--batch"], "boolean", "Read JSONL keyframes from stdin."),
-    option("easing", ["--easing"], "enum", "Interpolation easing to adjacent keyframes.", {
-      values: ["linear", "ease-in", "ease-out", "ease-in-out"],
-      default: "linear",
-    }),
+    option(
+      "easing",
+      ["--easing"],
+      "enum",
+      "Interpolation easing to adjacent keyframes. Needs an adjacent keyframe on the same property; a lone eased keyframe stays linear (warns).",
+      {
+        values: ["linear", "ease-in", "ease-out", "ease-in-out"],
+        default: "linear",
+      },
+    ),
   ],
   transition: [option("duration", ["--duration"], "time", "Transition duration.")],
   mask: [
