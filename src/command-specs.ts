@@ -89,6 +89,12 @@ const TRACK_NAME = option("track_name", ["--track-name"], "string", "Target trac
 const OUT = option("out", ["--out"], "path", "Output path.");
 const FFPROBE = option("ffprobe_cmd", ["--ffprobe-cmd"], "path", "ffprobe binary.");
 const STYLE_REF = option("style_ref", ["--style-ref"], "id", "Copy styling from this text segment.");
+const PRESET = option(
+  "preset",
+  ["--preset"],
+  "path",
+  "Apply a make-preset style preset; explicit flags override preset values.",
+);
 const TEXT_STYLE: OptionSpec[] = [
   option("font_size", ["--font-size"], "number", "Font size."),
   option("color", ["--color"], "string", "Text colour as #RRGGBB."),
@@ -156,6 +162,7 @@ const usages = {
   "add-effect": "capcut add-effect <project> <slug> <start> <duration> [options]",
   "save-template": "capcut save-template <project> <id> <name> --out <path>",
   "apply-template": "capcut apply-template <project> <template> <start> <duration> [text] [options]",
+  "make-preset": "capcut make-preset <project> <text-segment-id> --out <preset.json>",
   batch: "capcut batch <project> [--continue-on-error] < operations.jsonl",
   "import-srt": "capcut import-srt <project> <srt-or-> [options]",
   "import-ass": "capcut import-ass <project> <ass-or-> [options]",
@@ -222,7 +229,7 @@ const optionsByCommand: Record<string, OptionSpec[]> = {
     option("no_probe", ["--no-probe"], "boolean", "Disable automatic media probing."),
     FFPROBE,
   ],
-  "add-text": [TRACK_NAME, ...TEXT_STYLE.slice(0, 5)],
+  "add-text": [TRACK_NAME, ...TEXT_STYLE.slice(0, 5), PRESET],
   cut: [OUT],
   keyframe: [
     option("batch", ["--batch"], "boolean", "Read JSONL keyframes from stdin."),
@@ -244,7 +251,7 @@ const optionsByCommand: Record<string, OptionSpec[]> = {
     option("round_corner", ["--round-corner"], "number", "Rectangle corner radius."),
   ],
   "bg-blur": [option("off", ["--off"], "boolean", "Remove background blur.")],
-  "text-style": TEXT_STYLE,
+  "text-style": [...TEXT_STYLE, PRESET],
   "text-anim": [
     option("intro", ["--intro"], "enum", "Intro animation."),
     option("outro", ["--outro"], "enum", "Outro animation."),
@@ -274,6 +281,7 @@ const optionsByCommand: Record<string, OptionSpec[]> = {
   ],
   "add-effect": [TRACK_NAME, option("params", ["--params"], "json", "Effect parameter array.")],
   "save-template": [OUT],
+  "make-preset": [OUT],
   "apply-template": [
     option("x", ["--x"], "number", "Horizontal position override."),
     option("y", ["--y"], "number", "Vertical position override."),
@@ -320,6 +328,7 @@ const optionsByCommand: Record<string, OptionSpec[]> = {
     option("max_gap_ms", ["--max-gap-ms"], "number", "Maximum gap inside a karaoke cue."),
     TRACK_NAME,
     STYLE_REF,
+    PRESET,
   ],
   translate: [
     option("to", ["--to"], "string", "Target language."),
@@ -464,7 +473,7 @@ const mutating = new Set([
 
 const arrayOutputs = new Set(["tracks", "segments", "texts", "materials", "enums", "templates"]);
 const textOutputs = new Set(["export-srt", "completions"]);
-const fileOutputs = new Set(["render", "translate", "compile", "cut", "save-template"]);
+const fileOutputs = new Set(["render", "translate", "compile", "cut", "save-template", "make-preset"]);
 
 function inferType(name: string): ArgumentType {
   if (/project|file|path|dir|template|audio|video|image|srt|ass|spec|draft/i.test(name)) return "path";
