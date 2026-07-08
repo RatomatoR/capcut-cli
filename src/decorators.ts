@@ -21,6 +21,46 @@ export function keyframeProperties(): string[] {
   return Object.keys(PROPERTY_MAP);
 }
 
+// CapCut's UI easing presets ("Cubic In", "Cubic Out", ...) are NOT stored as
+// named curveType values. The UI writes curveType "FreeCurveInOut" plus bezier
+// control handles on both keyframes of the eased segment: handle x is a fixed
+// ratio of the interval to the adjacent keyframe (microseconds), handle y is 0
+// except for ease-out, which Δ-scales the outgoing handle (see
+// EASE_OUT_RIGHT_Y_RATIO). Ratios and rounding validated byte-for-byte against
+// a CapCut UI oracle capture (Davidb-2107/capcut-cli-david,
+// test-fixtures/oracles/cubic-out-triplet-frame-aligned.json): control.x
+// matches CapCut exactly on frame-aligned intervals and within ±1μs otherwise;
+// control.y within 1 ULP.
+export type EasingName = "linear" | "ease-in" | "ease-out" | "ease-in-out";
+
+interface EasingProfile {
+  startRightXRatio: number; // × interval → segment-start keyframe's right_control.x
+  endLeftXRatio: number; // × interval → segment-end keyframe's left_control.x
+}
+
+const EASING_PROFILES: Record<Exclude<EasingName, "linear">, EasingProfile> = {
+  "ease-in": { startRightXRatio: 0.42, endLeftXRatio: 0 },
+  "ease-out": { startRightXRatio: 0.32, endLeftXRatio: -0.4 },
+  "ease-in-out": { startRightXRatio: 0.42, endLeftXRatio: -0.42 },
+};
+
+// CapCut "Cubic Out" Δ-scales the outgoing handle: right_control.y =
+// round(0.94 × (nextValue − value), 6). A fixed y would only match the UI for
+// one specific value delta.
+const EASE_OUT_RIGHT_Y_RATIO = 0.94;
+
+export function keyframeEasings(): string[] {
+  return ["linear", ...Object.keys(EASING_PROFILES)];
+}
+
+function resolveEasing(easing: string | undefined): EasingName {
+  if (easing === undefined) return "linear";
+  if (easing !== "linear" && !(easing in EASING_PROFILES)) {
+    throw new Error(`Unsupported keyframe easing: ${easing}. Supported: ${keyframeEasings().join(", ")}`);
+  }
+  return easing as EasingName;
+}
+
 export function parseKeyframeValue(property: string, value: string): number {
   if (!(property in PROPERTY_MAP)) {
     throw new Error(`Unsupported keyframe property: ${property}. Supported: ${Object.keys(PROPERTY_MAP).join(", ")}`);
@@ -72,24 +112,78 @@ export interface KeyframeInput {
   property: string;
   timeUs: number; // segment-relative time in microseconds
   value: number; // already parsed/normalised
+  easing?: string; // per-keyframe override of the per-call easing
 }
 
 function uuidHex(): string {
   return randomUUID().replace(/-/g, "");
 }
 
+interface ControlPoint {
+  x: number;
+  y: number;
+}
+
+interface KeyframeEntry {
+  curveType: string;
+  graphID: string;
+  left_control: ControlPoint;
+  right_control: ControlPoint;
+  id: string;
+  time_offset: number;
+  values: number[];
+}
+
 interface KeyframeListObject {
   id: string;
-  keyframe_list: Array<Record<string, unknown>>;
+  keyframe_list: KeyframeEntry[];
   material_id: string;
   property_type: string;
+}
+
+// Stamp the inserted keyframe and retro-update the facing handles of its two
+// neighbours so the easing applies to both adjacent segments — the easing of
+// the inserted keyframe wins, matching CapCut UI behaviour when a preset is
+// applied to a keyframe.
+function applyEasing(list: KeyframeEntry[], entry: KeyframeEntry, easing: Exclude<EasingName, "linear">): void {
+  const profile = EASING_PROFILES[easing];
+  const rightY = (fromValue: number, toValue: number): number =>
+    easing === "ease-out" ? Math.round(EASE_OUT_RIGHT_Y_RATIO * (toValue - fromValue) * 1e6) / 1e6 : 0;
+
+  entry.curveType = "FreeCurveInOut";
+  let prev: KeyframeEntry | undefined;
+  let next: KeyframeEntry | undefined;
+  for (const k of list) {
+    if (k.time_offset < entry.time_offset && (!prev || k.time_offset > prev.time_offset)) prev = k;
+    if (k.time_offset > entry.time_offset && (!next || k.time_offset < next.time_offset)) next = k;
+  }
+  if (prev) {
+    const interval = entry.time_offset - prev.time_offset;
+    prev.curveType = "FreeCurveInOut";
+    prev.right_control = {
+      x: Math.round(profile.startRightXRatio * interval),
+      y: rightY(prev.values[0], entry.values[0]),
+    };
+    entry.left_control = { x: Math.round(profile.endLeftXRatio * interval), y: 0 };
+  }
+  if (next) {
+    const interval = next.time_offset - entry.time_offset;
+    next.curveType = "FreeCurveInOut";
+    next.left_control = { x: Math.round(profile.endLeftXRatio * interval), y: 0 };
+    entry.right_control = {
+      x: Math.round(profile.startRightXRatio * interval),
+      y: rightY(entry.values[0], next.values[0]),
+    };
+  }
 }
 
 export function addKeyframes(
   draft: Draft,
   segmentId: string,
   keyframes: KeyframeInput[],
+  easing?: string,
 ): { segmentId: string; added: number; lists: Array<{ property: string; count: number }> } {
+  resolveEasing(easing); // fail fast even when every keyframe overrides it
   const found = findSegment(draft, segmentId);
   if (!found) throw new Error(`Segment not found: ${segmentId}`);
   const seg = found.segment as Segment & { common_keyframes?: unknown };
@@ -106,6 +200,7 @@ export function addKeyframes(
         `Unsupported keyframe property: ${kf.property}. Supported: ${Object.keys(PROPERTY_MAP).join(", ")}`,
       );
     }
+    const kfEasing = resolveEasing(kf.easing ?? easing);
     let list = commonKeyframes.find((l) => l.property_type === propEnum);
     if (!list) {
       list = {
@@ -116,7 +211,7 @@ export function addKeyframes(
       };
       commonKeyframes.push(list);
     }
-    list.keyframe_list.push({
+    const entry: KeyframeEntry = {
       curveType: "Line",
       graphID: "",
       left_control: { x: 0.0, y: 0.0 },
@@ -124,8 +219,10 @@ export function addKeyframes(
       id: uuidHex(),
       time_offset: kf.timeUs,
       values: [kf.value],
-    });
-    list.keyframe_list.sort((a, b) => (a.time_offset as number) - (b.time_offset as number));
+    };
+    if (kfEasing !== "linear") applyEasing(list.keyframe_list, entry, kfEasing);
+    list.keyframe_list.push(entry);
+    list.keyframe_list.sort((a, b) => a.time_offset - b.time_offset);
   }
 
   const summary = commonKeyframes.map((l) => {

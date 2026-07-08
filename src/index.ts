@@ -304,14 +304,17 @@ Maintenance & inspection:
              editor is running unless --force-write.
 
 Animate:
-  keyframe   <project> <id> <property> <time> <value>
+  keyframe   <project> <id> <property> <time> <value> [--easing <name>]
              Add a keyframe to a segment. Single-shot.
-  keyframe   <project> <id> --batch
-             Read JSONL from stdin; each line = {"property","time","value"}.
+  keyframe   <project> <id> --batch [--easing <name>]
+             Read JSONL from stdin; each line = {"property","time","value"}
+             plus optional "easing" overriding --easing per line.
              Properties: position_x, position_y, rotation, scale_x, scale_y,
                          uniform_scale, alpha, saturation, contrast, brightness, volume
              Values: "1.5", "50%" (alpha/volume), "45deg" (rotation),
                      "+0.5"/"-0.3" (saturation/contrast/brightness)
+             Easing: linear (default), ease-in, ease-out, ease-in-out — written
+                     as CapCut bezier handles (ease-out = the UI's "Cubic Out")
 
   transition <project> <id> <slug> [--duration <s>]
              Attach a transition to a video/image segment. Slug examples:
@@ -525,6 +528,8 @@ interface Flags {
   volume?: number;
   template?: string;
   drafts?: string;
+  // keyframe
+  easing?: string;
   // Phase 1 decorators
   duration?: string;
   off?: boolean;
@@ -726,7 +731,9 @@ function parseFlags(args: string[]): { positional: string[]; flags: Flags } {
     else if (a === "-v" || a === "--version") flags.version = true;
     else if (a === "-q" || a === "--quiet") flags.quiet = true;
     else if (a === "--batch") flags.batch = true;
-    else if ((a === "--track" || a === "--type") && i + 1 < args.length) {
+    else if (a === "--easing" && i + 1 < args.length) {
+      flags.easing = args[++i];
+    } else if ((a === "--track" || a === "--type") && i + 1 < args.length) {
       flags.track = args[++i];
     } else if (a === "--out" && i + 1 < args.length) {
       flags.out = args[++i];
@@ -1554,13 +1561,18 @@ function cmdKeyframe(draft: Draft, filePath: string, positional: string[], flags
     for (const line of raw.split("\n")) {
       const trimmed = line.trim();
       if (!trimmed) continue;
-      const op = JSON.parse(trimmed) as { property?: string; time?: string | number; value?: string | number };
+      const op = JSON.parse(trimmed) as {
+        property?: string;
+        time?: string | number;
+        value?: string | number;
+        easing?: string;
+      };
       if (!op.property || op.time === undefined || op.value === undefined) {
         die(`batch keyframe requires {property, time, value} per line; got: ${trimmed}`);
       }
       const timeUs = typeof op.time === "number" ? op.time : parseTimeInput(op.time);
       const value = parseKeyframeValue(op.property, String(op.value));
-      inputs.push({ property: op.property, timeUs, value });
+      inputs.push({ property: op.property, timeUs, value, easing: op.easing });
     }
   } else {
     const property = positional[3];
@@ -1576,7 +1588,7 @@ function cmdKeyframe(draft: Draft, filePath: string, positional: string[], flags
     inputs.push({ property, timeUs, value });
   }
 
-  const result = addKeyframes(draft, segId, inputs);
+  const result = addKeyframes(draft, segId, inputs, flags.easing);
   saveDraft(filePath, draft);
   out({ ok: true, id: result.segmentId, added: result.added, lists: result.lists }, flags);
 }

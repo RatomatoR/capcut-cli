@@ -140,7 +140,7 @@ const usages = {
   "add-video": "capcut add-video <project> <file-or-url> <start> [duration] [options]",
   "add-text": "capcut add-text <project> <start> <duration> <text> [options]",
   cut: "capcut cut <project> <start> <end> --out <path>",
-  keyframe: "capcut keyframe <project> <id> <property> <time> <value> | --batch",
+  keyframe: "capcut keyframe <project> <id> <property> <time> <value> [--easing <name>] | --batch",
   transition: "capcut transition <project> <id> <slug> [--duration <time>]",
   mask: "capcut mask <project> <id> <slug> [options] | --off",
   "bg-blur": "capcut bg-blur <project> <id> <level> | --off",
@@ -223,7 +223,13 @@ const optionsByCommand: Record<string, OptionSpec[]> = {
   ],
   "add-text": [TRACK_NAME, ...TEXT_STYLE.slice(0, 5)],
   cut: [OUT],
-  keyframe: [option("batch", ["--batch"], "boolean", "Read JSONL keyframes from stdin.")],
+  keyframe: [
+    option("batch", ["--batch"], "boolean", "Read JSONL keyframes from stdin."),
+    option("easing", ["--easing"], "enum", "Interpolation easing to adjacent keyframes.", {
+      values: ["linear", "ease-in", "ease-out", "ease-in-out"],
+      default: "linear",
+    }),
+  ],
   transition: [option("duration", ["--duration"], "time", "Transition duration.")],
   mask: [
     option("off", ["--off"], "boolean", "Remove masks."),
