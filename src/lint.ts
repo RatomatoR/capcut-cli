@@ -1,6 +1,9 @@
 import { existsSync, statSync } from "node:fs";
+import { imageAnimCatalogue } from "./decorators.js";
 import type { Draft, Segment, Track } from "./draft.js";
 import { extractText, findMaterial, getTracksByType } from "./draft.js";
+import { type Category, listEnum, type Namespace } from "./enums.js";
+import { effectCatalogue, filterCatalogue } from "./factory.js";
 
 export type Severity = "error" | "warning" | "info";
 
@@ -19,7 +22,12 @@ export interface LintIssue {
 
 // Codes that lintDraft can mechanically repair via fixDraft. Any issue whose
 // code appears here is emitted with fixable:true.
-const FIXABLE_CODES = new Set<string>(["cue-too-long", "caption-overlap"]);
+//
+// Deliberately NOT here: missing-material and missing-file (the only safe
+// repair would delete user timeline content or guess a path — report-only;
+// `relink` and `replace` are the intended repairs), and unknown-effect-slug
+// (repair would mean guessing which resource the author meant).
+const FIXABLE_CODES = new Set<string>(["cue-too-long", "caption-overlap", "caption-gap-too-small", "line-too-long"]);
 
 export interface LintOptions {
   maxCharsPerLine: number;
@@ -126,7 +134,84 @@ export function lintDraft(draft: Draft, opts: LintOptions = DEFAULT_LINT_OPTIONS
     }
   }
 
+  // Effect/filter/animation resource ids the bundled enum table doesn't know.
+  // CapCut silently drops unknown resource ids (GuanYixuan/pyCapCut#12), so
+  // surface them before the app eats them. Report-only: a repair would mean
+  // guessing which resource the author meant.
+  const known = knownEffectIds();
+  const pushUnknown = (kind: string, name: string, badId: string, materialId: string) => {
+    issues.push({
+      severity: "warning",
+      code: "unknown-effect-slug",
+      message: `${kind} "${name}" (material ${shortId(materialId)}) uses effect_id ${badId} not in the bundled enum table — CapCut may silently ignore it`,
+      fixable: FIXABLE_CODES.has("unknown-effect-slug"),
+      location: { material_id: materialId },
+    });
+  };
+  for (const mat of draft.materials.video_effects ?? []) {
+    const m = mat as { id?: string; name?: string; type?: string; effect_id?: string; resource_id?: string };
+    const effectId = typeof m.effect_id === "string" ? m.effect_id : "";
+    const resourceId = typeof m.resource_id === "string" ? m.resource_id : "";
+    if (!effectId && !resourceId) continue;
+    if (known.has(effectId) || known.has(resourceId)) continue;
+    pushUnknown(m.type ?? "effect", m.name ?? "?", effectId || resourceId, m.id ?? "");
+  }
+  for (const mat of draft.materials.material_animations ?? []) {
+    const container = mat as { id?: string; animations?: Array<Record<string, unknown>> };
+    for (const anim of container.animations ?? []) {
+      const a = anim as { id?: string; name?: string; type?: string; resource_id?: string };
+      const effectId = typeof a.id === "string" ? a.id : "";
+      const resourceId = typeof a.resource_id === "string" ? a.resource_id : "";
+      if (!effectId && !resourceId) continue;
+      if (known.has(effectId) || known.has(resourceId)) continue;
+      pushUnknown(`${a.type ?? "?"} animation`, a.name ?? "?", effectId || resourceId, container.id ?? "");
+    }
+  }
+
   return issues;
+}
+
+// Every effect_id/resource_id the CLI could have written into a draft: the
+// bundled enums.json (both namespaces, all categories) plus the inline
+// knossos-verified starter catalogues that enums.json doesn't carry.
+const ENUM_CATEGORIES: Category[] = [
+  "transitions",
+  "masks",
+  "image_intros",
+  "image_outros",
+  "image_combos",
+  "text_intros",
+  "text_outros",
+  "text_loop_anims",
+  "scene_effects",
+  "character_effects",
+  "audio_effects",
+  "fonts",
+  "filters",
+];
+
+let knownIdCache: Set<string> | null = null;
+
+function knownEffectIds(): Set<string> {
+  if (knownIdCache) return knownIdCache;
+  const ids = new Set<string>();
+  const add = (id?: string) => {
+    if (id) ids.add(id);
+  };
+  for (const namespace of ["capcut", "jianying"] as Namespace[]) {
+    for (const category of ENUM_CATEGORIES) {
+      for (const e of listEnum(category, namespace)) {
+        add(e.effect_id);
+        add(e.resource_id);
+      }
+    }
+  }
+  for (const e of [...effectCatalogue(), ...filterCatalogue(), ...imageAnimCatalogue()]) {
+    add(e.effect_id);
+    add(e.resource_id);
+  }
+  knownIdCache = ids;
+  return ids;
 }
 
 export function summarize(issues: LintIssue[]): { errors: number; warnings: number; info: number; total: number } {
@@ -193,6 +278,52 @@ export function fixDraft(draft: Draft, opts: LintOptions = DEFAULT_LINT_OPTIONS)
     }
   }
 
+  // Pass 3: widen under-min gaps by pulling the earlier caption's end back —
+  // the same mutation direction as pass 2, so it can never create a new
+  // overlap or move a start. Skipped when the shrink would erase the caption.
+  if (opts.minGapBetweenCaptionsUs > 0) {
+    for (const track of getTracksByType(draft, "text")) {
+      const segs = [...track.segments].sort((a, b) => a.target_timerange.start - b.target_timerange.start);
+      for (let i = 0; i < segs.length - 1; i++) {
+        const s = segs[i];
+        const next = segs[i + 1];
+        const end = s.target_timerange.start + s.target_timerange.duration;
+        const gap = next.target_timerange.start - end;
+        if (gap > 0 && gap < opts.minGapBetweenCaptionsUs) {
+          const newDuration = s.target_timerange.duration - (opts.minGapBetweenCaptionsUs - gap);
+          if (newDuration <= 0) continue;
+          const oldDuration = s.target_timerange.duration;
+          s.target_timerange.duration = newDuration;
+          if (s.source_timerange && s.source_timerange.duration === oldDuration) {
+            s.source_timerange.duration = newDuration;
+          }
+        }
+      }
+    }
+  }
+
+  // Pass 4: re-wrap over-long caption lines at word boundaries. Each break
+  // swaps one space for one newline — string length never changes, so the
+  // UTF-16LE byte offsets in the content's styles[] ranges stay valid. Words
+  // longer than the limit are never split and stay reported.
+  for (const track of getTracksByType(draft, "text")) {
+    for (const s of track.segments) {
+      const mat = findMaterial(draft.materials.texts, s.material_id);
+      if (!mat) continue;
+      let parsed: { text?: unknown };
+      try {
+        parsed = JSON.parse(mat.content);
+      } catch {
+        continue;
+      }
+      if (typeof parsed.text !== "string") continue;
+      const wrapped = rewrapText(parsed.text, opts.maxCharsPerLine);
+      if (wrapped === parsed.text) continue;
+      parsed.text = wrapped;
+      mat.content = JSON.stringify(parsed);
+    }
+  }
+
   const after = lintDraft(draft, opts);
   const remaining: LintIssue[] = [];
   const afterKeys = new Set(after.map(issueKey));
@@ -201,6 +332,34 @@ export function fixDraft(draft: Draft, opts: LintOptions = DEFAULT_LINT_OPTIONS)
   }
   for (const issue of after) remaining.push(issue);
   return { fixed, remaining };
+}
+
+// Re-wrap only lines that exceed maxChars; existing line breaks are kept.
+function rewrapText(text: string, maxChars: number): string {
+  return text
+    .split(/(\r?\n)/)
+    .map((part, i) => (i % 2 === 0 && part.length > maxChars ? wrapLine(part, maxChars) : part))
+    .join("");
+}
+
+// Greedy word wrap that only swaps spaces for newlines (1:1, length-neutral).
+// A multi-space separator keeps its extra spaces at the end of the broken line.
+function wrapLine(line: string, maxChars: number): string {
+  const tokens = line.split(/( +)/); // words at even indices, space runs at odd
+  let out = tokens[0] ?? "";
+  let lineLen = out.length;
+  for (let i = 1; i < tokens.length; i += 2) {
+    const sep = tokens[i];
+    const word = tokens[i + 1] ?? "";
+    if (lineLen > 0 && lineLen + sep.length + word.length > maxChars) {
+      out += `${sep.slice(0, -1)}\n${word}`;
+      lineLen = word.length;
+    } else {
+      out += sep + word;
+      lineLen += sep.length + word.length;
+    }
+  }
+  return out;
 }
 
 function issueKey(i: LintIssue): string {
