@@ -1,5 +1,6 @@
 import { spawnSync } from "node:child_process";
 import { existsSync } from "node:fs";
+import { probeMedia } from "./probe.js";
 
 /**
  * Deterministic scene-cut detection (ffmpeg scene filter, no AI).
@@ -39,6 +40,9 @@ export interface SceneDetectOptions {
   minGap?: number; // merge cuts closer than this many seconds (default 2)
   limit?: number; // keep only the N strongest cuts
   ffmpegCmd?: string; // ffmpeg binary (default "ffmpeg")
+  ffprobeCmd?: string; // ffprobe binary for video-stream duration (default "ffprobe")
+  timeoutMs?: number; // kill ffmpeg after this long (default 600s)
+  maxBufferBytes?: number; // ffmpeg stdout/stderr cap (default 64 MiB)
 }
 
 export interface SceneReport {
@@ -48,6 +52,10 @@ export interface SceneReport {
   limit: number | null;
   duration: number | null;
   duration_us: number | null;
+  // Where `duration` came from: the video stream itself (ffprobe — the value
+  // segments must end at), or the container header (the LONGEST stream; only
+  // used when ffprobe is unavailable, may overrun the video track).
+  duration_source: "video-stream" | "container" | null;
   cuts: Array<{ time: number; time_us: number; timecode: string; score: number }>;
   segments: SceneSegment[];
 }
@@ -136,11 +144,16 @@ export function buildSceneSegments(cuts: SceneCut[], duration: number | null): S
   });
 }
 
-/** Format seconds as hh:mm:ss.mmm. */
+/**
+ * Format seconds as hh:mm:ss.mmm. Rounds to milliseconds FIRST so the carry
+ * propagates through seconds/minutes/hours — 59.9996 must become
+ * "00:01:00.000", never the out-of-range "00:00:60.000".
+ */
 export function timecode(seconds: number): string {
-  const h = Math.floor(seconds / 3600);
-  const m = Math.floor((seconds % 3600) / 60);
-  const s = seconds % 60;
+  const totalMs = Math.round(seconds * 1000);
+  const h = Math.floor(totalMs / 3_600_000);
+  const m = Math.floor((totalMs % 3_600_000) / 60_000);
+  const s = (totalMs % 60_000) / 1000;
   const pad = (n: number) => n.toString().padStart(2, "0");
   return `${pad(h)}:${pad(m)}:${s.toFixed(3).padStart(6, "0")}`;
 }
@@ -158,6 +171,8 @@ export function detectScenes(videoPath: string, opts: SceneDetectOptions = {}): 
   const threshold = opts.threshold ?? 0.4;
   const minGap = opts.minGap ?? 2;
   const cmd = opts.ffmpegCmd ?? "ffmpeg";
+  const timeoutMs = opts.timeoutMs ?? 600_000;
+  const maxBuffer = opts.maxBufferBytes ?? 64 * 1024 * 1024;
   if (!existsSync(videoPath)) {
     throw new Error(`detect-scenes: video not found: ${videoPath}`);
   }
@@ -174,7 +189,7 @@ export function detectScenes(videoPath: string, opts: SceneDetectOptions = {}): 
   ];
   let r: ReturnType<typeof spawnSync>;
   try {
-    r = spawnSync(cmd, args, { encoding: "utf-8", timeout: 600_000, maxBuffer: 64 * 1024 * 1024 });
+    r = spawnSync(cmd, args, { encoding: "utf-8", timeout: timeoutMs, maxBuffer });
   } catch (e) {
     throw new Error(
       `detect-scenes: ffmpeg is unavailable at '${cmd}'. Install ffmpeg or pass --ffmpeg-cmd <path>. (${
@@ -183,14 +198,53 @@ export function detectScenes(videoPath: string, opts: SceneDetectOptions = {}): 
     );
   }
   if (r.error) {
-    throw new Error(`detect-scenes: ffmpeg is unavailable at '${cmd}'. Install ffmpeg or pass --ffmpeg-cmd <path>.`);
+    // spawnSync reports its own limits via r.error, not by throwing — a tripped
+    // timeout/buffer means ffmpeg RAN, so "install ffmpeg" would be a lie.
+    const code = (r.error as NodeJS.ErrnoException).code;
+    if (code === "ETIMEDOUT") {
+      throw new Error(
+        `detect-scenes: scene detection timed out after ${timeoutMs / 1000}s on ${videoPath}. ` +
+          "Try a shorter or lower-resolution input.",
+      );
+    }
+    if (code === "ENOBUFS") {
+      const mib = maxBuffer / (1024 * 1024);
+      const cap = mib >= 1 ? `${Math.round(mib)} MiB` : `${maxBuffer}-byte`;
+      throw new Error(
+        `detect-scenes: ffmpeg output exceeded the ${cap} buffer on ${videoPath}. ` +
+          "Raise --threshold to emit fewer cut candidates.",
+      );
+    }
+    throw new Error(
+      `detect-scenes: ffmpeg is unavailable at '${cmd}'. Install ffmpeg or pass --ffmpeg-cmd <path>. (${
+        code ?? r.error.message
+      })`,
+    );
   }
   const stderr = typeof r.stderr === "string" ? r.stderr : "";
   if (r.status !== 0) {
     throw new Error(`detect-scenes: ffmpeg failed on ${videoPath}.\n${stderr.slice(-600)}`);
   }
-  const duration = parseFfmpegDuration(stderr);
-  const cuts = limitCuts(mergeCloseCuts(parseSceneCuts(stderr), minGap), opts.limit);
+  // Segment ends must come from the VIDEO stream's duration. The container
+  // header ("Duration:") is the LONGEST stream — when the audio track outlasts
+  // the video (common in screen recordings), it would point the final segment
+  // past the last video frame. ffprobe reads the real stream metadata; the
+  // centisecond-rounded header is only a fallback when ffprobe is unavailable,
+  // and duration_source says which one the report used.
+  const probe = probeMedia(videoPath, opts.ffprobeCmd ?? "ffprobe");
+  let duration: number | null;
+  let durationSource: SceneReport["duration_source"];
+  if (probe?.videoDurationUs != null) {
+    duration = probe.videoDurationUs / US;
+    durationSource = "video-stream";
+  } else {
+    duration = probe?.durationUs != null ? probe.durationUs / US : parseFfmpegDuration(stderr);
+    durationSource = duration === null ? null : "container";
+  }
+  // Drop cuts at/after the known end ONCE, so cuts[] and segments[] agree
+  // (buildSceneSegments applies the same bound internally).
+  const detected = parseSceneCuts(stderr).filter((c) => duration === null || c.time < duration);
+  const cuts = limitCuts(mergeCloseCuts(detected, minGap), opts.limit);
   return {
     video: videoPath,
     threshold,
@@ -198,6 +252,7 @@ export function detectScenes(videoPath: string, opts: SceneDetectOptions = {}): 
     limit: opts.limit ?? null,
     duration,
     duration_us: duration === null ? null : Math.round(duration * US),
+    duration_source: durationSource,
     cuts: cuts.map((c) => ({
       time: c.time,
       time_us: Math.round(c.time * US),

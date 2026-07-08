@@ -29,7 +29,8 @@ export interface MediaProbe {
   width: number | null;
   height: number | null;
   rotation: number;
-  durationUs: number | null;
+  durationUs: number | null; // container duration (the LONGEST stream)
+  videoDurationUs: number | null; // the video stream's own duration, when the container reports it
   fps: number | null;
   hasVideo: boolean;
   hasAudio: boolean;
@@ -76,11 +77,13 @@ export function parseMediaProbe(json: string): MediaProbe | null {
 
   const format = (parsed.format ?? {}) as Record<string, unknown>;
   const durationSeconds = fraction(format.duration) ?? fraction(video?.duration) ?? fraction(audio?.duration);
+  const videoDurationSeconds = fraction(video?.duration);
   return {
     width,
     height,
     rotation,
     durationUs: durationSeconds === null ? null : Math.round(durationSeconds * 1_000_000),
+    videoDurationUs: videoDurationSeconds === null ? null : Math.round(videoDurationSeconds * 1_000_000),
     fps: fraction(video?.avg_frame_rate) ?? fraction(video?.r_frame_rate),
     hasVideo: Boolean(video),
     hasAudio: Boolean(audio),
