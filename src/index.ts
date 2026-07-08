@@ -39,6 +39,8 @@ import { detectEncryption } from "./decrypt.js";
 import { type DoctorCheck, draftDirs, runDoctor } from "./doctor.js";
 import type { Draft, Segment, Track } from "./draft.js";
 import {
+  assertTargetsUnchangedOnDisk,
+  commitDraftTargets,
   extractStyleRanges,
   extractText,
   findDraft,
@@ -319,11 +321,17 @@ Maintenance & inspection:
   fixture    <project> --out <dir>              Build a shareable, redacted compatibility bundle
              (timeline JSON only, no media; home paths + emails redacted) to
              attach to a version-support issue like #35.
-  sync-timelines <project> [--apply]            Reconcile timeline mirrors (template-2.tmp,
+  sync-timelines <project-dir> [--apply]        Reconcile timeline mirrors (template-2.tmp,
              draft_info.json) that drifted from draft_content.json, so a CLI
-             edit is honored by CapCut >= 8.7 (issue #35). Prints the plan by
-             default; writes only with --apply. Refuses to write while the
-             editor is running unless --force-write.
+             edit is honored by CapCut >= 8.7 (issue #35). Prints the plan
+             (with each file's mtime) by default; --apply rewrites ONLY the
+             drifted mirrors — draft_content.json and in-sync mirrors are
+             never touched — with a .bak per file written. Refuses to write
+             while the editor is running, or when draft_content.json is older
+             than a drifted mirror (the app may have saved newer edits there),
+             unless --force-write. Accepts the project directory or its
+             draft_content.json path. Exits 2 when a mirror exists that the
+             CLI cannot reconcile (binary/encrypted template-2.tmp).
 
 Animate:
   keyframe   <project> <id> <property> <time> <value> [--easing <name>]
@@ -2512,12 +2520,17 @@ function cmdDiagnose(projectPath: string | undefined, flags: Flags): void {
 // `sync-timelines` repairs a draft whose mirror files (template-2.tmp /
 // draft_info.json — including the pre-open mirror's stale GUID) drifted from
 // draft_content.json, the CapCut >= 8.7 "CLI edit silently ignored" failure
-// (issue #35 / #39). draft_content.json is canonical; the write reuses
-// saveDraft so every readable target is rewritten transactionally inside its
-// own envelope. Plan-only by default; --apply writes.
-function cmdSyncTimelines(projectPath: string | undefined, flags: Flags): void {
-  if (!projectPath) die("Usage: capcut sync-timelines <project> [--apply] [--force-write]");
-  const plan = planTimelineSync(projectPath);
+// (issue #35 / #39). draft_content.json is canonical and treated as a
+// read-only source: --apply rewrites EXACTLY the drifted mirrors inside their
+// own envelopes (atomic temp+rename, one .bak per file written) and never
+// touches draft_content.json or in-sync mirrors. Because CapCut >= 8.7 writes
+// the mirrors on save, a canonical file OLDER than a drifted mirror may mean
+// the mirror holds newer app edits — --apply refuses that direction unless
+// --force-write. Plan-only by default; --apply writes. Returns the exit code:
+// 0 ok, 1 via die(), 2 when a mirror exists that the CLI cannot reconcile.
+function cmdSyncTimelines(projectPath: string | undefined, flags: Flags): number {
+  if (!projectPath) die("Usage: capcut sync-timelines <project-dir> [--apply] [--force-write]");
+  const { plan, canonicalDraft, canonicalCandidate, driftedCandidates } = planTimelineSync(projectPath);
 
   const warnUnreconcilable = (): void => {
     if (flags.quiet) return;
@@ -2525,31 +2538,49 @@ function cmdSyncTimelines(projectPath: string | undefined, flags: Flags): void {
       process.stderr.write(`WARNING ${u.file}: ${u.reason}. ${u.workaround}\n`);
     }
   };
+  const staleCanonicalWarning = (): string => {
+    const canonicalTarget = plan.targets.find((target) => target.state === "canonical");
+    const newer = plan.targets
+      .filter((target) => plan.newer_mirrors.includes(target.file))
+      .map((target) => `${target.file} (${target.mtime})`)
+      .join(", ");
+    return (
+      `draft_content.json (${canonicalTarget?.mtime}) is OLDER than the drifted mirror(s) ${newer}. ` +
+      "CapCut >= 8.7 writes these mirrors on save, so they may hold newer app edits that this repair would roll back."
+    );
+  };
 
   if (plan.in_sync) {
-    const message =
-      plan.unreconcilable.length === 0
-        ? "All readable timeline targets already agree — nothing to write."
-        : `Readable timeline targets agree, but ${plan.unreconcilable.map((u) => u.file).join(", ")} cannot be reconciled by the CLI — see unreconcilable.`;
-    out({ ok: plan.unreconcilable.length === 0, applied: false, message, ...plan }, flags);
+    const ok = plan.unreconcilable.length === 0;
+    const message = ok
+      ? "All readable timeline targets already agree — nothing to write."
+      : `Readable timeline targets agree, but ${plan.unreconcilable.map((u) => u.file).join(", ")} cannot be reconciled by the CLI — see unreconcilable.`;
+    out({ ok, applied: false, message, ...plan, in_sync: ok }, flags);
     if (!flags.quiet) process.stderr.write(`${message}\n`);
     warnUnreconcilable();
-    return;
+    return ok ? 0 : 2;
   }
 
   if (!flags.apply) {
     const message = `Would rewrite ${plan.drifted.join(", ")} from draft_content.json. Re-run with --apply to write.`;
     out({ ok: true, applied: false, message, ...plan }, flags);
     if (!flags.quiet) {
+      const canonicalTarget = plan.targets.find((target) => target.state === "canonical");
+      process.stderr.write(`plan: canonical draft_content.json (mtime ${canonicalTarget?.mtime})\n`);
       for (const target of plan.targets) {
         if (target.state !== "drifted") continue;
         const guidNote = target.guid_drifted ? ` [stale GUID ${target.guid} -> canonical]` : "";
-        process.stderr.write(`plan: rewrite ${target.file} (envelope: ${target.envelope})${guidNote}\n`);
+        process.stderr.write(
+          `plan: rewrite ${target.file} (envelope: ${target.envelope}, mtime ${target.mtime})${guidNote}\n`,
+        );
+      }
+      if (plan.canonical_stale) {
+        process.stderr.write(`WARNING: ${staleCanonicalWarning()} --apply will refuse without --force-write.\n`);
       }
       warnUnreconcilable();
       process.stderr.write("Plan only — re-run with --apply to write.\n");
     }
-    return;
+    return 0;
   }
 
   if (!flags.forceWrite) {
@@ -2560,35 +2591,65 @@ function cmdSyncTimelines(projectPath: string | undefined, flags: Flags): void {
           "or pass --force-write if you accept that the app may overwrite the change.",
       );
     }
-  }
-
-  const { draft, filePath } = loadDraft(plan.canonical_path);
-  saveDraft(filePath, draft); // no-ops under --dry-run
-
-  if (!isDryRun()) {
-    const verify = planTimelineSync(projectPath);
-    if (!verify.in_sync) {
+    if (plan.canonical_stale) {
       die(
-        `sync-timelines wrote the targets but they still diverge (${verify.drifted.join(", ")}). ` +
-          "Restore from the .bak files and report this.",
+        `${staleCanonicalWarning()} Back up the project, review the plan (capcut sync-timelines ${projectPath}), ` +
+          "and pass --force-write only if draft_content.json is really the timeline you want to keep.",
       );
     }
   }
+
+  if (isDryRun()) {
+    const message = `Dry run — plan only. Would rewrite ${plan.drifted.join(", ")} from draft_content.json; nothing was written.`;
+    out(
+      {
+        ok: true,
+        applied: false,
+        message,
+        project_dir: plan.project_dir,
+        canonical: plan.canonical,
+        would_reconcile: plan.drifted,
+        reconciled: [],
+        backups: [],
+        unreconcilable: plan.unreconcilable,
+        in_sync: false,
+      },
+      flags,
+    );
+    if (!flags.quiet) process.stderr.write(`${message}\n`);
+    warnUnreconcilable();
+    return 0;
+  }
+
+  // Optimistic concurrency: neither the canonical source nor a mirror we are
+  // about to rewrite may have changed on disk between the plan read and now.
+  if (!flags.forceWrite) assertTargetsUnchangedOnDisk([canonicalCandidate, ...driftedCandidates]);
+  commitDraftTargets(driftedCandidates, canonicalDraft);
+
+  const verify = planTimelineSync(projectPath);
+  if (!verify.plan.in_sync) {
+    die(
+      `sync-timelines wrote the targets but they still diverge (${verify.plan.drifted.join(", ")}). ` +
+        "Restore from the .bak files and report this.",
+    );
+  }
+  const ok = plan.unreconcilable.length === 0;
   out(
     {
-      ok: true,
-      applied: !isDryRun(),
+      ok,
+      applied: true,
       project_dir: plan.project_dir,
       canonical: plan.canonical,
       reconciled: plan.drifted,
-      backups: isDryRun() ? [] : plan.drifted.map((file) => `${file}.bak`),
+      backups: plan.drifted.map((file) => `${file}.bak`),
       unreconcilable: plan.unreconcilable,
-      in_sync: !isDryRun(),
+      in_sync: ok,
     },
     flags,
   );
   if (!flags.quiet) process.stderr.write(`Reconciled from draft_content.json: ${plan.drifted.join(", ")}\n`);
   warnUnreconcilable();
+  return ok ? 0 : 2;
 }
 
 function cmdTemplates(flags: Flags): void {
@@ -2930,7 +2991,7 @@ const SUMMARIES: Record<string, string> = {
   doctor: "Environment preflight (Node, whisper, API key, project dir).",
   diagnose: "Inspect canonical draft files, divergence, and editor-write safety.",
   "sync-timelines":
-    "Reconcile timeline mirrors (template-2.tmp, draft_info.json) drifted from draft_content.json (plan by default; --apply writes).",
+    "Reconcile drifted timeline mirrors (template-2.tmp, draft_info.json) from a read-only draft_content.json (plan with mtimes by default; --apply rewrites only the drifted mirrors).",
   prune: "Remove materials no segment references.",
   relink: "Repair broken media paths (--dir or --from/--to).",
   timeline: "Show the track/segment layout (JSON, or -H ASCII bars).",
@@ -3361,8 +3422,7 @@ async function main(): Promise<void> {
   // `sync-timelines` must see drifted/unreadable siblings itself — loadDraft would
   // pick template-2.tmp as canonical on modern storage, the opposite of the repair.
   if (cmd === "sync-timelines") {
-    cmdSyncTimelines(projectPath, flags);
-    process.exit(0);
+    process.exit(cmdSyncTimelines(projectPath, flags));
   }
 
   // `restore` copies a backup/snapshot back over the draft — no loadDraft/parse needed.
