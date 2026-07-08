@@ -98,55 +98,109 @@ export function cueWords(cue: SubtitleCue): SubtitleWord[] {
 // Karaoke captions (`caption --karaoke`) store one segment PER WORD: full
 // phrase text, word-timed segment, one style range highlighting that word.
 // A run of same-text segments whose highlighted ranges tile the phrase's
-// words in order collapses back into a single cue with real word timings.
+// words IN ORDER exactly once collapses back into a single cue with real
+// word timings. A phrase repeated back-to-back (chorus lines) yields the
+// same text 2N times; the highlight ranges cycle, and each cycle restart
+// begins a NEW run — one collapsed cue per repetition.
 export function collapseKaraokeRuns(entries: SegmentCue[]): SubtitleCue[] {
   const cues: SubtitleCue[] = [];
   let i = 0;
   while (i < entries.length) {
     let j = i + 1;
     while (j < entries.length && entries[j].text === entries[i].text) j++;
-    const run = entries.slice(i, j);
-    const words = karaokeWords(run);
-    if (words) {
-      cues.push({
-        startUs: run[0].startUs,
-        endUs: Math.max(...run.map((e) => e.endUs)),
-        text: run[0].text,
-        words,
-      });
-    } else {
-      for (const e of run) cues.push({ startUs: e.startUs, endUs: e.endUs, text: e.text });
-    }
+    collapseStretch(entries.slice(i, j), cues);
     i = j;
   }
   return cues;
+}
+
+interface TokenRange {
+  word: string;
+  byteStart: number;
+  byteEnd: number;
+}
+
+function tokenRanges(text: string): TokenRange[] {
+  return [...text.matchAll(/\S+/g)].map((tok) => {
+    const at = tok.index ?? 0;
+    return {
+      word: tok[0],
+      byteStart: toUtf16Bytes(text, at),
+      byteEnd: toUtf16Bytes(text, at + tok[0].length),
+    };
+  });
+}
+
+function matchesToken(entry: SegmentCue, tok: TokenRange): boolean {
+  return (entry.styleRanges ?? []).some((r) => r[0] === tok.byteStart && r[1] === tok.byteEnd);
+}
+
+// Collapse one maximal stretch of consecutive same-text segments. Greedy:
+// at each position, try to consume one full karaoke repetition (highlight
+// ranges matching token 0..n-1 in order, non-decreasing start times).
+// Segments that cannot join a valid run but still highlight exactly one
+// word keep that word's own timing — word mode must never re-interpolate
+// the full phrase into a single word's timeslot.
+function collapseStretch(stretch: SegmentCue[], cues: SubtitleCue[]): void {
+  const text = stretch[0].text;
+  const tokens = tokenRanges(text);
+  let i = 0;
+  while (i < stretch.length) {
+    if (tokens.length >= 2 && i + tokens.length <= stretch.length) {
+      let k = 0;
+      while (
+        k < tokens.length &&
+        matchesToken(stretch[i + k], tokens[k]) &&
+        (k === 0 || stretch[i + k].startUs >= stretch[i + k - 1].startUs)
+      ) {
+        k++;
+      }
+      if (k === tokens.length) {
+        const run = stretch.slice(i, i + k);
+        cues.push({
+          startUs: run[0].startUs,
+          endUs: Math.max(...run.map((e) => e.endUs)),
+          text,
+          words: run.map((e, w) => ({ word: tokens[w].word, startUs: e.startUs, endUs: e.endUs })),
+        });
+        i += k;
+        continue;
+      }
+    }
+    cues.push(orphanCue(stretch, stretch[i], tokens));
+    i++;
+  }
+}
+
+// A same-text segment that did not fit a valid run. When the stretch is
+// karaoke-shaped (>= 2 same-text segments) and the segment highlights
+// exactly one word, keep that word as the segment's only timed word so
+// word-granularity export emits it once at its real time instead of
+// exploding the full phrase into the segment's timerange. A lone segment
+// (or one without a single-word highlight) stays an ordinary cue.
+function orphanCue(stretch: SegmentCue[], entry: SegmentCue, tokens: TokenRange[]): SubtitleCue {
+  const cue: SubtitleCue = { startUs: entry.startUs, endUs: entry.endUs, text: entry.text };
+  if (stretch.length < 2) return cue;
+  const matched = tokens.filter((tok) => matchesToken(entry, tok));
+  if (matched.length === 1) {
+    cue.words = [{ word: matched[0].word, startUs: entry.startUs, endUs: entry.endUs }];
+  }
+  return cue;
 }
 
 function toUtf16Bytes(text: string, codeUnitIdx: number): number {
   return Buffer.from(text.slice(0, codeUnitIdx), "utf16le").length;
 }
 
-function karaokeWords(run: SegmentCue[]): SubtitleWord[] | null {
-  if (run.length < 2) return null;
-  const text = run[0].text;
-  const tokens = [...text.matchAll(/\S+/g)];
-  if (tokens.length !== run.length) return null;
-  const words: SubtitleWord[] = [];
-  for (let k = 0; k < run.length; k++) {
-    const tok = tokens[k];
-    const at = tok.index ?? 0;
-    const byteStart = toUtf16Bytes(text, at);
-    const byteEnd = toUtf16Bytes(text, at + tok[0].length);
-    const ranges = run[k].styleRanges ?? [];
-    if (!ranges.some((r) => r[0] === byteStart && r[1] === byteEnd)) return null;
-    if (k > 0 && run[k].startUs < run[k - 1].startUs) return null;
-    words.push({ word: tok[0], startUs: run[k].startUs, endUs: run[k].endUs });
-  }
-  return words;
-}
-
 export function renderSrt(cues: Array<{ startUs: number; endUs: number; text: string }>): string {
   return cues.map((c, i) => `${i + 1}\n${srtTime(c.startUs)} --> ${srtTime(c.endUs)}\n${c.text}\n`).join("\n");
+}
+
+// WebVTT cue payload: '<' opens a tag and '&' a character reference, so raw
+// text must be escaped or everything after a bare '<' is swallowed. Applied
+// to cue text only — never to timing lines or inline timestamp tags.
+function vttEscape(text: string): string {
+  return text.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
 }
 
 // Word granularity emits ONE cue per phrase with inline word timestamps
@@ -154,20 +208,29 @@ export function renderSrt(cues: Array<{ startUs: number; endUs: number; text: st
 // timestamp is omitted: the first word is active from the cue start.
 export function renderVtt(cues: SubtitleCue[], wordTimestamps: boolean): string {
   const blocks = cues.map((c) => {
-    const text = wordTimestamps ? vttKaraokeText(c) : c.text;
+    const text = wordTimestamps ? vttKaraokeText(c) : vttEscape(c.text);
     return `${vttTime(c.startUs)} --> ${vttTime(c.endUs)}\n${text}\n`;
   });
   return `WEBVTT\n\n${blocks.join("\n")}`;
 }
 
+// Inline timestamps must be strictly increasing and strictly greater than
+// the cue start (WebVTT spec), or players ignore the tag. Coincident word
+// starts (zero-duration Whisper words) share one timestamp group: the
+// duplicate tag is skipped and the word joins the previous group.
 function vttKaraokeText(cue: SubtitleCue): string {
   const words = cueWords(cue);
-  if (words.length === 0) return cue.text;
-  return (
-    words[0].word +
-    words
-      .slice(1)
-      .map((w) => ` <${vttTime(w.startUs)}>${w.word}`)
-      .join("")
-  );
+  if (words.length === 0) return vttEscape(cue.text);
+  let lastMs = Math.round(cue.startUs / 1000);
+  let text = vttEscape(words[0].word);
+  for (const w of words.slice(1)) {
+    const ms = Math.round(w.startUs / 1000);
+    if (ms > lastMs) {
+      text += ` <${vttTime(w.startUs)}>${vttEscape(w.word)}`;
+      lastMs = ms;
+    } else {
+      text += ` ${vttEscape(w.word)}`;
+    }
+  }
+  return text;
 }

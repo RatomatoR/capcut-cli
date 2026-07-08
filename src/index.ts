@@ -539,7 +539,8 @@ Subtitles (Phase 3):
                --granularity <line|word>  One cue per caption (default: line)
                                           or per word (karaoke).
                --format <srt|vtt>         SRT (default) or WebVTT. WebVTT word
-                                          cues use inline <timestamps>.
+                                          cues use inline <timestamps>; WebVTT
+                                          cue text escapes & < > as entities.
              Word timings are real where the draft stores them (caption
              --karaoke word segments); elsewhere they are interpolated within
              each cue, weighted by word character length.
