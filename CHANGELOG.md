@@ -2,6 +2,12 @@
 
 All notable changes to capcut-cli are documented here. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); the project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.13.2] — 2026-07-08
+
+### Documentation
+
+- Wider README hero / `media/og-card.png` banner (1280x640, 2:1) replacing the 0.13.1 card. Docs-only release; no code changes.
+
 ## [0.13.1] — 2026-07-08
 
 ### Documentation
