@@ -1148,6 +1148,24 @@ export function effectSlugs(): string[] {
   return Object.keys(VIDEO_EFFECTS);
 }
 
+// Exposed so lint's unknown-effect-slug check recognises the inline starter
+// catalogue: these effect_ids are knossos-verified but absent from enums.json.
+export function effectCatalogue(): Array<{
+  slug: string;
+  member: string;
+  name: string;
+  effect_id: string;
+  resource_id: string;
+}> {
+  return Object.entries(VIDEO_EFFECTS).map(([slug, meta]) => ({
+    slug,
+    member: meta.name,
+    name: meta.name,
+    effect_id: meta.effect_id,
+    resource_id: meta.resource_id,
+  }));
+}
+
 export interface AddEffectOptions {
   slug: string;
   start: number;
