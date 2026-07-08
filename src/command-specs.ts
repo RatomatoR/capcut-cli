@@ -89,6 +89,12 @@ const TRACK_NAME = option("track_name", ["--track-name"], "string", "Target trac
 const OUT = option("out", ["--out"], "path", "Output path.");
 const FFPROBE = option("ffprobe_cmd", ["--ffprobe-cmd"], "path", "ffprobe binary.");
 const STYLE_REF = option("style_ref", ["--style-ref"], "id", "Copy styling from this text segment.");
+const PRESET = option(
+  "preset",
+  ["--preset"],
+  "path",
+  "Apply a make-preset style preset; explicit flags override preset values.",
+);
 const TEXT_STYLE: OptionSpec[] = [
   option("font_size", ["--font-size"], "number", "Font size."),
   option("color", ["--color"], "string", "Text colour as #RRGGBB."),
@@ -132,7 +138,7 @@ const usages = {
   volume: "capcut volume <project> <id> <level>",
   trim: "capcut trim <project> <id> <start> <duration>",
   opacity: "capcut opacity <project> <id> <alpha>",
-  "export-srt": "capcut export-srt <project>",
+  "export-srt": "capcut export-srt <project> [options]",
   materials: "capcut materials <project> [--type <type>]",
   segment: "capcut segment <project> <id>",
   material: "capcut material <project> <id>",
@@ -140,7 +146,7 @@ const usages = {
   "add-video": "capcut add-video <project> <file-or-url> <start> [duration] [options]",
   "add-text": "capcut add-text <project> <start> <duration> <text> [options]",
   cut: "capcut cut <project> <start> <end> --out <path>",
-  keyframe: "capcut keyframe <project> <id> <property> <time> <value> | --batch",
+  keyframe: "capcut keyframe <project> <id> <property> <time> <value> [--easing <name>] | --batch",
   transition: "capcut transition <project> <id> <slug> [--duration <time>]",
   mask: "capcut mask <project> <id> <slug> [options] | --off",
   "bg-blur": "capcut bg-blur <project> <id> <level> | --off",
@@ -156,6 +162,7 @@ const usages = {
   "add-effect": "capcut add-effect <project> <slug> <start> <duration> [options]",
   "save-template": "capcut save-template <project> <id> <name> --out <path>",
   "apply-template": "capcut apply-template <project> <template> <start> <duration> [text] [options]",
+  "make-preset": "capcut make-preset <project> <text-segment-id> --out <preset.json>",
   batch: "capcut batch <project> [--continue-on-error] < operations.jsonl",
   "import-srt": "capcut import-srt <project> <srt-or-> [options]",
   "import-ass": "capcut import-ass <project> <ass-or-> [options]",
@@ -178,6 +185,7 @@ const usages = {
   doctor: "capcut doctor",
   diagnose: "capcut diagnose <project> [--bundle <report.json>]",
   fixture: "capcut fixture <project> --out <dir>",
+  "sync-timelines": "capcut sync-timelines <project-dir> [--apply]",
   restore: "capcut restore <project> [--step <number> | --list]",
   serve: "capcut serve [--queue <path>] [options]",
   decrypt: "capcut decrypt <project-or-file>",
@@ -187,6 +195,7 @@ const usages = {
   quickstart: "capcut quickstart <name> [--video <f>] [--audio <f>] [--srt <f>] [--drafts <dir>]",
   compile: "capcut compile <spec.json> [--out <draftdir>] [--check | --plan]",
   render: "capcut render <project> [--out <preview.mp4>] [options]",
+  "detect-scenes": "capcut detect-scenes <video> [options]",
 } as const satisfies Record<string, string>;
 
 export type CommandName = keyof typeof usages;
@@ -220,9 +229,21 @@ const optionsByCommand: Record<string, OptionSpec[]> = {
     option("no_probe", ["--no-probe"], "boolean", "Disable automatic media probing."),
     FFPROBE,
   ],
-  "add-text": [TRACK_NAME, ...TEXT_STYLE.slice(0, 5)],
+  "add-text": [TRACK_NAME, ...TEXT_STYLE.slice(0, 5), PRESET],
   cut: [OUT],
-  keyframe: [option("batch", ["--batch"], "boolean", "Read JSONL keyframes from stdin.")],
+  keyframe: [
+    option("batch", ["--batch"], "boolean", "Read JSONL keyframes from stdin."),
+    option(
+      "easing",
+      ["--easing"],
+      "enum",
+      "Interpolation easing to adjacent keyframes. Needs an adjacent keyframe on the same property; a lone eased keyframe stays linear (warns).",
+      {
+        values: ["linear", "ease-in", "ease-out", "ease-in-out"],
+        default: "linear",
+      },
+    ),
+  ],
   transition: [option("duration", ["--duration"], "time", "Transition duration.")],
   mask: [
     option("off", ["--off"], "boolean", "Remove masks."),
@@ -236,7 +257,7 @@ const optionsByCommand: Record<string, OptionSpec[]> = {
     option("round_corner", ["--round-corner"], "number", "Rectangle corner radius."),
   ],
   "bg-blur": [option("off", ["--off"], "boolean", "Remove background blur.")],
-  "text-style": TEXT_STYLE,
+  "text-style": [...TEXT_STYLE, PRESET],
   "text-anim": [
     option("intro", ["--intro"], "enum", "Intro animation."),
     option("outro", ["--outro"], "enum", "Outro animation."),
@@ -266,6 +287,7 @@ const optionsByCommand: Record<string, OptionSpec[]> = {
   ],
   "add-effect": [TRACK_NAME, option("params", ["--params"], "json", "Effect parameter array.")],
   "save-template": [OUT],
+  "make-preset": [OUT],
   "apply-template": [
     option("x", ["--x"], "number", "Horizontal position override."),
     option("y", ["--y"], "number", "Vertical position override."),
@@ -277,6 +299,13 @@ const optionsByCommand: Record<string, OptionSpec[]> = {
       "boolean",
       "Commit only successful operations and exit 1 if any fail.",
     ),
+  ],
+  "export-srt": [
+    option("granularity", ["--granularity"], "enum", "Cue granularity: one cue per caption or per word.", {
+      values: ["line", "word"],
+      default: "line",
+    }),
+    option("format", ["--format"], "enum", "Subtitle output format.", { values: ["srt", "vtt"], default: "srt" }),
   ],
   "import-srt": [
     TRACK_NAME,
@@ -305,6 +334,7 @@ const optionsByCommand: Record<string, OptionSpec[]> = {
     option("max_gap_ms", ["--max-gap-ms"], "number", "Maximum gap inside a karaoke cue."),
     TRACK_NAME,
     STYLE_REF,
+    PRESET,
   ],
   translate: [
     option("to", ["--to"], "string", "Target language."),
@@ -336,6 +366,14 @@ const optionsByCommand: Record<string, OptionSpec[]> = {
   concat: [OUT],
   diagnose: [option("bundle", ["--bundle"], "path", "Write a redacted JSON diagnostic bundle.")],
   fixture: [option("out", ["--out"], "path", "Output directory for the sanitized bundle.")],
+  "sync-timelines": [
+    option(
+      "apply",
+      ["--apply"],
+      "boolean",
+      "Rewrite only the drifted mirror files from draft_content.json (default: print the plan only).",
+    ),
+  ],
   "replace-media": [
     option("retime", ["--retime"], "boolean", "Fit the segment to the new clip instead of preserving in/out."),
     option("ffprobe_cmd", ["--ffprobe-cmd"], "path", "ffprobe binary for duration/dimension detection."),
@@ -384,8 +422,53 @@ const optionsByCommand: Record<string, OptionSpec[]> = {
     option("burn_captions", ["--burn-captions"], "boolean", "Burn captions."),
     option("all_video_tracks", ["--all-video-tracks"], "boolean", "Composite every video track."),
   ],
+  "detect-scenes": [
+    option("threshold", ["--threshold"], "number", "Scene-change score a cut must exceed (0..1).", { default: 0.4 }),
+    option("min_gap", ["--min-gap"], "number", "Merge cuts closer than this many seconds, keeping the strongest.", {
+      default: 2,
+    }),
+    option("limit", ["--limit"], "number", "Keep only the N strongest cuts."),
+    option("ffmpeg_cmd", ["--ffmpeg-cmd"], "path", "FFmpeg binary."),
+    option(
+      "ffprobe_cmd",
+      ["--ffprobe-cmd"],
+      "path",
+      "ffprobe binary for the video-stream duration (falls back to the container duration without it).",
+    ),
+    option("json", ["--json"], "boolean", "Force JSON output (the default; overrides -H)."),
+  ],
 };
 optionsByCommand["image-anim"] = optionsByCommand["text-anim"];
+
+// Flags introduced in this release. parseFlags is a single flat global pass, so
+// a value-consuming flag added here would otherwise be stripped from ANY
+// command's free-text positionals (e.g. an add-text body containing the
+// substring "--limit 5"). These are scoped to the commands that declare them:
+//   --easing            -> keyframe
+//   --granularity, --format -> export-srt
+//   --preset            -> add-text, text-style, caption
+//   --apply             -> sync-timelines
+//   --threshold, --min-gap, --limit, --json -> detect-scenes
+// Everywhere else they fall through to the positional stream verbatim, matching
+// pre-release behaviour where these tokens were unknown and preserved.
+export const RELEASE_SCOPED_FLAGS: ReadonlySet<string> = new Set([
+  "--apply",
+  "--easing",
+  "--format",
+  "--granularity",
+  "--json",
+  "--limit",
+  "--min-gap",
+  "--preset",
+  "--threshold",
+]);
+
+/** True when `command` declares `flag` among its command-specific options. */
+export function commandDeclaresFlag(command: string | undefined, flag: string): boolean {
+  if (command === undefined) return false;
+  const opts = optionsByCommand[command];
+  return opts?.some((o) => o.flags.includes(flag)) ?? false;
+}
 
 const mutating = new Set([
   "set-text",
@@ -426,6 +509,7 @@ const mutating = new Set([
   "prune",
   "relink",
   "replace-media",
+  "sync-timelines",
   "concat",
   "restore",
   "export",
@@ -436,10 +520,10 @@ const mutating = new Set([
 
 const arrayOutputs = new Set(["tracks", "segments", "texts", "materials", "enums", "templates"]);
 const textOutputs = new Set(["export-srt", "completions"]);
-const fileOutputs = new Set(["render", "translate", "compile", "cut", "save-template"]);
+const fileOutputs = new Set(["render", "translate", "compile", "cut", "save-template", "make-preset"]);
 
 function inferType(name: string): ArgumentType {
-  if (/project|file|path|dir|template|audio|image|srt|ass|spec|draft/i.test(name)) return "path";
+  if (/project|file|path|dir|template|audio|video|image|srt|ass|spec|draft/i.test(name)) return "path";
   if (/^(id|segment-id|resource-id)$/.test(name)) return "id";
   if (/start|end|duration|offset|time/.test(name)) return "time";
   if (/level|multiplier|alpha|value/.test(name)) return "number";
@@ -472,8 +556,8 @@ export function buildCommandSpecs(commands: readonly string[], summaries: Record
   return commands.map((name) => {
     const usage = usages[name as CommandName] ?? `capcut ${name} <project>`;
     const prerequisites: string[] = [];
-    if (name === "render") prerequisites.push("ffmpeg");
-    if (["add-video", "add-audio", "compile"].includes(name)) prerequisites.push("ffprobe (optional)");
+    if (name === "render" || name === "detect-scenes") prerequisites.push("ffmpeg");
+    if (["add-video", "add-audio", "compile", "detect-scenes"].includes(name)) prerequisites.push("ffprobe (optional)");
     if (name === "caption") prerequisites.push("whisper CLI");
     if (name === "translate") prerequisites.push("ANTHROPIC_API_KEY or --api-key");
     if (["add-video", "add-audio"].includes(name)) prerequisites.push("network for Wikimedia URLs only");

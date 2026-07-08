@@ -57,8 +57,9 @@ Per-keyframe interpolation curve to the NEXT keyframe in the list:
 - `"Hold"` — step (no interpolation)
 - `"Smooth"` — ease in/out
 - `"Beizer"` — custom bezier (additional `value_bezier_control_points` field)
+- `"FreeCurveInOut"` — bezier via `left_control` / `right_control` handles; this is what the CapCut UI writes when an easing preset (Cubic In / Cubic Out / …) is applied
 
-`capcut-cli keyframe` writes `"Line"`. Hand-editing is the only path to others today.
+`capcut-cli keyframe` writes `"Line"` by default. With `--easing ease-in|ease-out|ease-in-out` it writes the `"FreeCurveInOut"` encoding: handle `x` is a fixed ratio of the interval to the adjacent keyframe (ease-in `+0.42`, ease-out `+0.32`/`-0.4`, ease-in-out `±0.42`, in microseconds), handle `y` is `0` except ease-out's outgoing handle, which is `round(0.94 × Δvalue, 6)`. Validated against a CapCut UI oracle capture (Davidb-2107/capcut-cli-david).
 
 ### ⚠️ The alpha-keyframes-don't-render trap
 

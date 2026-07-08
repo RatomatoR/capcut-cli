@@ -100,10 +100,26 @@ describe("probe: full media metadata", () => {
     assert.equal(parsed.width, 1080);
     assert.equal(parsed.height, 1920);
     assert.equal(parsed.durationUs, 12_500_000);
+    // no per-stream duration in this fixture -> video-stream duration unknown
+    assert.equal(parsed.videoDurationUs, null);
     assert.ok(Math.abs(parsed.fps - 29.97) < 0.01);
     assert.equal(parsed.audioChannels, 2);
     assert.equal(parsed.videoCodec, "h264");
     assert.equal(parsed.audioCodec, "aac");
+  });
+
+  it("reads the video stream's own duration separately from the container's", () => {
+    const parsed = parseMediaProbe(
+      JSON.stringify({
+        streams: [
+          { codec_type: "video", codec_name: "h264", width: 160, height: 120, duration: "6.000000" },
+          { codec_type: "audio", codec_name: "aac", channels: 1, duration: "8.000000" },
+        ],
+        format: { duration: "8.000000" },
+      }),
+    );
+    assert.equal(parsed.durationUs, 8_000_000, "container duration = longest stream");
+    assert.equal(parsed.videoDurationUs, 6_000_000, "video stream duration must not include the audio tail");
   });
 });
 

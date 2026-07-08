@@ -3,6 +3,7 @@ import { basename, dirname, isAbsolute, resolve } from "node:path";
 import {
   addKeyframes,
   addTransition,
+  resolveEasing,
   setTextRanges,
   setTextStyle,
   type TextRangeInput,
@@ -114,7 +115,7 @@ export type CompileOperation =
       trackName?: string;
       jianying?: boolean;
     }
-  | { op: "keyframe"; target: string; property: string; time: number; value: number }
+  | { op: "keyframe"; target: string; property: string; time: number; value: number; easing?: string }
   | { op: "audio-fade"; target: string; fadeIn?: number; fadeOut?: number }
   | { op: "text-style"; target: string; style: TextStyleOptions }
   | { op: "text-ranges"; target: string; ranges: TextRangeInput[] }
@@ -250,6 +251,19 @@ function validateSpec(spec: unknown): asserts spec is CompileSpec {
     if (["transition", "keyframe", "audio-fade", "text-style", "text-ranges"].includes(op.op as string)) {
       if (typeof op.target !== "string" || !refs.has(op.target)) {
         throw new Error(`compile: operations[${index}].target must reference a declared item ref`);
+      }
+    }
+    // Pre-flight the keyframe easing with the exact validation the real write
+    // performs, so --check rejects what compile would reject and a bad easing
+    // never fails AFTER initDraft seeded the draft directory (orphan dir).
+    if (op.op === "keyframe" && op.easing !== undefined) {
+      if (typeof op.easing !== "string") {
+        throw new Error(`compile: operations[${index}].easing must be a string`);
+      }
+      try {
+        resolveEasing(op.easing);
+      } catch (e) {
+        throw new Error(`compile: operations[${index}]: ${(e as Error).message}`);
       }
     }
   }
@@ -438,9 +452,16 @@ export function compileDraft(spec: CompileSpec, opts: CompileOptions): CompileRe
         segments++;
         break;
       case "keyframe":
-        addKeyframes(draft, resolveRef(operation.target), [
-          { property: operation.property, timeUs: Math.round(operation.time * US), value: operation.value },
-        ]);
+        warnings.push(
+          ...addKeyframes(draft, resolveRef(operation.target), [
+            {
+              property: operation.property,
+              timeUs: Math.round(operation.time * US),
+              value: operation.value,
+              easing: operation.easing,
+            },
+          ]).warnings,
+        );
         break;
       case "audio-fade":
         setAudioFade(draft, resolveRef(operation.target), {

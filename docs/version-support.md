@@ -18,7 +18,7 @@ Run `capcut version <project>` for schema flags and `capcut diagnose <project> -
 |---|---|---|---|
 | 6.2.8 | fixture-tested | supported | Canonical fixture in `test/draft_content.json`; full command suite. |
 | 6.5–8.0 | expected-compatible | unverified | No committed app-created fixtures. Enum/schema changes appear additive. |
-| 8.7 Windows | reported + synthetic-tested | adapter shipped, real validation pending | Issue #35 reports that `draft_content.json` edits may be ignored in favour of `template-2.tmp` / `draft_meta_info.json`. v0.11 discovers nested/string JSON timeline envelopes, selects modern storage, synchronizes every readable target, and provides `diagnose --bundle` and `fixture --out` (one-command sanitized bundle). A reporter-provided real folder is still required before marking this fixture-tested. |
+| 8.7 Windows | reported + synthetic-tested | adapter shipped, real validation pending | Issue #35 reports that `draft_content.json` edits may be ignored in favour of `template-2.tmp` / `draft_meta_info.json`. v0.11 discovers nested/string JSON timeline envelopes, selects modern storage, synchronizes every readable target, and provides `diagnose --bundle` and `fixture --out` (one-command sanitized bundle). v0.13 adds `sync-timelines` to reconcile an already-drifted mirror (plan by default, `--apply` to write); `diagnose` names it as the remedy. A reporter-provided real folder is still required before marking this fixture-tested. |
 | 9.x | expected-compatible | unverified | `common_masks` may coexist with legacy mask fields. Use `version`, `diagnose`, and `migrate`; do not treat this row as desktop-app verification. |
 
 There is no blanket “6.x–9.x tested” claim. Only versions with committed fixtures receive that label.

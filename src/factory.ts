@@ -425,8 +425,9 @@ function buildTextContent(text: string, fontSize: number, color: [number, number
 }
 
 // Fields on a text material that describe *styling* (not content or timing).
-// Used by import-srt --style-ref to mirror an existing caption's look.
-const STYLE_FIELDS = [
+// Used by import-srt --style-ref to mirror an existing caption's look, and by
+// make-preset (src/preset.ts) as the set of material fields a preset carries.
+export const STYLE_FIELDS = [
   "alignment",
   "font_size",
   "text_color",
@@ -1146,6 +1147,24 @@ const VIDEO_EFFECTS: Record<string, VideoEffectMeta> = {
 
 export function effectSlugs(): string[] {
   return Object.keys(VIDEO_EFFECTS);
+}
+
+// Exposed so lint's unknown-effect-slug check recognises the inline starter
+// catalogue: these effect_ids are knossos-verified but absent from enums.json.
+export function effectCatalogue(): Array<{
+  slug: string;
+  member: string;
+  name: string;
+  effect_id: string;
+  resource_id: string;
+}> {
+  return Object.entries(VIDEO_EFFECTS).map(([slug, meta]) => ({
+    slug,
+    member: meta.name,
+    name: meta.name,
+    effect_id: meta.effect_id,
+    resource_id: meta.resource_id,
+  }));
 }
 
 export interface AddEffectOptions {

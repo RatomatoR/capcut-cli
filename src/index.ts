@@ -7,7 +7,14 @@ import { fileURLToPath } from "node:url";
 import { parseAss } from "./ass.js";
 import { captionDraft } from "./caption.js";
 import { removeChroma, setChroma } from "./chroma.js";
-import { buildCommandSpecs, completionWords, GLOBAL_OPTION_SPECS, renderCommandIndex } from "./command-specs.js";
+import {
+  buildCommandSpecs,
+  commandDeclaresFlag,
+  completionWords,
+  GLOBAL_OPTION_SPECS,
+  RELEASE_SCOPED_FLAGS,
+  renderCommandIndex,
+} from "./command-specs.js";
 import { type CompileSpec, compileDraft, parseSpec, planCompile } from "./compile.js";
 import type {
   ImageAnimOptions,
@@ -39,6 +46,9 @@ import { detectEncryption } from "./decrypt.js";
 import { type DoctorCheck, draftDirs, runDoctor } from "./doctor.js";
 import type { Draft, Segment, Track } from "./draft.js";
 import {
+  assertTargetsUnchangedOnDisk,
+  commitDraftTargets,
+  extractStyleRanges,
   extractText,
   findDraft,
   findMaterial,
@@ -82,15 +92,17 @@ import {
 import { sanitizeDraftBundle } from "./fixture.js";
 import { DEFAULT_LINT_OPTIONS, fixDraft, type LintOptions, lintDraft, lintExitCode, summarize } from "./lint.js";
 import { migrateDraft } from "./migrate.js";
+import { applyTextPreset, extractTextPreset, loadPresetFile, type TextStylePreset } from "./preset.js";
 import { probeMedia } from "./probe.js";
 import { runQuickstart } from "./quickstart.js";
 import { buildRenderPlan, renderDraft } from "./render.js";
 import { replaceMedia } from "./replace.js";
+import { detectScenes, timecode } from "./scenes.js";
 import { serveQueue } from "./serve.js";
 import { addSfx } from "./sfx.js";
-import { parseSrt } from "./srt.js";
-import { diagnoseDraftStore, discoverDraftStore } from "./store.js";
-import { formatDuration, formatTime, parseTimeInput, srtTime } from "./time.js";
+import { collapseKaraokeRuns, cueWords, parseSrt, renderSrt, renderVtt, type SegmentCue } from "./srt.js";
+import { diagnoseDraftStore, discoverDraftStore, editorProcesses, planTimelineSync } from "./store.js";
+import { formatDuration, formatTime, parseTimeInput } from "./time.js";
 import { translateDraft } from "./translate.js";
 import { detectVersion } from "./version.js";
 
@@ -132,6 +144,7 @@ export const COMMANDS = [
   "add-effect",
   "save-template",
   "apply-template",
+  "make-preset",
   "templates",
   "batch",
   "import-srt",
@@ -156,6 +169,7 @@ export const COMMANDS = [
   "doctor",
   "diagnose",
   "fixture",
+  "sync-timelines",
   "restore",
   "serve",
   "decrypt",
@@ -164,6 +178,7 @@ export const COMMANDS = [
   "quickstart",
   "compile",
   "render",
+  "detect-scenes",
 ] as const;
 
 const HELP = `capcut-cli -- fast edits to CapCut projects
@@ -194,10 +209,16 @@ Overview (start here):
                --max-cue-secs <n>  Caption duration cap (default 7)
                --min-gap-ms <n>    Min gap between captions (default 0)
                --no-check-paths    Skip local-file existence checks
-               --fix               Auto-repair mechanically-fixable issues
-                                   (cue-too-long, caption-overlap). Combine
-                                   with --dry-run to preview without writing.
-             Exit codes: 0 clean · 1 warnings · 2 errors
+               --fix               Auto-repair issues stamped fixable:true
+                                   (cue-too-long, caption-overlap,
+                                   caption-gap-too-small, line-too-long).
+                                   Never shrinks a caption below 100ms and
+                                   never splits words; instances it cannot
+                                   repair are reported with fixable:false.
+                                   Combine with --dry-run to preview.
+             Exit codes: 0 clean · 1 warnings · 2 errors. Info-level issues
+             (e.g. unknown-effect-slug, which store-downloaded effects from
+             the CapCut app trigger legitimately) never affect the exit code.
 
 Browse:
   segments   <project> [--track <type>]         List segments with timing
@@ -236,6 +257,28 @@ Preview:
                --ffmpeg-cmd <p>   ffmpeg binary (default ffmpeg)
                --dry-run          Print the ffmpeg plan; do not execute
 
+Analyze:
+  detect-scenes <video> [--threshold <n>] [--min-gap <s>] [--limit <n>]
+             Detect scene-change cut points in a raw video file (ffmpeg scene
+             filter — deterministic, no draft needed). Prints each cut as
+             seconds + hh:mm:ss.mmm + score, plus the resulting segment list
+             in seconds AND microseconds (the draft-native unit), ready to
+             seed a long-form-to-shorts split: feed the segments into
+             "capcut compile" (one clip per segment) or "capcut cut".
+             The final segment ends at the VIDEO stream's real duration
+             (read via ffprobe), so it never overruns the video when a
+             longer audio track pads the container; without ffprobe it
+             falls back to the container duration and duration_source
+             says so. Detection only — it never touches a draft. Options:
+               --threshold <n>    Scene score a cut must exceed, 0..1 (default 0.4)
+               --min-gap <s>      Merge cuts closer than <s> seconds, keeping
+                                  the strongest (default 2)
+               --limit <n>        Keep only the <n> strongest cuts
+               --ffmpeg-cmd <p>   ffmpeg binary (default ffmpeg)
+               --ffprobe-cmd <p>  ffprobe binary for the video-stream
+                                  duration (default ffprobe)
+               --json             Force JSON output (the default; overrides -H)
+
 Add:
   add-audio  <project> <file-or-wikimedia-url> <start> <duration> [options]
              Add an audio segment (VO, music, SFX). URLs to wikipedia.org /
@@ -264,6 +307,8 @@ Add:
                --align <0|1|2>    Left/center/right (default: 1)
                --x <n> --y <n>    Position (-1 to 1, default: 0,0)
                --track-name <s>   Track name (default: "text")
+               --preset <file>    Apply a make-preset style preset; explicit
+                                  flags override preset values
 
 Edit:
   set-text   <project> <id> <text>              Change text content
@@ -273,7 +318,7 @@ Edit:
   volume     <project> <id> <level>             Set volume (0.0-1.0)
   trim       <project> <id> <start> <duration>  Trim segment (times in seconds)
   opacity    <project> <id> <alpha>             Set opacity (0.0-1.0)
-  export-srt <project>                          Export subtitles to SRT
+  export-srt <project> [options]                Export subtitles to SRT/WebVTT
   batch      <project>                          Run multiple edits from stdin (JSONL)
   restore    <project> [--step N | --list]      Undo writes (latest .bak, or N writes back; --list history)
 
@@ -295,16 +340,35 @@ Maintenance & inspection:
   fixture    <project> --out <dir>              Build a shareable, redacted compatibility bundle
              (timeline JSON only, no media; home paths + emails redacted) to
              attach to a version-support issue like #35.
+  sync-timelines <project-dir> [--apply]        Reconcile timeline mirrors (template-2.tmp,
+             draft_info.json) that drifted from draft_content.json, so a CLI
+             edit is honored by CapCut >= 8.7 (issue #35). Prints the plan
+             (with each file's mtime) by default; --apply rewrites ONLY the
+             drifted mirrors — draft_content.json and in-sync mirrors are
+             never touched — with a .bak per file written. Refuses to write
+             while the editor is running, or when draft_content.json is older
+             than a drifted mirror (the app may have saved newer edits there),
+             unless --force-write. Accepts the project directory or its
+             draft_content.json path. Exits 2 when a mirror exists that the
+             CLI cannot reconcile (binary/encrypted template-2.tmp).
 
 Animate:
-  keyframe   <project> <id> <property> <time> <value>
+  keyframe   <project> <id> <property> <time> <value> [--easing <name>]
              Add a keyframe to a segment. Single-shot.
-  keyframe   <project> <id> --batch
-             Read JSONL from stdin; each line = {"property","time","value"}.
+  keyframe   <project> <id> --batch [--easing <name>]
+             Read JSONL from stdin; each line = {"property","time","value"}
+             plus optional "easing" overriding --easing per line.
              Properties: position_x, position_y, rotation, scale_x, scale_y,
                          uniform_scale, alpha, saturation, contrast, brightness, volume
              Values: "1.5", "50%" (alpha/volume), "45deg" (rotation),
                      "+0.5"/"-0.3" (saturation/contrast/brightness)
+             Easing: linear (default), ease-in, ease-out, ease-in-out — written
+                     as CapCut bezier handles (ease-out = the UI's "Cubic Out").
+                     Easing needs an adjacent keyframe on the same property: a
+                     lone eased keyframe stays linear (warns) and picks up the
+                     curve when its pair is added with an easing. A linear
+                     insert between eased keyframes resets the neighbours'
+                     facing handles, so both new sub-segments render linear.
 
   transition <project> <id> <slug> [--duration <s>]
              Attach a transition to a video/image segment. Slug examples:
@@ -324,6 +388,8 @@ Animate:
                --border-width --border-color --border-alpha
                --bg-color --bg-alpha --bg-style --bg-round-radius
                --bg-width --bg-height --bg-h-offset --bg-v-offset
+               --preset <file>  Apply a make-preset style preset; explicit
+                                flags override preset values
   text-ranges <project> <id> --styles @path.json  |  --styles '<inline-json>'
              Multi-colour text — write multiple styles to one text segment.
              JSON array of { "start": int, "end": int,
@@ -392,7 +458,16 @@ Templates:
   apply-template <project> <template.json> <start> <duration> [text override]
              Stamp a template into a project at the given time
              Options: --x <n> --y <n> (override position)
-  templates  
+  make-preset <project> <text-segment-id> --out <preset.json>
+             Extract the text styling of a segment as a reusable preset
+             (font, colors, shadow/border/background box, alignment/position,
+             bubble, text ranges). Apply with --preset on add-text,
+             text-style, or caption; explicit CLI flags override preset
+             values (including per-range colours/sizes for the span they
+             cover). A preset applies in full: a preset WITHOUT text ranges
+             resets the target to one uniform style, clearing any existing
+             karaoke/highlight ranges. Honors --dry-run (no file written).
+  templates
              Show available templates in the template library.
              Use -H for a table.
 
@@ -418,6 +493,8 @@ Caption (v0.4 — real subtitle objects, fixes import-srt mimicry):
                --language <code>    ISO code or "auto" (default)
                --track-name <s>     Caption track name (default: "captions")
                --style-ref <seg-id> Mirror styling from existing text segment
+               --preset <file>      Base style from a make-preset file
+                                    (same coverage as --style-ref)
 
 Translate (v0.4 — multi-language draft clone):
   translate  <project> --to <lang> --out <path> [options]
@@ -477,6 +554,17 @@ Subtitles (Phase 3):
                --alpha --vertical --shadow --shadow-color --shadow-distance
                --border-width --border-color --border-alpha
                --bg-color --bg-alpha --bg-style --bg-round-radius --bg-h-offset
+  export-srt <project> [options]
+             Export subtitles to stdout.
+             Options:
+               --granularity <line|word>  One cue per caption (default: line)
+                                          or per word (karaoke).
+               --format <srt|vtt>         SRT (default) or WebVTT. WebVTT word
+                                          cues use inline <timestamps>; WebVTT
+                                          cue text escapes & < > as entities.
+             Word timings are real where the draft stores them (caption
+             --karaoke word segments); elsewhere they are interpolated within
+             each cue, weighted by word character length.
 
 Navigation: info → tracks/materials → segments → segment <id>
             info → materials --type X → material <id>
@@ -508,6 +596,8 @@ interface Flags {
   volume?: number;
   template?: string;
   drafts?: string;
+  // keyframe
+  easing?: string;
   // Phase 1 decorators
   duration?: string;
   off?: boolean;
@@ -572,6 +662,8 @@ interface Flags {
   font?: string;
   // text-ranges
   styles?: string;
+  // make-preset / --preset
+  preset?: string;
   // wikimedia
   forceLicense?: boolean;
   // lint
@@ -592,6 +684,9 @@ interface Flags {
   maxGapMs?: number;
   noProbe?: boolean;
   ffprobeCmd?: string;
+  // export-srt
+  granularity?: "line" | "word";
+  format?: "srt" | "vtt";
   // quickstart
   video?: string;
   srt?: string;
@@ -633,6 +728,12 @@ interface Flags {
   continueOnError?: boolean;
   check?: boolean;
   plan?: boolean;
+  apply?: boolean;
+  // detect-scenes
+  threshold?: number;
+  minGap?: number;
+  limit?: number;
+  json?: boolean;
 }
 
 // Map CLI enum flags -> enums.json category key. Order matters for HELP text.
@@ -699,13 +800,26 @@ function fishCompletion(): string {
 function parseFlags(args: string[]): { positional: string[]; flags: Flags } {
   const positional: string[] = [];
   const flags: Flags = { human: false, quiet: false, batch: false };
+  // The subcommand is the first non-flag token (matches how dispatch reads
+  // positional[0]). Used to scope flags added in this release to the commands
+  // that declare them.
+  const command = args.find((a) => a.length > 0 && !a.startsWith("-"));
   for (let i = 0; i < args.length; i++) {
     const a = args[i];
+    // A flag added in this release that the current command does not declare is
+    // left in the positional stream verbatim, so a value-consuming flag can
+    // never strip tokens from another command's free-text arguments.
+    if (RELEASE_SCOPED_FLAGS.has(a) && !commandDeclaresFlag(command, a)) {
+      positional.push(a);
+      continue;
+    }
     if (a === "-H" || a === "--human") flags.human = true;
     else if (a === "-v" || a === "--version") flags.version = true;
     else if (a === "-q" || a === "--quiet") flags.quiet = true;
     else if (a === "--batch") flags.batch = true;
-    else if ((a === "--track" || a === "--type") && i + 1 < args.length) {
+    else if (a === "--easing" && i + 1 < args.length) {
+      flags.easing = args[++i];
+    } else if ((a === "--track" || a === "--type") && i + 1 < args.length) {
       flags.track = args[++i];
     } else if (a === "--out" && i + 1 < args.length) {
       flags.out = args[++i];
@@ -835,6 +949,8 @@ function parseFlags(args: string[]): { positional: string[]; flags: Flags } {
       flags.jianying = true;
     } else if (a === "--styles" && i + 1 < args.length) {
       flags.styles = args[++i];
+    } else if (a === "--preset" && i + 1 < args.length) {
+      flags.preset = args[++i];
     } else if (a === "--force-license") {
       flags.forceLicense = true;
     } else if (a === "--max-chars" && i + 1 < args.length) {
@@ -871,6 +987,18 @@ function parseFlags(args: string[]): { positional: string[]; flags: Flags } {
       flags.maxGapMs = parseFloat(args[++i]);
     } else if (a === "--no-probe") {
       flags.noProbe = true;
+    } else if (a === "--granularity" && i + 1 < args.length) {
+      const granularity = args[++i];
+      if (!["line", "word"].includes(granularity)) {
+        throw new Error("--granularity must be line|word");
+      }
+      flags.granularity = granularity as Flags["granularity"];
+    } else if (a === "--format" && i + 1 < args.length) {
+      const format = args[++i];
+      if (!["srt", "vtt"].includes(format)) {
+        throw new Error("--format must be srt|vtt");
+      }
+      flags.format = format as Flags["format"];
     } else if (a === "--ffprobe-cmd" && i + 1 < args.length) {
       flags.ffprobeCmd = args[++i];
     } else if (a === "--video" && i + 1 < args.length) {
@@ -935,6 +1063,16 @@ function parseFlags(args: string[]): { positional: string[]; flags: Flags } {
       flags.check = true;
     } else if (a === "--plan") {
       flags.plan = true;
+    } else if (a === "--apply") {
+      flags.apply = true;
+    } else if (a === "--threshold" && i + 1 < args.length) {
+      flags.threshold = parseFloat(args[++i]);
+    } else if (a === "--min-gap" && i + 1 < args.length) {
+      flags.minGap = parseFloat(args[++i]);
+    } else if (a === "--limit" && i + 1 < args.length) {
+      flags.limit = parseInt(args[++i], 10);
+    } else if (a === "--json") {
+      flags.json = true;
     } else {
       const hit = ENUM_FLAG_MAP.find((f) => f.flag === a);
       if (hit) {
@@ -1226,20 +1364,38 @@ function cmdOpacity(draft: Draft, filePath: string, segId: string, alphaStr: str
   out({ ok: true, id: result.segment.id, old_opacity: old, new_opacity: alpha }, flags);
 }
 
-function cmdExportSrt(draft: Draft): void {
+function cmdExportSrt(draft: Draft, flags: Flags): void {
+  const granularity = flags.granularity ?? "line";
+  const format = flags.format ?? "srt";
   const textTracks = getTracksByType(draft, "text");
-  const entries: Array<{ start: number; end: number; text: string }> = [];
+  const cues: SegmentCue[] = [];
   for (const track of textTracks) {
+    const entries: SegmentCue[] = [];
     for (const seg of track.segments) {
       const mat = findMaterial(draft.materials.texts, seg.material_id);
       if (!mat) continue;
       const t = seg.target_timerange;
-      entries.push({ start: t.start, end: t.start + t.duration, text: extractText(mat.content) });
+      entries.push({
+        startUs: t.start,
+        endUs: t.start + t.duration,
+        text: extractText(mat.content),
+        styleRanges: extractStyleRanges(mat.content),
+      });
     }
+    // Word granularity: karaoke runs (one word-timed segment per word) carry
+    // real word timings; other cues fall back to length-weighted interpolation.
+    if (granularity === "word") cues.push(...collapseKaraokeRuns(entries));
+    else cues.push(...entries);
   }
-  entries.sort((a, b) => a.start - b.start);
-  const srt = entries.map((e, i) => `${i + 1}\n${srtTime(e.start)} --> ${srtTime(e.end)}\n${e.text}\n`).join("\n");
-  process.stdout.write(srt);
+  cues.sort((a, b) => a.startUs - b.startUs);
+  if (format === "vtt") {
+    process.stdout.write(renderVtt(cues, granularity === "word"));
+  } else if (granularity === "word") {
+    const words = cues.flatMap((c) => cueWords(c).map((w) => ({ startUs: w.startUs, endUs: w.endUs, text: w.word })));
+    process.stdout.write(renderSrt(words));
+  } else {
+    process.stdout.write(renderSrt(cues));
+  }
 }
 
 // --- Discovery & drill-down ---
@@ -1455,11 +1611,37 @@ async function cmdAddVideo(draft: Draft, filePath: string, positional: string[],
   out(payload, flags);
 }
 
+// Explicit CLI flags beat preset values: stamp the flag values over a clone of
+// the preset before applying, so the apply step is the single writer.
+function presetWithFlagOverrides(preset: TextStylePreset, flags: Flags): TextStylePreset {
+  const p = structuredClone(preset);
+  if (flags.fontSize !== undefined) p.style.font_size = flags.fontSize;
+  if (flags.color !== undefined) p.style.text_color = flags.color;
+  if (flags.align !== undefined) p.style.alignment = flags.align;
+  if (p.transform) {
+    if (flags.x !== undefined) p.transform.x = flags.x;
+    if (flags.y !== undefined) p.transform.y = flags.y;
+  }
+  // --color / --font-size cover the whole cue, so they must also win over any
+  // preset text_ranges (karaoke/highlight blocks). Otherwise applyTextPreset's
+  // setTextRanges pass runs LAST and re-stamps the preset's per-range colours
+  // and sizes over the flag values just mirrored into styles[0] — silently
+  // defeating the documented "explicit flags override preset values" contract.
+  if (p.text_ranges && p.text_ranges.length > 0) {
+    for (const r of p.text_ranges) {
+      if (flags.color !== undefined) r.font_color = flags.color;
+      if (flags.fontSize !== undefined) r.font_size = flags.fontSize;
+    }
+  }
+  return p;
+}
+
 function cmdAddText(draft: Draft, filePath: string, positional: string[], flags: Flags): void {
   const startStr = positional[2];
   const durationStr = positional[3];
   const text = positional.slice(4).join(" ");
   if (!text) die("Missing text. Usage: capcut add-text <project> <start> <duration> <text>");
+  const preset = flags.preset ? loadPresetFile(flags.preset) : null;
   const start = parseTimeInput(startStr);
   const duration = parseTimeInput(durationStr);
   const opts: AddTextOptions = {
@@ -1474,6 +1656,7 @@ function cmdAddText(draft: Draft, filePath: string, positional: string[], flags:
     trackName: flags.trackName,
   };
   const result = addText(draft, filePath, opts);
+  if (preset) applyTextPreset(draft, result.segmentId, presetWithFlagOverrides(preset, flags));
   saveDraft(filePath, draft);
   out(
     {
@@ -1484,6 +1667,7 @@ function cmdAddText(draft: Draft, filePath: string, positional: string[], flags:
       text,
       start_us: start,
       duration_us: duration,
+      ...(flags.preset ? { preset: flags.preset } : {}),
     },
     flags,
   );
@@ -1501,13 +1685,18 @@ function cmdKeyframe(draft: Draft, filePath: string, positional: string[], flags
     for (const line of raw.split("\n")) {
       const trimmed = line.trim();
       if (!trimmed) continue;
-      const op = JSON.parse(trimmed) as { property?: string; time?: string | number; value?: string | number };
+      const op = JSON.parse(trimmed) as {
+        property?: string;
+        time?: string | number;
+        value?: string | number;
+        easing?: string;
+      };
       if (!op.property || op.time === undefined || op.value === undefined) {
         die(`batch keyframe requires {property, time, value} per line; got: ${trimmed}`);
       }
       const timeUs = typeof op.time === "number" ? op.time : parseTimeInput(op.time);
       const value = parseKeyframeValue(op.property, String(op.value));
-      inputs.push({ property: op.property, timeUs, value });
+      inputs.push({ property: op.property, timeUs, value, easing: op.easing });
     }
   } else {
     const property = positional[3];
@@ -1523,9 +1712,19 @@ function cmdKeyframe(draft: Draft, filePath: string, positional: string[], flags
     inputs.push({ property, timeUs, value });
   }
 
-  const result = addKeyframes(draft, segId, inputs);
+  const result = addKeyframes(draft, segId, inputs, flags.easing);
   saveDraft(filePath, draft);
-  out({ ok: true, id: result.segmentId, added: result.added, lists: result.lists }, flags);
+  for (const warning of result.warnings) process.stderr.write(`Warning: ${warning}\n`);
+  out(
+    {
+      ok: true,
+      id: result.segmentId,
+      added: result.added,
+      lists: result.lists,
+      ...(result.warnings.length ? { warnings: result.warnings } : {}),
+    },
+    flags,
+  );
 }
 
 function cmdTransition(draft: Draft, filePath: string, positional: string[], flags: Flags): void {
@@ -1618,10 +1817,20 @@ function cmdTextStyle(draft: Draft, filePath: string, positional: string[], flag
     bgHOffset: flags.bgHOffset,
     bgVOffset: flags.bgVOffset,
   };
+  const applied: string[] = [];
+  let materialId = "";
+  if (flags.preset) {
+    const presetResult = applyTextPreset(draft, segId, loadPresetFile(flags.preset));
+    materialId = presetResult.materialId;
+    applied.push(...presetResult.applied);
+  }
+  // Explicit flags run after the preset so they override its values.
   const result = setTextStyle(draft, segId, opts);
-  if (result.applied.length === 0) die(`No styling flags provided. See 'capcut --help'.`);
+  materialId = result.materialId;
+  applied.push(...result.applied);
+  if (applied.length === 0) die(`No styling flags provided. See 'capcut --help'.`);
   saveDraft(filePath, draft);
-  out({ ok: true, id: segId, material_id: result.materialId, applied: result.applied }, flags);
+  out({ ok: true, id: segId, material_id: materialId, applied }, flags);
 }
 
 function cmdTextAnim(draft: Draft, filePath: string, positional: string[], flags: Flags): void {
@@ -1837,6 +2046,20 @@ function cmdApplyTemplate(draft: Draft, filePath: string, positional: string[], 
     },
     flags,
   );
+}
+
+// Read-only sibling of save-template: extracts a text segment's styling as a
+// portable preset JSON for --preset on add-text / text-style / caption.
+function cmdMakePreset(draft: Draft, positional: string[], flags: Flags): void {
+  const segId = positional[2];
+  if (!flags.out)
+    die("Missing --out <path>. Usage: capcut make-preset <project> <text-segment-id> --out <preset.json>");
+  const { preset, segmentId, materialId, captured } = extractTextPreset(draft, segId);
+  // Honor --dry-run: preview the extraction without touching the preset file
+  // (which may be an existing preset the user only meant to inspect).
+  const written = !isDryRun();
+  if (written) writeFileSync(flags.out, JSON.stringify(preset, null, 2), "utf-8");
+  out({ ok: true, segment_id: segmentId, material_id: materialId, captured, out: flags.out, written }, flags);
 }
 
 // --- Phase 4: multi-style text ranges ---
@@ -2099,6 +2322,7 @@ function cmdCaption(draft: Draft, filePath: string, flags: Flags): void {
     language: flags.language,
     trackName: flags.trackName,
     styleRef: flags.styleRef,
+    preset: flags.preset ? loadPresetFile(flags.preset) : undefined,
     karaoke: flags.karaoke,
     maxWords: flags.maxWords,
     maxChars: flags.maxChars,
@@ -2354,6 +2578,141 @@ function cmdDiagnose(projectPath: string | undefined, flags: Flags): void {
   } else {
     out({ ...report, bundle: flags.bundle ?? null }, flags);
   }
+}
+
+// `sync-timelines` repairs a draft whose mirror files (template-2.tmp /
+// draft_info.json — including the pre-open mirror's stale GUID) drifted from
+// draft_content.json, the CapCut >= 8.7 "CLI edit silently ignored" failure
+// (issue #35 / #39). draft_content.json is canonical and treated as a
+// read-only source: --apply rewrites EXACTLY the drifted mirrors inside their
+// own envelopes (atomic temp+rename, one .bak per file written) and never
+// touches draft_content.json or in-sync mirrors. Because CapCut >= 8.7 writes
+// the mirrors on save, a canonical file OLDER than a drifted mirror may mean
+// the mirror holds newer app edits — --apply refuses that direction unless
+// --force-write. Plan-only by default; --apply writes. Returns the exit code:
+// 0 ok, 1 via die(), 2 when a mirror exists that the CLI cannot reconcile.
+function cmdSyncTimelines(projectPath: string | undefined, flags: Flags): number {
+  if (!projectPath) die("Usage: capcut sync-timelines <project-dir> [--apply] [--force-write]");
+  const { plan, canonicalDraft, canonicalCandidate, driftedCandidates } = planTimelineSync(projectPath);
+
+  const warnUnreconcilable = (): void => {
+    if (flags.quiet) return;
+    for (const u of plan.unreconcilable) {
+      process.stderr.write(`WARNING ${u.file}: ${u.reason}. ${u.workaround}\n`);
+    }
+  };
+  const staleCanonicalWarning = (): string => {
+    const canonicalTarget = plan.targets.find((target) => target.state === "canonical");
+    const newer = plan.targets
+      .filter((target) => plan.newer_mirrors.includes(target.file))
+      .map((target) => `${target.file} (${target.mtime})`)
+      .join(", ");
+    return (
+      `draft_content.json (${canonicalTarget?.mtime}) is OLDER than the drifted mirror(s) ${newer}. ` +
+      "CapCut >= 8.7 writes these mirrors on save, so they may hold newer app edits that this repair would roll back."
+    );
+  };
+
+  if (plan.in_sync) {
+    const ok = plan.unreconcilable.length === 0;
+    const message = ok
+      ? "All readable timeline targets already agree — nothing to write."
+      : `Readable timeline targets agree, but ${plan.unreconcilable.map((u) => u.file).join(", ")} cannot be reconciled by the CLI — see unreconcilable.`;
+    out({ ok, applied: false, message, ...plan, in_sync: ok }, flags);
+    if (!flags.quiet) process.stderr.write(`${message}\n`);
+    warnUnreconcilable();
+    return ok ? 0 : 2;
+  }
+
+  if (!flags.apply) {
+    const message = `Would rewrite ${plan.drifted.join(", ")} from draft_content.json. Re-run with --apply to write.`;
+    out({ ok: true, applied: false, message, ...plan }, flags);
+    if (!flags.quiet) {
+      const canonicalTarget = plan.targets.find((target) => target.state === "canonical");
+      process.stderr.write(`plan: canonical draft_content.json (mtime ${canonicalTarget?.mtime})\n`);
+      for (const target of plan.targets) {
+        if (target.state !== "drifted") continue;
+        const guidNote = target.guid_drifted ? ` [stale GUID ${target.guid} -> canonical]` : "";
+        process.stderr.write(
+          `plan: rewrite ${target.file} (envelope: ${target.envelope}, mtime ${target.mtime})${guidNote}\n`,
+        );
+      }
+      if (plan.canonical_stale) {
+        process.stderr.write(`WARNING: ${staleCanonicalWarning()} --apply will refuse without --force-write.\n`);
+      }
+      warnUnreconcilable();
+      process.stderr.write("Plan only — re-run with --apply to write.\n");
+    }
+    return 0;
+  }
+
+  if (!flags.forceWrite) {
+    const running = editorProcesses();
+    if (running.length > 0) {
+      die(
+        `${running.join(" / ")} is running. Close the editor before repairing this draft, ` +
+          "or pass --force-write if you accept that the app may overwrite the change.",
+      );
+    }
+    if (plan.canonical_stale) {
+      die(
+        `${staleCanonicalWarning()} Back up the project, review the plan (capcut sync-timelines ${projectPath}), ` +
+          "and pass --force-write only if draft_content.json is really the timeline you want to keep.",
+      );
+    }
+  }
+
+  if (isDryRun()) {
+    const message = `Dry run — plan only. Would rewrite ${plan.drifted.join(", ")} from draft_content.json; nothing was written.`;
+    out(
+      {
+        ok: true,
+        applied: false,
+        message,
+        project_dir: plan.project_dir,
+        canonical: plan.canonical,
+        would_reconcile: plan.drifted,
+        reconciled: [],
+        backups: [],
+        unreconcilable: plan.unreconcilable,
+        in_sync: false,
+      },
+      flags,
+    );
+    if (!flags.quiet) process.stderr.write(`${message}\n`);
+    warnUnreconcilable();
+    return 0;
+  }
+
+  // Optimistic concurrency: neither the canonical source nor a mirror we are
+  // about to rewrite may have changed on disk between the plan read and now.
+  if (!flags.forceWrite) assertTargetsUnchangedOnDisk([canonicalCandidate, ...driftedCandidates]);
+  commitDraftTargets(driftedCandidates, canonicalDraft);
+
+  const verify = planTimelineSync(projectPath);
+  if (!verify.plan.in_sync) {
+    die(
+      `sync-timelines wrote the targets but they still diverge (${verify.plan.drifted.join(", ")}). ` +
+        "Restore from the .bak files and report this.",
+    );
+  }
+  const ok = plan.unreconcilable.length === 0;
+  out(
+    {
+      ok,
+      applied: true,
+      project_dir: plan.project_dir,
+      canonical: plan.canonical,
+      reconciled: plan.drifted,
+      backups: plan.drifted.map((file) => `${file}.bak`),
+      unreconcilable: plan.unreconcilable,
+      in_sync: ok,
+    },
+    flags,
+  );
+  if (!flags.quiet) process.stderr.write(`Reconciled from draft_content.json: ${plan.drifted.join(", ")}\n`);
+  warnUnreconcilable();
+  return ok ? 0 : 2;
 }
 
 function cmdTemplates(flags: Flags): void {
@@ -2656,7 +3015,7 @@ const SUMMARIES: Record<string, string> = {
   volume: "Set a segment's volume (0.0-1.0).",
   trim: "Trim a segment to a start/duration window.",
   opacity: "Set a segment's opacity (0.0-1.0).",
-  "export-srt": "Export subtitles to SRT on stdout.",
+  "export-srt": "Export subtitles to SRT or WebVTT on stdout, per line or per word.",
   materials: "List material types and counts; filter with --type.",
   segment: "Full detail for one segment and its material.",
   material: "Full detail for one material.",
@@ -2680,6 +3039,7 @@ const SUMMARIES: Record<string, string> = {
   "add-effect": "Add a scene effect on its own track.",
   "save-template": "Extract a segment as a reusable template JSON.",
   "apply-template": "Stamp a template into a project with new timing/text.",
+  "make-preset": "Extract a text segment's styling as a reusable preset JSON (apply via --preset).",
   templates: "List bundled reusable templates.",
   batch: "Run multiple edits from stdin (JSONL), one file write.",
   "import-srt": "Import an SRT file/stdin as one text segment per cue.",
@@ -2693,6 +3053,8 @@ const SUMMARIES: Record<string, string> = {
   enums: "List enum slugs (transitions, masks, effects, ...) by category.",
   doctor: "Environment preflight (Node, whisper, API key, project dir).",
   diagnose: "Inspect canonical draft files, divergence, and editor-write safety.",
+  "sync-timelines":
+    "Reconcile drifted timeline mirrors (template-2.tmp, draft_info.json) from a read-only draft_content.json (plan with mtimes by default; --apply rewrites only the drifted mirrors).",
   prune: "Remove materials no segment references.",
   relink: "Repair broken media paths (--dir or --from/--to).",
   timeline: "Show the track/segment layout (JSON, or -H ASCII bars).",
@@ -2709,6 +3071,8 @@ const SUMMARIES: Record<string, string> = {
   init: "Create a new empty draft from a template.",
   compile: "Build a draft from a declarative JSON spec (the inverse of describe).",
   render: "Render a low-res ffmpeg proxy preview (trim+speed+audio, --burn-captions); not CapCut's final render.",
+  "detect-scenes":
+    "Detect scene-change cut points in a video (ffmpeg scene filter); prints cuts + segments to seed compile/cut.",
 };
 
 // `describe` emits a machine-readable tool spec for LLM/agent callers, so they
@@ -2998,6 +3362,58 @@ function cmdRender(draft: Draft, filePath: string, flags: Flags): void {
   if (!flags.quiet) process.stderr.write(`Rendered: ${result.output}\n`);
 }
 
+function cmdDetectScenes(positional: string[], flags: Flags): void {
+  const videoPath = positional[1];
+  if (!videoPath) {
+    die("Missing video. Usage: capcut detect-scenes <video> [--threshold <0..1>] [--min-gap <seconds>] [--limit <n>]");
+  }
+  const threshold = flags.threshold ?? 0.4;
+  if (!Number.isFinite(threshold) || threshold <= 0 || threshold > 1) die("--threshold must be in (0, 1]");
+  const minGap = flags.minGap ?? 2;
+  if (!Number.isFinite(minGap) || minGap < 0) die("--min-gap must be >= 0 seconds");
+  if (flags.limit !== undefined && (!Number.isFinite(flags.limit) || flags.limit < 1)) {
+    die("--limit must be a positive integer");
+  }
+  const report = detectScenes(videoPath, {
+    threshold,
+    minGap,
+    limit: flags.limit,
+    ffmpegCmd: flags.ffmpegCmd,
+    ffprobeCmd: flags.ffprobeCmd,
+  });
+  // --json forces machine output even when a config/alias turned on --human.
+  if (flags.human && !flags.json) {
+    console.log(`Video:     ${report.video}`);
+    const durationNote =
+      report.duration_source === "video-stream"
+        ? " (video stream)"
+        : report.duration_source === "container"
+          ? " (container header — ffprobe unavailable; may include audio past the video track)"
+          : "";
+    console.log(
+      `Duration:  ${report.duration === null ? "unknown" : formatDuration(report.duration_us ?? 0)}${durationNote}`,
+    );
+    console.log(
+      `Threshold: ${report.threshold}  (min gap ${report.min_gap}s${report.limit ? `, limit ${report.limit}` : ""})`,
+    );
+    console.log(`Cuts:      ${report.cuts.length}`);
+    for (const [i, c] of report.cuts.entries()) {
+      console.log(`  ${String(i + 1).padStart(3)}  ${c.timecode}  score ${c.score.toFixed(3)}`);
+    }
+    console.log(`Segments:  ${report.segments.length}`);
+    for (const [i, s] of report.segments.entries()) {
+      const end = s.end === null ? "end" : timecode(s.end);
+      const dur = s.duration_us === null ? "?" : formatDuration(s.duration_us);
+      console.log(`  ${String(i + 1).padStart(3)}  ${timecode(s.start)} - ${end}  ${dur}`);
+    }
+    console.log(
+      "Next: pipe the segments into `capcut compile` (one clip per segment) or `capcut cut` to split the video.",
+    );
+    return;
+  }
+  out(report, flags);
+}
+
 // --- Main ---
 
 async function main(): Promise<void> {
@@ -3073,6 +3489,12 @@ async function main(): Promise<void> {
       process.stderr.write(`Review the files, then attach the folder to issue #35.\n`);
     }
     process.exit(0);
+  }
+
+  // `sync-timelines` must see drifted/unreadable siblings itself — loadDraft would
+  // pick template-2.tmp as canonical on modern storage, the opposite of the repair.
+  if (cmd === "sync-timelines") {
+    process.exit(cmdSyncTimelines(projectPath, flags));
   }
 
   // `restore` copies a backup/snapshot back over the draft — no loadDraft/parse needed.
@@ -3202,6 +3624,12 @@ async function main(): Promise<void> {
     process.exit(0);
   }
 
+  // `detect-scenes` analyzes a raw video file for cut points — no draft needed.
+  if (cmd === "detect-scenes") {
+    cmdDetectScenes(positional, flags);
+    process.exit(0);
+  }
+
   if (!projectPath) die("Missing project path. Run 'capcut --help' for usage.");
 
   const { draft, filePath } = loadDraft(projectPath);
@@ -3272,7 +3700,7 @@ async function main(): Promise<void> {
       cmdOpacity(draft, filePath, positional[2], positional[3], flags);
       break;
     case "export-srt":
-      cmdExportSrt(draft);
+      cmdExportSrt(draft, flags);
       break;
     case "materials":
       cmdMaterials(draft, flags);
@@ -3364,6 +3792,10 @@ async function main(): Promise<void> {
     case "apply-template":
       requireArgs(positional, 5, "capcut apply-template <project> <template.json> <start> <duration>");
       cmdApplyTemplate(draft, filePath, positional, flags);
+      break;
+    case "make-preset":
+      requireArgs(positional, 3, "capcut make-preset <project> <text-segment-id> --out <preset.json>");
+      cmdMakePreset(draft, positional, flags);
       break;
     case "batch":
       cmdBatch(draft, filePath, flags);

@@ -68,10 +68,17 @@ function pad2(n: number): string {
 }
 
 export function srtTime(us: number): string {
-  const totalSec = us / US_PER_SEC;
-  const h = Math.floor(totalSec / 3600);
-  const m = Math.floor((totalSec % 3600) / 60);
-  const s = Math.floor(totalSec % 60);
-  const ms = Math.round((totalSec % 1) * 1000);
+  // Round to whole milliseconds FIRST so a fraction >= 999.5ms carries into
+  // seconds/minutes/hours instead of rendering an invalid ",1000" field.
+  const totalMs = Math.round(us / US_PER_MS);
+  const h = Math.floor(totalMs / 3_600_000);
+  const m = Math.floor((totalMs % 3_600_000) / 60_000);
+  const s = Math.floor((totalMs % 60_000) / 1000);
+  const ms = totalMs % 1000;
   return `${pad(h)}:${pad(m)}:${pad(s)},${ms.toString().padStart(3, "0")}`;
+}
+
+// WebVTT uses '.' as the millisecond separator.
+export function vttTime(us: number): string {
+  return srtTime(us).replace(",", ".");
 }

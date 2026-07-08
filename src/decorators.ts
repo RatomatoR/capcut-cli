@@ -21,8 +21,53 @@ export function keyframeProperties(): string[] {
   return Object.keys(PROPERTY_MAP);
 }
 
+// CapCut's UI easing presets ("Cubic In", "Cubic Out", ...) are NOT stored as
+// named curveType values. The UI writes curveType "FreeCurveInOut" plus bezier
+// control handles on both keyframes of the eased segment: handle x is a fixed
+// ratio of the interval to the adjacent keyframe (microseconds), handle y is 0
+// except for ease-out, which Δ-scales the outgoing handle (see
+// EASE_OUT_RIGHT_Y_RATIO). Ratios and rounding validated byte-for-byte against
+// a CapCut UI oracle capture (Davidb-2107/capcut-cli-david,
+// test-fixtures/oracles/cubic-out-triplet-frame-aligned.json): control.x
+// matches CapCut exactly on frame-aligned intervals and within ±1μs otherwise;
+// control.y within 1 ULP.
+export type EasingName = "linear" | "ease-in" | "ease-out" | "ease-in-out";
+
+interface EasingProfile {
+  startRightXRatio: number; // × interval → segment-start keyframe's right_control.x
+  endLeftXRatio: number; // × interval → segment-end keyframe's left_control.x
+}
+
+const EASING_PROFILES: Record<Exclude<EasingName, "linear">, EasingProfile> = {
+  "ease-in": { startRightXRatio: 0.42, endLeftXRatio: 0 },
+  "ease-out": { startRightXRatio: 0.32, endLeftXRatio: -0.4 },
+  "ease-in-out": { startRightXRatio: 0.42, endLeftXRatio: -0.42 },
+};
+
+// CapCut "Cubic Out" Δ-scales the outgoing handle: right_control.y =
+// round(0.94 × (nextValue − value), 6). A fixed y would only match the UI for
+// one specific value delta.
+const EASE_OUT_RIGHT_Y_RATIO = 0.94;
+
+export function keyframeEasings(): string[] {
+  return ["linear", ...Object.keys(EASING_PROFILES)];
+}
+
+// Exported so compile's spec validation pre-flights the exact same check
+// (and error message) the real keyframe write performs. Object.hasOwn, not
+// `in`: inherited Object.prototype names ("hasOwnProperty", "toString",
+// "constructor", ...) must NOT pass — EASING_PROFILES[name] would resolve to
+// an inherited function whose ratios are undefined and NaN-corrupt the draft.
+export function resolveEasing(easing: string | undefined): EasingName {
+  if (easing === undefined) return "linear";
+  if (easing !== "linear" && !Object.hasOwn(EASING_PROFILES, easing)) {
+    throw new Error(`Unsupported keyframe easing: ${easing}. Supported: ${keyframeEasings().join(", ")}`);
+  }
+  return easing as EasingName;
+}
+
 export function parseKeyframeValue(property: string, value: string): number {
-  if (!(property in PROPERTY_MAP)) {
+  if (!Object.hasOwn(PROPERTY_MAP, property)) {
     throw new Error(`Unsupported keyframe property: ${property}. Supported: ${Object.keys(PROPERTY_MAP).join(", ")}`);
   }
   const v = value.trim();
@@ -72,24 +117,115 @@ export interface KeyframeInput {
   property: string;
   timeUs: number; // segment-relative time in microseconds
   value: number; // already parsed/normalised
+  easing?: string; // per-keyframe override of the per-call easing
 }
 
 function uuidHex(): string {
   return randomUUID().replace(/-/g, "");
 }
 
+interface ControlPoint {
+  x: number;
+  y: number;
+}
+
+interface KeyframeEntry {
+  curveType: string;
+  graphID: string;
+  left_control: ControlPoint;
+  right_control: ControlPoint;
+  id: string;
+  time_offset: number;
+  values: number[];
+}
+
 interface KeyframeListObject {
   id: string;
-  keyframe_list: Array<Record<string, unknown>>;
+  keyframe_list: KeyframeEntry[];
   material_id: string;
   property_type: string;
+}
+
+// Nearest existing keyframes strictly before/after the given time — the two
+// segment neighbours whose facing handles an insert at that time affects.
+function findNeighbours(
+  list: KeyframeEntry[],
+  timeOffset: number,
+): { prev: KeyframeEntry | undefined; next: KeyframeEntry | undefined } {
+  let prev: KeyframeEntry | undefined;
+  let next: KeyframeEntry | undefined;
+  for (const k of list) {
+    if (k.time_offset < timeOffset && (!prev || k.time_offset > prev.time_offset)) prev = k;
+    if (k.time_offset > timeOffset && (!next || k.time_offset < next.time_offset)) next = k;
+  }
+  return { prev, next };
+}
+
+const isZeroControl = (c: ControlPoint): boolean => c.x === 0 && c.y === 0;
+
+// Inserting a LINEAR keyframe between two keyframes invalidates the handles
+// that faced across the old prev→next segment: prev's outgoing and next's
+// incoming handles were computed against an interval/Δ that no longer exists,
+// so left as-is they can point past the inserted keyframe (overshoot + snap
+// back in CapCut). Clear the facing handles — the inserted keyframe's easing
+// wins, mirroring applyEasing — and drop a neighbour back to "Line" when it is
+// left with no handles at all, so curveType never contradicts the handles.
+function clearFacingHandles(list: KeyframeEntry[], timeOffset: number): void {
+  const { prev, next } = findNeighbours(list, timeOffset);
+  if (prev) {
+    prev.right_control = { x: 0, y: 0 };
+    if (isZeroControl(prev.left_control)) prev.curveType = "Line";
+  }
+  if (next) {
+    next.left_control = { x: 0, y: 0 };
+    if (isZeroControl(next.right_control)) next.curveType = "Line";
+  }
+}
+
+// Stamp the inserted keyframe and retro-update the facing handles of its two
+// neighbours so the easing applies to both adjacent segments — the easing of
+// the inserted keyframe wins, matching CapCut UI behaviour when a preset is
+// applied to a keyframe. Returns false (leaving the entry as "Line") when the
+// list has no neighbour to ease against: a lone keyframe encodes no curve, and
+// stamping FreeCurveInOut with zero-length handles would write a curve-type
+// marker its handles contradict. The stamp happens later instead, when the
+// pair's second keyframe is inserted with an easing and retro-updates this one.
+function applyEasing(list: KeyframeEntry[], entry: KeyframeEntry, easing: Exclude<EasingName, "linear">): boolean {
+  const profile = EASING_PROFILES[easing];
+  const rightY = (fromValue: number, toValue: number): number =>
+    easing === "ease-out" ? Math.round(EASE_OUT_RIGHT_Y_RATIO * (toValue - fromValue) * 1e6) / 1e6 : 0;
+
+  const { prev, next } = findNeighbours(list, entry.time_offset);
+  if (!prev && !next) return false;
+  entry.curveType = "FreeCurveInOut";
+  if (prev) {
+    const interval = entry.time_offset - prev.time_offset;
+    prev.curveType = "FreeCurveInOut";
+    prev.right_control = {
+      x: Math.round(profile.startRightXRatio * interval),
+      y: rightY(prev.values[0], entry.values[0]),
+    };
+    entry.left_control = { x: Math.round(profile.endLeftXRatio * interval), y: 0 };
+  }
+  if (next) {
+    const interval = next.time_offset - entry.time_offset;
+    next.curveType = "FreeCurveInOut";
+    next.left_control = { x: Math.round(profile.endLeftXRatio * interval), y: 0 };
+    entry.right_control = {
+      x: Math.round(profile.startRightXRatio * interval),
+      y: rightY(entry.values[0], next.values[0]),
+    };
+  }
+  return true;
 }
 
 export function addKeyframes(
   draft: Draft,
   segmentId: string,
   keyframes: KeyframeInput[],
-): { segmentId: string; added: number; lists: Array<{ property: string; count: number }> } {
+  easing?: string,
+): { segmentId: string; added: number; lists: Array<{ property: string; count: number }>; warnings: string[] } {
+  resolveEasing(easing); // fail fast even when every keyframe overrides it
   const found = findSegment(draft, segmentId);
   if (!found) throw new Error(`Segment not found: ${segmentId}`);
   const seg = found.segment as Segment & { common_keyframes?: unknown };
@@ -98,14 +234,16 @@ export function addKeyframes(
     (seg as Record<string, unknown>).common_keyframes = [];
   }
   const commonKeyframes = seg.common_keyframes as KeyframeListObject[];
+  const warnings: string[] = [];
 
   for (const kf of keyframes) {
-    const propEnum = PROPERTY_MAP[kf.property];
+    const propEnum = Object.hasOwn(PROPERTY_MAP, kf.property) ? PROPERTY_MAP[kf.property] : undefined;
     if (!propEnum) {
       throw new Error(
         `Unsupported keyframe property: ${kf.property}. Supported: ${Object.keys(PROPERTY_MAP).join(", ")}`,
       );
     }
+    const kfEasing = resolveEasing(kf.easing ?? easing);
     let list = commonKeyframes.find((l) => l.property_type === propEnum);
     if (!list) {
       list = {
@@ -116,7 +254,7 @@ export function addKeyframes(
       };
       commonKeyframes.push(list);
     }
-    list.keyframe_list.push({
+    const entry: KeyframeEntry = {
       curveType: "Line",
       graphID: "",
       left_control: { x: 0.0, y: 0.0 },
@@ -124,8 +262,19 @@ export function addKeyframes(
       id: uuidHex(),
       time_offset: kf.timeUs,
       values: [kf.value],
-    });
-    list.keyframe_list.sort((a, b) => (a.time_offset as number) - (b.time_offset as number));
+    };
+    if (kfEasing !== "linear") {
+      if (!applyEasing(list.keyframe_list, entry, kfEasing)) {
+        warnings.push(
+          `easing '${kfEasing}' for ${kf.property} at ${kf.timeUs}us has no adjacent keyframe to ease against; ` +
+            `wrote a linear keyframe — it picks up the curve when its pair keyframe is added with an easing`,
+        );
+      }
+    } else {
+      clearFacingHandles(list.keyframe_list, entry.time_offset);
+    }
+    list.keyframe_list.push(entry);
+    list.keyframe_list.sort((a, b) => a.time_offset - b.time_offset);
   }
 
   const summary = commonKeyframes.map((l) => {
@@ -133,7 +282,7 @@ export function addKeyframes(
     return { property: prop, count: l.keyframe_list.length };
   });
 
-  return { segmentId: seg.id, added: keyframes.length, lists: summary };
+  return { segmentId: seg.id, added: keyframes.length, lists: summary, warnings };
 }
 
 // --- Phase 1: transition / mask / bg-blur / text-style / text-anim ---
@@ -556,6 +705,24 @@ const IMAGE_ANIMS: Record<string, ImageAnimMeta> = {
 
 export function imageAnimSlugs(): string[] {
   return Object.keys(IMAGE_ANIMS);
+}
+
+// Exposed so lint's unknown-effect-slug check recognises the inline starter
+// catalogue: these effect_ids are knossos-verified but absent from enums.json.
+export function imageAnimCatalogue(): Array<{
+  slug: string;
+  member: string;
+  name: string;
+  effect_id: string;
+  resource_id: string;
+}> {
+  return Object.entries(IMAGE_ANIMS).map(([slug, meta]) => ({
+    slug,
+    member: meta.name,
+    name: meta.name,
+    effect_id: meta.effect_id,
+    resource_id: meta.resource_id,
+  }));
 }
 
 export interface ImageAnimOptions {

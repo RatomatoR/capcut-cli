@@ -4,6 +4,41 @@ import { after, describe, it } from "node:test";
 import { spawnCli } from "./helpers/spawn-cli.mjs";
 import { tmpDraft } from "./helpers/tmp-draft.mjs";
 
+// Seed a dedicated text track (own materials, own segments) into a fixture
+// draft, so timing rules can't interact with the fixture's Subtitles track.
+function seedTextTrack(draftPath, trackId, materials, segments) {
+  const draft = JSON.parse(readFileSync(draftPath, "utf-8"));
+  draft.materials.texts = [...(draft.materials.texts ?? []), ...materials];
+  draft.tracks.push({ id: trackId, type: "text", name: trackId, attribute: 0, segments });
+  writeFileSync(draftPath, JSON.stringify(draft));
+}
+
+function textMat(id, text) {
+  return {
+    id,
+    type: "text",
+    content: JSON.stringify({ text, styles: [] }),
+    font_size: 15,
+    text_color: "#FFFFFF",
+    alignment: 1,
+  };
+}
+
+function textSeg(id, materialId, startUs, durationUs) {
+  return {
+    id,
+    material_id: materialId,
+    target_timerange: { start: startUs, duration: durationUs },
+    source_timerange: { start: 0, duration: durationUs },
+    speed: 1,
+    volume: 1,
+    visible: true,
+    clip: { alpha: 1, rotation: 0, scale: { x: 1, y: 1 }, transform: { x: 0, y: 0 } },
+    extra_material_refs: [],
+    render_index: 0,
+  };
+}
+
 describe("capcut lint", () => {
   describe("on a clean fixture", () => {
     const fix = tmpDraft();
@@ -250,6 +285,448 @@ describe("capcut lint", () => {
       const r = spawnCli(["lint", fix.path, "--no-check-paths"]);
       const tooLong = r.json.issues.filter((i) => i.code === "line-too-long");
       assert.ok(tooLong.length > 0, `expected line-too-long warning; got: ${JSON.stringify(r.json.issues)}`);
+    });
+  });
+
+  describe("--fix re-wraps over-long caption lines", () => {
+    const fix = tmpDraft();
+    after(() => fix.cleanup());
+
+    it("wraps at word boundaries, keeps text length, and re-lints clean", () => {
+      const draft = JSON.parse(readFileSync(fix.path, "utf-8"));
+      const longText = "the quick brown fox jumps over the lazy dog and keeps running far beyond the fence"; // 83 chars > 42
+      const mat = {
+        id: "wrap-text-mat",
+        type: "text",
+        content: JSON.stringify({ text: longText, styles: [] }),
+        font_size: 15,
+        text_color: "#FFFFFF",
+        alignment: 1,
+      };
+      draft.materials.texts = [...(draft.materials.texts ?? []), mat];
+      let textTrack = draft.tracks.find((t) => t.type === "text");
+      if (!textTrack) {
+        textTrack = { id: "wrap-text-track", type: "text", name: "captions", attribute: 0, segments: [] };
+        draft.tracks.push(textTrack);
+      }
+      textTrack.segments.push({
+        id: "wrap-seg-1-aaaa-bbbb-cccc-dddddddddddd",
+        material_id: mat.id,
+        target_timerange: { start: 300_000_000, duration: 2_000_000 },
+        source_timerange: { start: 0, duration: 2_000_000 },
+        speed: 1,
+        volume: 1,
+        visible: true,
+        clip: { alpha: 1, rotation: 0, scale: { x: 1, y: 1 }, transform: { x: 0, y: 0 } },
+        extra_material_refs: [],
+        render_index: 0,
+      });
+      writeFileSync(fix.path, JSON.stringify(draft));
+
+      const detect = spawnCli(["lint", fix.path, "--no-check-paths"]);
+      const found = detect.json.issues.filter((i) => i.code === "line-too-long");
+      assert.ok(found.length > 0, `expected line-too-long; got: ${JSON.stringify(detect.json.issues)}`);
+      assert.equal(found[0].fixable, true);
+
+      const r = spawnCli(["lint", fix.path, "--fix", "--no-check-paths"]);
+      const wrapped = r.json.fixed.filter((i) => i.code === "line-too-long");
+      assert.ok(wrapped.length > 0, `expected line-too-long in fixed; got: ${JSON.stringify(r.json.fixed)}`);
+
+      const relint = spawnCli(["lint", fix.path, "--no-check-paths"]);
+      assert.ok(
+        !relint.json.issues.some((i) => i.code === "line-too-long"),
+        `re-lint should be clean; got: ${JSON.stringify(relint.json.issues)}`,
+      );
+
+      // Word-boundary wrap must be length-neutral (spaces become newlines 1:1)
+      // so the styles[] UTF-16LE byte ranges stay valid.
+      const repaired = JSON.parse(readFileSync(fix.path, "utf-8"));
+      const content = JSON.parse(repaired.materials.texts.find((m) => m.id === "wrap-text-mat").content);
+      assert.equal(content.text.length, longText.length, "wrap must not change text length");
+      assert.equal(content.text.replace(/\n/g, " "), longText, "only spaces may become newlines");
+      for (const line of content.text.split("\n")) {
+        assert.ok(line.length <= 42, `wrapped line still too long: "${line}"`);
+      }
+    });
+  });
+
+  describe("--fix restores minimum caption gaps", () => {
+    const fix = tmpDraft();
+    after(() => fix.cleanup());
+
+    it("shrinks the earlier caption's end under --min-gap-ms and re-lints clean", () => {
+      const draft = JSON.parse(readFileSync(fix.path, "utf-8"));
+      let mat = draft.materials.texts?.[0];
+      if (!mat) {
+        mat = {
+          id: "gap-mat-1",
+          type: "text",
+          content: '{"text":"Hello","styles":[]}',
+          font_size: 15,
+          text_color: "#FFFFFF",
+          alignment: 1,
+        };
+        draft.materials.texts = [...(draft.materials.texts ?? []), mat];
+      }
+      let textTrack = draft.tracks.find((t) => t.type === "text");
+      if (!textTrack) {
+        textTrack = { id: "gap-text-track", type: "text", name: "captions", attribute: 0, segments: [] };
+        draft.tracks.push(textTrack);
+      }
+      const base = {
+        material_id: mat.id,
+        source_timerange: { start: 0, duration: 2_000_000 },
+        speed: 1,
+        volume: 1,
+        visible: true,
+        clip: { alpha: 1, rotation: 0, scale: { x: 1, y: 1 }, transform: { x: 0, y: 0 } },
+        extra_material_refs: [],
+        render_index: 0,
+      };
+      // Gap: seg A ends at 402.0s, seg B starts at 402.1s — 100ms < 200ms minimum.
+      textTrack.segments.push({
+        ...base,
+        id: "gap-seg-1-aaaa-bbbb-cccc-dddddddddddd",
+        target_timerange: { start: 400_000_000, duration: 2_000_000 },
+      });
+      textTrack.segments.push({
+        ...base,
+        id: "gap-seg-2-aaaa-bbbb-cccc-dddddddddddd",
+        target_timerange: { start: 402_100_000, duration: 2_000_000 },
+      });
+      writeFileSync(fix.path, JSON.stringify(draft));
+
+      const detect = spawnCli(["lint", fix.path, "--min-gap-ms", "200", "--no-check-paths"]);
+      const found = detect.json.issues.filter((i) => i.code === "caption-gap-too-small");
+      assert.ok(found.length > 0, `expected caption-gap-too-small; got: ${JSON.stringify(detect.json.issues)}`);
+      assert.equal(found[0].fixable, true);
+
+      const r = spawnCli(["lint", fix.path, "--fix", "--min-gap-ms", "200", "--no-check-paths"]);
+      const gapFixed = r.json.fixed.filter((i) => i.code === "caption-gap-too-small");
+      assert.ok(gapFixed.length > 0, `expected caption-gap-too-small in fixed; got: ${JSON.stringify(r.json.fixed)}`);
+
+      const relint = spawnCli(["lint", fix.path, "--min-gap-ms", "200", "--no-check-paths"]);
+      assert.ok(
+        !relint.json.issues.some((i) => i.code === "caption-gap-too-small"),
+        `re-lint should be clean; got: ${JSON.stringify(relint.json.issues)}`,
+      );
+
+      // The earlier caption's end moved back; the later caption never moves.
+      const repaired = JSON.parse(readFileSync(fix.path, "utf-8"));
+      const track = repaired.tracks.find((t) => t.segments.some((s) => s.id.startsWith("gap-seg-1")));
+      const segA = track.segments.find((s) => s.id.startsWith("gap-seg-1"));
+      const segB = track.segments.find((s) => s.id.startsWith("gap-seg-2"));
+      assert.equal(segA.target_timerange.duration, 1_900_000);
+      assert.equal(segB.target_timerange.start, 402_100_000);
+    });
+  });
+
+  describe("unknown-effect-slug detection", () => {
+    function baseEffectMaterial(id, name, effectId, resourceId) {
+      return {
+        id,
+        name,
+        type: "video_effect",
+        effect_id: effectId,
+        resource_id: resourceId,
+        adjust_params: [],
+        apply_target_type: 2,
+        category_id: "",
+        category_name: "",
+        platform: "all",
+        value: 1.0,
+      };
+    }
+
+    describe("flags ids missing from the enum table", () => {
+      const fix = tmpDraft();
+      after(() => fix.cleanup());
+
+      it("reports bogus effect and animation ids as info, without failing the exit code", () => {
+        const draft = JSON.parse(readFileSync(fix.path, "utf-8"));
+        draft.materials.video_effects = [
+          baseEffectMaterial("bogus-effect-mat", "Stale Effect", "1111111111111111111", "1111111111111111111"),
+        ];
+        draft.materials.material_animations = [
+          {
+            id: "bogus-anim-container",
+            type: "sticker_animation",
+            multi_language_current: "none",
+            animations: [
+              {
+                id: "2222222222222222222",
+                resource_id: "2222222222222222222",
+                name: "Stale Anim",
+                type: "in",
+                duration: 500_000,
+                start: 0,
+                material_type: "text",
+              },
+            ],
+          },
+        ];
+        writeFileSync(fix.path, JSON.stringify(draft));
+
+        const r = spawnCli(["lint", fix.path, "--no-check-paths"]);
+        const unknown = r.json.issues.filter((i) => i.code === "unknown-effect-slug");
+        assert.equal(unknown.length, 2, `expected 2 unknown-effect-slug issues; got: ${JSON.stringify(r.json.issues)}`);
+        const materialIds = unknown.map((i) => i.location.material_id).sort();
+        assert.deepEqual(materialIds, ["bogus-anim-container", "bogus-effect-mat"]);
+        for (const i of unknown) {
+          assert.equal(i.severity, "info");
+          assert.equal(i.fixable, false);
+        }
+        // Info only — the bundled table can't know store-downloaded effects,
+        // so a UI-authored draft must keep exiting 0 (regression: v0.13 review
+        // found this check flipping CI gates to exit 1 on valid drafts).
+        assert.equal(r.json.summary.errors, 0);
+        assert.equal(r.json.summary.warnings, 0);
+        assert.equal(r.json.summary.info, 2);
+        assert.equal(r.status, 0);
+
+        // Report-only: --fix must not claim it repaired anything here.
+        const fixRun = spawnCli(["lint", fix.path, "--fix", "--no-check-paths"]);
+        assert.ok(
+          !fixRun.json.fixed.some((i) => i.code === "unknown-effect-slug"),
+          `unknown-effect-slug must never appear in fixed[]; got: ${JSON.stringify(fixRun.json.fixed)}`,
+        );
+        assert.ok(fixRun.json.issues.some((i) => i.code === "unknown-effect-slug"));
+      });
+    });
+
+    describe("passes on known ids", () => {
+      const fix = tmpDraft();
+      after(() => fix.cleanup());
+
+      it("accepts enum-table ids and the inline starter catalogue", () => {
+        const draft = JSON.parse(readFileSync(fix.path, "utf-8"));
+        draft.materials.video_effects = [
+          // From enums.json (capcut scene_effects: blur).
+          baseEffectMaterial("enum-effect-mat", "Blur", "15206412", "6739752823140913675"),
+          // From the inline knossos-verified starter catalogue (add-effect shake).
+          baseEffectMaterial("inline-effect-mat", "Shake", "7061205058364788270", "7061205058364788270"),
+        ];
+        writeFileSync(fix.path, JSON.stringify(draft));
+
+        const r = spawnCli(["lint", fix.path, "--no-check-paths"]);
+        assert.ok(
+          !r.json.issues.some((i) => i.code === "unknown-effect-slug"),
+          `expected no unknown-effect-slug; got: ${JSON.stringify(r.json.issues)}`,
+        );
+      });
+    });
+  });
+
+  describe("--fix gap repair never crushes a caption below the render floor", () => {
+    const fix = tmpDraft();
+    after(() => fix.cleanup());
+
+    it("skips the shrink and stamps the issue fixable:false when it would leave a sub-frame sliver", () => {
+      // Mirror of the v0.13 review reproduction: caption A runs 50,003us and B
+      // starts 49,998us after A ends. Closing the gap to 100ms would leave A
+      // at 1us — far below one 30fps frame (33,333us), i.e. deleted from
+      // playback — yet the old fixer did exactly that and reported FIXED.
+      seedTextTrack(
+        fix.path,
+        "gap-floor-track",
+        [textMat("gap-floor-mat", "Hi")],
+        [
+          textSeg("gapfloor-1-aaaa-bbbb-cccc-dddddddddddd", "gap-floor-mat", 500_000_000, 50_003),
+          textSeg("gapfloor-2-aaaa-bbbb-cccc-dddddddddddd", "gap-floor-mat", 500_100_001, 1_000_000),
+        ],
+      );
+
+      const detect = spawnCli(["lint", fix.path, "--min-gap-ms", "100", "--no-check-paths"]);
+      const found = detect.json.issues.filter((i) => i.code === "caption-gap-too-small");
+      assert.equal(found.length, 1, `expected one caption-gap-too-small; got: ${JSON.stringify(detect.json.issues)}`);
+      assert.equal(found[0].fixable, false, "a gap --fix cannot clear must not be stamped fixable:true");
+
+      const before = readFileSync(fix.path, "utf-8");
+      const r = spawnCli(["lint", fix.path, "--fix", "--min-gap-ms", "100", "--no-check-paths"]);
+      assert.ok(
+        !r.json.fixed.some((i) => i.code === "caption-gap-too-small"),
+        `must not claim FIXED; got: ${JSON.stringify(r.json.fixed)}`,
+      );
+      assert.ok(r.json.issues.some((i) => i.code === "caption-gap-too-small" && i.fixable === false));
+      assert.equal(r.status, 1, "the surviving warning keeps exit code 1");
+
+      // Nothing was repairable, so the draft must not be rewritten at all.
+      assert.equal(readFileSync(fix.path, "utf-8"), before, "--fix must not save a draft it didn't repair");
+      const repaired = JSON.parse(before);
+      const segA = repaired.tracks
+        .find((t) => t.id === "gap-floor-track")
+        .segments.find((s) => s.id.startsWith("gapfloor-1"));
+      assert.equal(segA.target_timerange.duration, 50_003, "caption A must keep its full duration");
+    });
+  });
+
+  describe("--fix gap repair still applies when the result stays at or above the floor", () => {
+    const fix = tmpDraft();
+    after(() => fix.cleanup());
+
+    it("shrinks a caption down to exactly the 100ms floor and re-lints clean", () => {
+      // gap = 49,998us (<100ms); the needed 50,002us shrink lands A exactly on
+      // the 100,000us floor — the tightest still-allowed repair.
+      seedTextTrack(
+        fix.path,
+        "gap-edge-track",
+        [textMat("gap-edge-mat", "Hi")],
+        [
+          textSeg("gapedge-1-aaaa-bbbb-cccc-dddddddddddd", "gap-edge-mat", 600_000_000, 150_002),
+          textSeg("gapedge-2-aaaa-bbbb-cccc-dddddddddddd", "gap-edge-mat", 600_200_000, 1_000_000),
+        ],
+      );
+
+      const detect = spawnCli(["lint", fix.path, "--min-gap-ms", "100", "--no-check-paths"]);
+      const found = detect.json.issues.filter((i) => i.code === "caption-gap-too-small");
+      assert.equal(found.length, 1);
+      assert.equal(found[0].fixable, true);
+
+      const r = spawnCli(["lint", fix.path, "--fix", "--min-gap-ms", "100", "--no-check-paths"]);
+      assert.ok(
+        r.json.fixed.some((i) => i.code === "caption-gap-too-small"),
+        `expected the gap in fixed[]; got: ${JSON.stringify(r.json.fixed)}`,
+      );
+      assert.equal(r.status, 0);
+
+      const repaired = JSON.parse(readFileSync(fix.path, "utf-8"));
+      const segA = repaired.tracks
+        .find((t) => t.id === "gap-edge-track")
+        .segments.find((s) => s.id.startsWith("gapedge-1"));
+      assert.equal(segA.target_timerange.duration, 100_000, "caption A shrinks exactly to the floor");
+    });
+  });
+
+  describe("--fix wraps lines whose break lands in a multi-space run", () => {
+    const fix = tmpDraft();
+    after(() => fix.cleanup());
+
+    it("never leaves an output line over --max-chars and stays length-neutral", () => {
+      // Mirror of the v0.13 review reproduction: with the break placed at the
+      // END of the space run, 'abcdefgh      xy' "wrapped" to a 13-char first
+      // line that still violated the 10-char cap forever.
+      const text = "abcdefgh      xy"; // 8 chars + 6 spaces + 2 chars
+      seedTextTrack(
+        fix.path,
+        "wrap-run-track",
+        [textMat("wrap-run-mat", text)],
+        [textSeg("wraprun-1-aaaa-bbbb-cccc-dddddddddddd", "wrap-run-mat", 700_000_000, 1_000_000)],
+      );
+
+      const detect = spawnCli(["lint", fix.path, "--max-chars", "10", "--no-check-paths"]);
+      const mine = detect.json.issues.filter(
+        (i) => i.code === "line-too-long" && i.location?.segment_id?.startsWith("wraprun-1"),
+      );
+      assert.equal(mine.length, 1, `expected line-too-long; got: ${JSON.stringify(detect.json.issues)}`);
+      assert.equal(mine[0].fixable, true);
+
+      const r = spawnCli(["lint", fix.path, "--fix", "--max-chars", "10", "--no-check-paths"]);
+      assert.ok(
+        r.json.fixed.some((i) => i.code === "line-too-long" && i.location?.segment_id?.startsWith("wraprun-1")),
+        `expected the wrap in fixed[]; got: ${JSON.stringify(r.json.fixed)}`,
+      );
+      assert.ok(
+        !r.json.issues.some((i) => i.code === "line-too-long" && i.location?.segment_id?.startsWith("wraprun-1")),
+        `line-too-long must not survive --fix here; got: ${JSON.stringify(r.json.issues)}`,
+      );
+
+      const repaired = JSON.parse(readFileSync(fix.path, "utf-8"));
+      const content = JSON.parse(repaired.materials.texts.find((m) => m.id === "wrap-run-mat").content);
+      assert.equal(content.text.length, text.length, "wrap must stay length-neutral");
+      assert.equal(content.text.replace(/\n/g, " "), text, "only spaces may become newlines");
+      for (const line of content.text.split("\n")) {
+        assert.ok(line.length <= 10, `broken line still exceeds the cap: ${JSON.stringify(line)}`);
+      }
+    });
+  });
+
+  describe("--fix converges on lines ending in a space run", () => {
+    const fix = tmpDraft();
+    after(() => fix.cleanup());
+
+    it("wraps once and a second --fix is a byte-identical no-op (no stacked blank lines)", () => {
+      // Mirror of the v0.13 review reproduction: 'aaaaaaaaaa   ' degraded one
+      // trailing space per --fix run into stacked blank caption lines.
+      const text = "aaaaaaaaaa   "; // 10 chars + 3 trailing spaces
+      seedTextTrack(
+        fix.path,
+        "wrap-tail-track",
+        [textMat("wrap-tail-mat", text)],
+        [textSeg("wraptail-1-aaaa-bbbb-cccc-dddddddddddd", "wrap-tail-mat", 750_000_000, 1_000_000)],
+      );
+
+      const r1 = spawnCli(["lint", fix.path, "--fix", "--max-chars", "10", "--no-check-paths"]);
+      assert.ok(
+        !r1.json.issues.some((i) => i.code === "line-too-long" && i.location?.segment_id?.startsWith("wraptail-1")),
+        `the trailing-run line must be clean after one --fix; got: ${JSON.stringify(r1.json.issues)}`,
+      );
+      const afterFirst = readFileSync(fix.path, "utf-8");
+      const content = JSON.parse(JSON.parse(afterFirst).materials.texts.find((m) => m.id === "wrap-tail-mat").content);
+      assert.equal(content.text, "aaaaaaaaaa\n  ", "the surplus spaces move past the break, not onto the full line");
+
+      const r2 = spawnCli(["lint", fix.path, "--fix", "--max-chars", "10", "--no-check-paths"]);
+      assert.equal(r2.json.fixed.length, 0, `second --fix must fix nothing; got: ${JSON.stringify(r2.json.fixed)}`);
+      assert.equal(readFileSync(fix.path, "utf-8"), afterFirst, "--fix must converge, not keep mutating the draft");
+    });
+  });
+
+  describe("line-too-long fixable stamping matches what --fix can actually do", () => {
+    const fix = tmpDraft();
+    after(() => fix.cleanup());
+
+    it("stamps fixable:false on raw-JSON fallback, space-less CJK, and over-cap single words", () => {
+      // Three shapes the re-wrapper provably cannot clear (v0.13 review):
+      // 1) content JSON without a text field — the checker measures the raw
+      //    content fallback, which the fixer never touches;
+      // 2) space-less CJK text — no space to swap for a newline;
+      // 3) a single word longer than the cap — words are never split.
+      const noTextContent = JSON.stringify({ styles: [{ range: [0, 10] }], noText: "x".repeat(160) });
+      seedTextTrack(
+        fix.path,
+        "stamp-track",
+        [
+          {
+            id: "stamp-notext-mat",
+            type: "text",
+            content: noTextContent,
+            font_size: 15,
+            text_color: "#FFFFFF",
+            alignment: 1,
+          },
+          textMat("stamp-cjk-mat", "字".repeat(60)),
+          textMat("stamp-word-mat", "x".repeat(60)),
+        ],
+        [
+          textSeg("stamp-1-aaaa-bbbb-cccc-dddddddddddd", "stamp-notext-mat", 800_000_000, 1_000_000),
+          textSeg("stamp-2-aaaa-bbbb-cccc-dddddddddddd", "stamp-cjk-mat", 802_000_000, 1_000_000),
+          textSeg("stamp-3-aaaa-bbbb-cccc-dddddddddddd", "stamp-word-mat", 804_000_000, 1_000_000),
+        ],
+      );
+
+      const detect = spawnCli(["lint", fix.path, "--no-check-paths"]);
+      const mine = detect.json.issues.filter(
+        (i) => i.code === "line-too-long" && i.location?.segment_id?.startsWith("stamp-"),
+      );
+      assert.equal(mine.length, 3, `expected three line-too-long issues; got: ${JSON.stringify(detect.json.issues)}`);
+      for (const i of mine) {
+        assert.equal(
+          i.fixable,
+          false,
+          `--fix cannot clear this instance, so it must not be stamped: ${JSON.stringify(i)}`,
+        );
+      }
+
+      const before = readFileSync(fix.path, "utf-8");
+      const r = spawnCli(["lint", fix.path, "--fix", "--no-check-paths"]);
+      assert.ok(
+        !r.json.fixed.some((i) => i.code === "line-too-long"),
+        `nothing here is repairable; got: ${JSON.stringify(r.json.fixed)}`,
+      );
+      const remaining = r.json.issues.filter(
+        (i) => i.code === "line-too-long" && i.location?.segment_id?.startsWith("stamp-"),
+      );
+      assert.equal(remaining.length, 3, "all three stay reported");
+      assert.equal(readFileSync(fix.path, "utf-8"), before, "--fix must not rewrite a draft it didn't change");
     });
   });
 });
