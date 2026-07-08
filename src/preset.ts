@@ -134,6 +134,118 @@ export function extractTextPreset(
   return { preset, segmentId: seg.id, materialId: mat.id, captured };
 }
 
+// Style fields whose stored type is fixed across CapCut versions. A preset is a
+// portable, hand-editable JSON file: reject a wrong-typed value up front rather
+// than stamp e.g. font_size:"huge" onto the material and corrupt the draft.
+const NUMERIC_STYLE_FIELDS = [
+  "font_size",
+  "alignment",
+  "typesetting",
+  "letter_spacing",
+  "line_spacing",
+  "text_alpha",
+  "shadow_alpha",
+  "shadow_angle",
+  "shadow_distance",
+  "shadow_smoothing",
+  "border_width",
+  "border_alpha",
+  "background_alpha",
+  "background_style",
+  "background_round_radius",
+  "background_width",
+  "background_height",
+  "background_horizontal_offset",
+  "background_vertical_offset",
+];
+const STRING_STYLE_FIELDS = [
+  "text_color",
+  "shadow_color",
+  "border_color",
+  "background_color",
+  "font_id",
+  "font_name",
+  "font_path",
+  "font_resource_id",
+];
+const BOOLEAN_STYLE_FIELDS = ["bold", "italic", "underline", "has_shadow", "has_border", "has_text_shadow_config"];
+
+function validatePresetStyle(style: Record<string, unknown>, source: string): void {
+  for (const f of NUMERIC_STYLE_FIELDS) {
+    const v = style[f];
+    if (v !== undefined && (typeof v !== "number" || !Number.isFinite(v))) {
+      throw new Error(`Preset "style.${f}" must be a finite number, got ${JSON.stringify(v)}: ${source}`);
+    }
+  }
+  for (const f of STRING_STYLE_FIELDS) {
+    if (style[f] !== undefined && typeof style[f] !== "string") {
+      throw new Error(`Preset "style.${f}" must be a string, got ${JSON.stringify(style[f])}: ${source}`);
+    }
+  }
+  for (const f of BOOLEAN_STYLE_FIELDS) {
+    if (style[f] !== undefined && typeof style[f] !== "boolean") {
+      throw new Error(`Preset "style.${f}" must be a boolean, got ${JSON.stringify(style[f])}: ${source}`);
+    }
+  }
+}
+
+function validateTransform(t: unknown, source: string): void {
+  if (t === null || typeof t !== "object" || Array.isArray(t)) {
+    throw new Error(`Preset "transform" must be an object { x: number, y: number }: ${source}`);
+  }
+  const tr = t as Record<string, unknown>;
+  if (typeof tr.x !== "number" || !Number.isFinite(tr.x) || typeof tr.y !== "number" || !Number.isFinite(tr.y)) {
+    throw new Error(`Preset "transform" requires finite numeric "x" and "y": ${source}`);
+  }
+}
+
+function validateBubble(b: unknown, source: string): void {
+  if (b === null || typeof b !== "object" || Array.isArray(b)) {
+    throw new Error(`Preset "bubble" must be an object { effect_id, resource_id }: ${source}`);
+  }
+  const bu = b as Record<string, unknown>;
+  if (typeof bu.effect_id !== "string" || !bu.effect_id || typeof bu.resource_id !== "string" || !bu.resource_id) {
+    throw new Error(`Preset "bubble" requires non-empty string "effect_id" and "resource_id": ${source}`);
+  }
+}
+
+function validateTextRanges(ranges: unknown, source: string): void {
+  if (!Array.isArray(ranges)) {
+    throw new Error(`Preset "text_ranges" must be an array: ${source}`);
+  }
+  ranges.forEach((r, i) => {
+    if (r === null || typeof r !== "object" || Array.isArray(r)) {
+      throw new Error(`Preset "text_ranges[${i}]" must be an object: ${source}`);
+    }
+    const range = r as Record<string, unknown>;
+    if (!Number.isInteger(range.start) || !Number.isInteger(range.end)) {
+      throw new Error(`Preset "text_ranges[${i}]" requires integer "start" and "end": ${source}`);
+    }
+    const start = range.start as number;
+    const end = range.end as number;
+    if (start < 0) throw new Error(`Preset "text_ranges[${i}]" start must be >= 0: ${source}`);
+    if (end <= start)
+      throw new Error(`Preset "text_ranges[${i}]" end must be > start (got [${start},${end})): ${source}`);
+    if (range.font_color !== undefined && typeof range.font_color !== "string") {
+      throw new Error(`Preset "text_ranges[${i}].font_color" must be a string: ${source}`);
+    }
+    if (range.font_size !== undefined && (typeof range.font_size !== "number" || !Number.isFinite(range.font_size))) {
+      throw new Error(`Preset "text_ranges[${i}].font_size" must be a number: ${source}`);
+    }
+    if (
+      range.font_alpha !== undefined &&
+      (typeof range.font_alpha !== "number" || !Number.isFinite(range.font_alpha))
+    ) {
+      throw new Error(`Preset "text_ranges[${i}].font_alpha" must be a number: ${source}`);
+    }
+    for (const f of ["bold", "italic", "underline"] as const) {
+      if (range[f] !== undefined && typeof range[f] !== "boolean") {
+        throw new Error(`Preset "text_ranges[${i}].${f}" must be a boolean: ${source}`);
+      }
+    }
+  });
+}
+
 export function parsePreset(raw: string, source: string): TextStylePreset {
   let parsed: unknown;
   try {
@@ -156,6 +268,10 @@ export function parsePreset(raw: string, source: string): TextStylePreset {
   if (p.style === null || typeof p.style !== "object" || Array.isArray(p.style)) {
     throw new Error(`Preset "style" must be an object: ${source}`);
   }
+  validatePresetStyle(p.style as Record<string, unknown>, source);
+  if (p.transform !== undefined) validateTransform(p.transform, source);
+  if (p.bubble !== undefined) validateBubble(p.bubble, source);
+  if (p.text_ranges !== undefined) validateTextRanges(p.text_ranges, source);
   return p as unknown as TextStylePreset;
 }
 
@@ -210,6 +326,17 @@ export function applyTextPreset(
         id: typeof preset.style.font_id === "string" ? preset.style.font_id : "",
         path: preset.style.font_path,
       };
+    }
+    // A preset "applies in full". A rangeless preset describes ONE uniform look,
+    // so applying it onto a segment that still carries multiple range blocks
+    // (leftover karaoke/highlight styling) must collapse those blocks to the
+    // single preset style — otherwise the trailing base-style chunk keeps its
+    // old size/colour while the material/output claim the new style.
+    const hasPresetRanges = Array.isArray(preset.text_ranges) && preset.text_ranges.length > 0;
+    if (!hasPresetRanges && content.styles && content.styles.length > 1) {
+      const byteLen = Buffer.from(content.text ?? "", "utf16le").length;
+      base.range = [0, byteLen];
+      content.styles = [base];
     }
     mat.content = JSON.stringify(content);
   }
