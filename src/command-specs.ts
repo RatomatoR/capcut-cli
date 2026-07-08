@@ -132,7 +132,7 @@ const usages = {
   volume: "capcut volume <project> <id> <level>",
   trim: "capcut trim <project> <id> <start> <duration>",
   opacity: "capcut opacity <project> <id> <alpha>",
-  "export-srt": "capcut export-srt <project>",
+  "export-srt": "capcut export-srt <project> [options]",
   materials: "capcut materials <project> [--type <type>]",
   segment: "capcut segment <project> <id>",
   material: "capcut material <project> <id>",
@@ -278,6 +278,13 @@ const optionsByCommand: Record<string, OptionSpec[]> = {
       "boolean",
       "Commit only successful operations and exit 1 if any fail.",
     ),
+  ],
+  "export-srt": [
+    option("granularity", ["--granularity"], "enum", "Cue granularity: one cue per caption or per word.", {
+      values: ["line", "word"],
+      default: "line",
+    }),
+    option("format", ["--format"], "enum", "Subtitle output format.", { values: ["srt", "vtt"], default: "srt" }),
   ],
   "import-srt": [
     TRACK_NAME,

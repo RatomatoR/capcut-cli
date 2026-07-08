@@ -323,6 +323,24 @@ export function extractText(content: string): string {
   return content;
 }
 
+// Style `range` entries are UTF-16LE byte offsets (see setTextRanges).
+export function extractStyleRanges(content: string): Array<[number, number]> {
+  try {
+    const parsed = JSON.parse(content) as { styles?: Array<{ range?: unknown }> };
+    if (!Array.isArray(parsed.styles)) return [];
+    const ranges: Array<[number, number]> = [];
+    for (const style of parsed.styles) {
+      const r = style.range;
+      if (Array.isArray(r) && r.length === 2 && typeof r[0] === "number" && typeof r[1] === "number") {
+        ranges.push([r[0], r[1]]);
+      }
+    }
+    return ranges;
+  } catch {
+    return [];
+  }
+}
+
 export function updateTextContent(content: string, newText: string): string {
   try {
     const parsed = JSON.parse(content);
