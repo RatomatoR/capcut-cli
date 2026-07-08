@@ -7,7 +7,14 @@ import { fileURLToPath } from "node:url";
 import { parseAss } from "./ass.js";
 import { captionDraft } from "./caption.js";
 import { removeChroma, setChroma } from "./chroma.js";
-import { buildCommandSpecs, completionWords, GLOBAL_OPTION_SPECS, renderCommandIndex } from "./command-specs.js";
+import {
+  buildCommandSpecs,
+  commandDeclaresFlag,
+  completionWords,
+  GLOBAL_OPTION_SPECS,
+  RELEASE_SCOPED_FLAGS,
+  renderCommandIndex,
+} from "./command-specs.js";
 import { type CompileSpec, compileDraft, parseSpec, planCompile } from "./compile.js";
 import type {
   ImageAnimOptions,
@@ -764,8 +771,19 @@ function fishCompletion(): string {
 function parseFlags(args: string[]): { positional: string[]; flags: Flags } {
   const positional: string[] = [];
   const flags: Flags = { human: false, quiet: false, batch: false };
+  // The subcommand is the first non-flag token (matches how dispatch reads
+  // positional[0]). Used to scope flags added in this release to the commands
+  // that declare them.
+  const command = args.find((a) => a.length > 0 && !a.startsWith("-"));
   for (let i = 0; i < args.length; i++) {
     const a = args[i];
+    // A flag added in this release that the current command does not declare is
+    // left in the positional stream verbatim, so a value-consuming flag can
+    // never strip tokens from another command's free-text arguments.
+    if (RELEASE_SCOPED_FLAGS.has(a) && !commandDeclaresFlag(command, a)) {
+      positional.push(a);
+      continue;
+    }
     if (a === "-H" || a === "--human") flags.human = true;
     else if (a === "-v" || a === "--version") flags.version = true;
     else if (a === "-q" || a === "--quiet") flags.quiet = true;
