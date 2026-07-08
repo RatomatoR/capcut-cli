@@ -75,3 +75,8 @@ export function srtTime(us: number): string {
   const ms = Math.round((totalSec % 1) * 1000);
   return `${pad(h)}:${pad(m)}:${pad(s)},${ms.toString().padStart(3, "0")}`;
 }
+
+// WebVTT uses '.' as the millisecond separator.
+export function vttTime(us: number): string {
+  return srtTime(us).replace(",", ".");
+}

@@ -39,6 +39,7 @@ import { detectEncryption } from "./decrypt.js";
 import { type DoctorCheck, draftDirs, runDoctor } from "./doctor.js";
 import type { Draft, Segment, Track } from "./draft.js";
 import {
+  extractStyleRanges,
   extractText,
   findDraft,
   findMaterial,
@@ -88,9 +89,9 @@ import { buildRenderPlan, renderDraft } from "./render.js";
 import { replaceMedia } from "./replace.js";
 import { serveQueue } from "./serve.js";
 import { addSfx } from "./sfx.js";
-import { parseSrt } from "./srt.js";
+import { collapseKaraokeRuns, cueWords, parseSrt, renderSrt, renderVtt, type SegmentCue } from "./srt.js";
 import { diagnoseDraftStore, discoverDraftStore } from "./store.js";
-import { formatDuration, formatTime, parseTimeInput, srtTime } from "./time.js";
+import { formatDuration, formatTime, parseTimeInput } from "./time.js";
 import { translateDraft } from "./translate.js";
 import { detectVersion } from "./version.js";
 
@@ -273,7 +274,7 @@ Edit:
   volume     <project> <id> <level>             Set volume (0.0-1.0)
   trim       <project> <id> <start> <duration>  Trim segment (times in seconds)
   opacity    <project> <id> <alpha>             Set opacity (0.0-1.0)
-  export-srt <project>                          Export subtitles to SRT
+  export-srt <project> [options]                Export subtitles to SRT/WebVTT
   batch      <project>                          Run multiple edits from stdin (JSONL)
   restore    <project> [--step N | --list]      Undo writes (latest .bak, or N writes back; --list history)
 
@@ -477,6 +478,16 @@ Subtitles (Phase 3):
                --alpha --vertical --shadow --shadow-color --shadow-distance
                --border-width --border-color --border-alpha
                --bg-color --bg-alpha --bg-style --bg-round-radius --bg-h-offset
+  export-srt <project> [options]
+             Export subtitles to stdout.
+             Options:
+               --granularity <line|word>  One cue per caption (default: line)
+                                          or per word (karaoke).
+               --format <srt|vtt>         SRT (default) or WebVTT. WebVTT word
+                                          cues use inline <timestamps>.
+             Word timings are real where the draft stores them (caption
+             --karaoke word segments); elsewhere they are interpolated within
+             each cue, weighted by word character length.
 
 Navigation: info → tracks/materials → segments → segment <id>
             info → materials --type X → material <id>
@@ -592,6 +603,9 @@ interface Flags {
   maxGapMs?: number;
   noProbe?: boolean;
   ffprobeCmd?: string;
+  // export-srt
+  granularity?: "line" | "word";
+  format?: "srt" | "vtt";
   // quickstart
   video?: string;
   srt?: string;
@@ -871,6 +885,18 @@ function parseFlags(args: string[]): { positional: string[]; flags: Flags } {
       flags.maxGapMs = parseFloat(args[++i]);
     } else if (a === "--no-probe") {
       flags.noProbe = true;
+    } else if (a === "--granularity" && i + 1 < args.length) {
+      const granularity = args[++i];
+      if (!["line", "word"].includes(granularity)) {
+        throw new Error("--granularity must be line|word");
+      }
+      flags.granularity = granularity as Flags["granularity"];
+    } else if (a === "--format" && i + 1 < args.length) {
+      const format = args[++i];
+      if (!["srt", "vtt"].includes(format)) {
+        throw new Error("--format must be srt|vtt");
+      }
+      flags.format = format as Flags["format"];
     } else if (a === "--ffprobe-cmd" && i + 1 < args.length) {
       flags.ffprobeCmd = args[++i];
     } else if (a === "--video" && i + 1 < args.length) {
@@ -1226,20 +1252,38 @@ function cmdOpacity(draft: Draft, filePath: string, segId: string, alphaStr: str
   out({ ok: true, id: result.segment.id, old_opacity: old, new_opacity: alpha }, flags);
 }
 
-function cmdExportSrt(draft: Draft): void {
+function cmdExportSrt(draft: Draft, flags: Flags): void {
+  const granularity = flags.granularity ?? "line";
+  const format = flags.format ?? "srt";
   const textTracks = getTracksByType(draft, "text");
-  const entries: Array<{ start: number; end: number; text: string }> = [];
+  const cues: SegmentCue[] = [];
   for (const track of textTracks) {
+    const entries: SegmentCue[] = [];
     for (const seg of track.segments) {
       const mat = findMaterial(draft.materials.texts, seg.material_id);
       if (!mat) continue;
       const t = seg.target_timerange;
-      entries.push({ start: t.start, end: t.start + t.duration, text: extractText(mat.content) });
+      entries.push({
+        startUs: t.start,
+        endUs: t.start + t.duration,
+        text: extractText(mat.content),
+        styleRanges: extractStyleRanges(mat.content),
+      });
     }
+    // Word granularity: karaoke runs (one word-timed segment per word) carry
+    // real word timings; other cues fall back to length-weighted interpolation.
+    if (granularity === "word") cues.push(...collapseKaraokeRuns(entries));
+    else cues.push(...entries);
   }
-  entries.sort((a, b) => a.start - b.start);
-  const srt = entries.map((e, i) => `${i + 1}\n${srtTime(e.start)} --> ${srtTime(e.end)}\n${e.text}\n`).join("\n");
-  process.stdout.write(srt);
+  cues.sort((a, b) => a.startUs - b.startUs);
+  if (format === "vtt") {
+    process.stdout.write(renderVtt(cues, granularity === "word"));
+  } else if (granularity === "word") {
+    const words = cues.flatMap((c) => cueWords(c).map((w) => ({ startUs: w.startUs, endUs: w.endUs, text: w.word })));
+    process.stdout.write(renderSrt(words));
+  } else {
+    process.stdout.write(renderSrt(cues));
+  }
 }
 
 // --- Discovery & drill-down ---
@@ -2656,7 +2700,7 @@ const SUMMARIES: Record<string, string> = {
   volume: "Set a segment's volume (0.0-1.0).",
   trim: "Trim a segment to a start/duration window.",
   opacity: "Set a segment's opacity (0.0-1.0).",
-  "export-srt": "Export subtitles to SRT on stdout.",
+  "export-srt": "Export subtitles to SRT or WebVTT on stdout, per line or per word.",
   materials: "List material types and counts; filter with --type.",
   segment: "Full detail for one segment and its material.",
   material: "Full detail for one material.",
@@ -3272,7 +3316,7 @@ async function main(): Promise<void> {
       cmdOpacity(draft, filePath, positional[2], positional[3], flags);
       break;
     case "export-srt":
-      cmdExportSrt(draft);
+      cmdExportSrt(draft, flags);
       break;
     case "materials":
       cmdMaterials(draft, flags);
