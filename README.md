@@ -55,12 +55,12 @@ JSON by default (pipe to `jq`); add `-H` for a human-readable table. Pass `--jia
 | **Create** | `init` · `quickstart` · `compile` (build a draft from a JSON spec) |
 | **Preview** | `render` (low-res ffmpeg proxy — not CapCut's final render) |
 | **Add** | `add-video` · `add-audio` · `add-text` (Wikimedia URLs supported, license-checked) |
-| **Edit / animate** | trim · speed · volume · transitions · masks · text/image animations |
-| **Templates** | apply and extract reusable layouts |
-| **Subtitles & i18n** | `caption` · `import-srt` · `translate` (multi-language draft clone) |
+| **Edit / animate** | trim · speed · volume · transitions · masks · text/image animations · easing curves |
+| **Templates** | apply and extract reusable layouts · `make-preset` (portable text-style presets) |
+| **Subtitles & i18n** | `caption` · `import-srt` · `export-srt` (line/word SRT + VTT) · `translate` (multi-language draft clone) |
 | **Effects** | `sfx` · `chroma` (chroma key) |
-| **Long-form → short** | `cut` |
-| **Automation** | `serve` (stateless JSONL runner) · `migrate` · `doctor` |
+| **Long-form → short** | `cut` · `detect-scenes` (ffmpeg scene-cut detection) |
+| **Automation** | `serve` (stateless JSONL runner) · `migrate` · `doctor` · `sync-timelines` (8.7 mirror repair) |
 
 **Full reference** for every command, option, and exit code: **[docs/command-reference.md](./docs/command-reference.md)**.
 

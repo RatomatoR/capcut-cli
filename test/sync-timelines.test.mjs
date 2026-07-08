@@ -140,7 +140,11 @@ describe("sync-timelines", () => {
     assert.deepEqual(r.json.reconciled, ["draft_info.json"], "only the readable mirror is repaired");
     assert.equal(r.json.unreconcilable[0].file, "template-2.tmp");
     assert.match(r.stderr, /WARNING template-2\.tmp/);
-    assert.equal(readFileSync(join(f.dir, "template-2.tmp"), "utf-8"), "\x00\x01not-json\x02", "binary mirror left untouched");
+    assert.equal(
+      readFileSync(join(f.dir, "template-2.tmp"), "utf-8"),
+      "\x00\x01not-json\x02",
+      "binary mirror left untouched",
+    );
 
     // The remaining unreconcilable mirror keeps ok=false honesty on later runs.
     const again = spawnCli(["sync-timelines", f.dir]);

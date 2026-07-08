@@ -17,7 +17,7 @@
 | `volume` | `capcut volume <project> <id> <level>` | yes | Set a segment's volume (0.0-1.0). |
 | `trim` | `capcut trim <project> <id> <start> <duration>` | yes | Trim a segment to a start/duration window. |
 | `opacity` | `capcut opacity <project> <id> <alpha>` | yes | Set a segment's opacity (0.0-1.0). |
-| `export-srt` | `capcut export-srt <project>` | no | Export subtitles to SRT on stdout. |
+| `export-srt` | `capcut export-srt <project> [options]` | no | Export subtitles to SRT or WebVTT on stdout, per line or per word. |
 | `materials` | `capcut materials <project> [--type <type>]` | no | List material types and counts; filter with --type. |
 | `segment` | `capcut segment <project> <id>` | no | Full detail for one segment and its material. |
 | `material` | `capcut material <project> <id>` | no | Full detail for one material. |
@@ -25,7 +25,7 @@
 | `add-video` | `capcut add-video <project> <file-or-url> <start> [duration] [options]` | yes | Add a local or Wikimedia video/image on a video track. |
 | `add-text` | `capcut add-text <project> <start> <duration> <text> [options]` | yes | Add a text segment with font/color/position options. |
 | `cut` | `capcut cut <project> <start> <end> --out <path>` | yes | Extract a time range into a new standalone draft. |
-| `keyframe` | `capcut keyframe <project> <id> <property> <time> <value> \| --batch` | yes | Add a keyframe (position/scale/rotation/alpha/volume); single or --batch. |
+| `keyframe` | `capcut keyframe <project> <id> <property> <time> <value> [--easing <name>] \| --batch` | yes | Add a keyframe (position/scale/rotation/alpha/volume); single or --batch. |
 | `transition` | `capcut transition <project> <id> <slug> [--duration <time>]` | yes | Add a transition between segments. |
 | `mask` | `capcut mask <project> <id> <slug> [options] \| --off` | yes | Apply a mask (linear/circle/heart/...) with geometry flags, or --off. |
 | `bg-blur` | `capcut bg-blur <project> <id> <level> \| --off` | yes | Set background blur level 1-4, or --off. |
@@ -41,6 +41,7 @@
 | `add-effect` | `capcut add-effect <project> <slug> <start> <duration> [options]` | yes | Add a scene effect on its own track. |
 | `save-template` | `capcut save-template <project> <id> <name> --out <path>` | no | Extract a segment as a reusable template JSON. |
 | `apply-template` | `capcut apply-template <project> <template> <start> <duration> [text] [options]` | yes | Stamp a template into a project with new timing/text. |
+| `make-preset` | `capcut make-preset <project> <text-segment-id> --out <preset.json>` | no | Extract a text segment's styling as a reusable preset JSON (apply via --preset). |
 | `templates` | `capcut templates <project>` | no | List bundled reusable templates. |
 | `batch` | `capcut batch <project> [--continue-on-error] < operations.jsonl` | yes | Run multiple edits from stdin (JSONL), one file write. |
 | `import-srt` | `capcut import-srt <project> <srt-or-> [options]` | yes | Import an SRT file/stdin as one text segment per cue. |
@@ -53,6 +54,7 @@
 | `chroma` | `capcut chroma <project> <id> (--color <hex> \| --off) [options]` | yes | Green-screen / chroma key a video segment, or --off. |
 | `prune` | `capcut prune <project>` | yes | Remove materials no segment references. |
 | `relink` | `capcut relink <project> (--dir <path> \| --from <prefix> --to <prefix>)` | yes | Repair broken media paths (--dir or --from/--to). |
+| `replace-media` | `capcut replace-media <project> <segment-id> <new-file> [--retime]` | yes | Swap a segment's source file (placeholder > final) keeping its timing, effects, and keyframes. |
 | `timeline` | `capcut timeline <project> [--cols <number>]` | no | Show the track/segment layout (JSON, or -H ASCII bars). |
 | `projects` | `capcut projects [query] [--drafts <path>] [--names]` | no | List CapCut/JianYing draft folders on disk. |
 | `diff` | `capcut diff <project-a> <project-b>` | no | Compare two drafts (segments/materials/tracks added/removed/changed). |
@@ -63,10 +65,14 @@
 | `enums` | `capcut enums <category-flag> [--jianying]` | no | List enum slugs (transitions, masks, effects, ...) by category. |
 | `doctor` | `capcut doctor` | no | Environment preflight (Node, whisper, API key, project dir). |
 | `diagnose` | `capcut diagnose <project> [--bundle <report.json>]` | no | Inspect canonical draft files, divergence, and editor-write safety. |
+| `fixture` | `capcut fixture <project> --out <dir>` | no | Build a shareable, redacted compatibility bundle (timeline JSON only) for a version-support issue. |
+| `sync-timelines` | `capcut sync-timelines <project> [--apply]` | yes | Reconcile timeline mirrors (template-2.tmp, draft_info.json) drifted from draft_content.json (plan by default; --apply writes). |
 | `restore` | `capcut restore <project> [--step <number> \| --list]` | yes | Undo writes from .bak / snapshot history (--step N, --list). |
 | `serve` | `capcut serve [--queue <path>] [options]` | no | Run a stateless JSONL job queue from stdin/--queue. |
 | `decrypt` | `capcut decrypt <project-or-file>` | no | Detect JianYing 6.0+ encryption and explain the workaround. |
 | `export` | `capcut export <drafts-dir> --batch [options]` | yes | EXPERIMENTAL UI-automated render queue (macOS). |
 | `init` | `capcut init <name> [--template <dir>] [--drafts <dir>]` | yes | Create a new empty draft from a template. |
+| `quickstart` | `capcut quickstart <name> [--video <f>] [--audio <f>] [--srt <f>] [--drafts <dir>]` | yes | One-command first draft: create + add one input + lint + print the open-in-CapCut step. |
 | `compile` | `capcut compile <spec.json> [--out <draftdir>] [--check \| --plan]` | yes | Build a draft from a declarative JSON spec (the inverse of describe). |
 | `render` | `capcut render <project> [--out <preview.mp4>] [options]` | no | Render a low-res ffmpeg proxy preview (trim+speed+audio, --burn-captions); not CapCut's final render. |
+| `detect-scenes` | `capcut detect-scenes <video> [options]` | no | Detect scene-change cut points in a video (ffmpeg scene filter); prints cuts + segments to seed compile/cut. |

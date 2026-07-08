@@ -2,11 +2,24 @@
 
 All notable changes to capcut-cli are documented here. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); the project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [0.13.0] — 2026-07-08
+
+Six features in one release — the top of the opportunity backlog, bundled. Two build on prior art from the [capcut-cli-david](https://github.com/Davidb-2107/capcut-cli-david) fork (thanks @Davidb-2107); see #36.
 
 ### Added
 
-- `lint <project> --fix` — auto-repair mechanically-fixable draft defects (`cue-too-long`, `caption-overlap`). Trims over-long captions to the configured cap and shortens overlapping caption pairs so each ends where the next begins. Writes atomically with a `.bak` snapshot; combine with `--dry-run` to preview without touching the draft. Non-fixable issues (`missing-material`, `missing-file`, `line-too-long`, `caption-gap-too-small`) are still reported and continue to drive the exit code. Closes #40.
+- `sync-timelines <project> [--apply] [--force-write]` — reconcile a CapCut >= 8.7 draft whose `template-2.tmp` / `draft_info.json` timeline mirror has drifted from `draft_content.json`, so CLI edits are honored by the app instead of silently ignored. `draft_content.json` is always canonical. Plan-only by default (per-target drift report, including `draft_info.json` GUID reconciliation for the pre-open mirror case); `--apply` writes through the existing transactional multi-target save (temp files, `.bak` backups, rollback, optimistic-concurrency check). Refuses to write while the editor is running unless `--force-write`, no-ops with exit 0 when all targets agree, and reports an unreadable (binary/encrypted) `template-2.tmp` as unreconcilable instead of pretending success. `diagnose` now points to `sync-timelines` as the remedy instead of deferring to issue #35. Closes #39.
+- `lint <project> --fix` — auto-repair mechanically-fixable draft defects, now four codes: `cue-too-long` (trims over-long captions to the configured cap), `caption-overlap` (shortens overlapping pairs so each ends where the next begins), `line-too-long` (greedy word wrap that swaps spaces for newlines 1:1, keeping styled-range byte offsets valid; never splits words), and `caption-gap-too-small` (pulls the earlier caption's end back to restore the minimum gap; never moves starts, never creates a new overlap). Writes atomically with a `.bak` snapshot; combine with `--dry-run` to preview. `missing-material` and `missing-file` stay report-only deliberately: the only mechanical repairs would delete user timeline content or act on host-dependent paths. Closes #40.
+- `lint` — new report-only rule `unknown-effect-slug` (warning severity): flags effect/filter/animation resource ids in the draft that are not in the bundled enum table, surfacing them before CapCut silently drops them (the silent-failure mode reported across ecosystem tools, e.g. GuanYixuan/pyCapCut#12).
+- `export-srt <project> [--granularity line|word] [--format srt|vtt]` — word-level caption export. Captions created by `caption --karaoke` carry real per-word timing and export it exactly; plain captions interpolate word timing proportionally by word length (stated in `--help`). SRT + word emits one cue per word; VTT + word emits one cue per phrase with inline `<hh:mm:ss.mmm>` karaoke timestamps for burn-in pipelines. Defaults (`line`, `srt`) reproduce the previous output byte-identically.
+- `keyframe ... --easing <linear|ease-in|ease-out|ease-in-out>` — CapCut-native easing curves, also accepted per-line (`easing` key) in `keyframe --batch` JSONL and in the `compile` spec's keyframe op. The app does not store named curve types: the UI writes `FreeCurveInOut` bezier control handles on both keyframes of the eased segment, and the emitted encodings are locked against a UI-oracle capture (prior art: capcut-cli-david). The `ken-burns` skill default changed linear → ease-out to match what the CapCut UI itself produces.
+- `detect-scenes <video> [--threshold <0..1>] [--min-gap <s>] [--limit <n>] [--json]` — deterministic ffmpeg scene-cut detection (no AI, zero new dependencies) to seed the long-form → shorts flow: prints detected cut points (seconds, `hh:mm:ss.mmm` timecode, scene score) plus a ready-to-use contiguous segment list in seconds and draft-native microseconds. Follows the `probe`/`render` external-binary pattern, including a clear actionable error when ffmpeg is missing.
+- `make-preset <project> <text-segment-id> --out <preset.json>` — extract a hand-tuned text style (font, colors, style flags, alignment/transform, bubble, karaoke/multi-style ranges) from an existing draft into a versioned, portable preset file; apply it with the new `--preset <file>` flag on `add-text`, `text-style`, and `caption`. Explicit CLI flags override preset values. Addresses the recurring ecosystem ask for programmatic font/style reuse (GuanYixuan/pyJianYingDraft#192, Hommy-master/capcut-mate#57).
+
+### Documentation
+
+- `docs/version-support.md` — the CapCut 8.7 row now names `sync-timelines` as the repair path for drifted mirrors.
+- `docs/draft-schema/03-keyframes-and-animations.md` — documents the `FreeCurveInOut` bezier-handle easing encoding.
 
 ## [0.12.0] — 2026-06-27
 
