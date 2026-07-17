@@ -314,3 +314,21 @@ describe("register", () => {
     assert.ok(!advice.includes("register <project> --apply"), "diagnose must not recommend a destructive one-liner");
   });
 });
+
+describe("register — BOM-tolerant reads", () => {
+  it("reads BOM'd draft/store files instead of reporting them unreadable", () => {
+    const root = mkdtempSync(join(tmpdir(), "capcut-register-bom-"));
+    try {
+      writeFileSync(join(root, "root_meta_info.json"), `\uFEFF${JSON.stringify({ all_draft_store: [] })}`);
+      const dir = join(root, "BOM Draft");
+      mkdirSync(dir);
+      writeFileSync(join(dir, "draft_content.json"), `\uFEFF${JSON.stringify(contentDraft())}`);
+      const r = spawnCli(["register", dir]);
+      assert.equal(r.status, 0, `stderr: ${r.stderr}`);
+      assert.equal(r.json.needs_repair, true);
+      assert.ok(!JSON.stringify(r.json).includes("unreadable"), "BOM'd files must not be classified unreadable");
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+});

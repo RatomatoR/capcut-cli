@@ -64,13 +64,18 @@ describe("capcut duplicate (new track above the source)", () => {
     assert.equal(draft.duration, before.duration);
   });
 
-  it("shares the source video material but clones every extra_material_refs companion", () => {
+  it("clones the source video material entry (same file, fresh id) and every extra_material_refs companion", () => {
     const draft = loadDraft(fix.path);
     const copy = draft.tracks.find((t) => t.name === `${sourceTrack.name}-copy`).segments[0];
 
-    // Heavy media stays shared by reference.
-    assert.equal(copy.material_id, source.material_id);
-    assert.equal(draft.materials.videos.length, before.materials.videos.length);
+    // The media FILE stays shared, but the material entry is per-segment
+    // state: a fresh id so crop/mix-mode on the copy never leak to the source.
+    assert.notEqual(copy.material_id, source.material_id);
+    assert.equal(draft.materials.videos.length, before.materials.videos.length + 1);
+    const copyMat = draft.materials.videos.find((m) => m.id === copy.material_id);
+    const srcMat = draft.materials.videos.find((m) => m.id === source.material_id);
+    assert.ok(copyMat, "cloned video material is registered in materials.videos");
+    assert.equal(copyMat.path, srcMat.path, "clone points at the same media file");
 
     // Companions are per-segment instances: same count, fresh ids.
     assert.equal(copy.extra_material_refs.length, source.extra_material_refs.length);
@@ -86,6 +91,26 @@ describe("capcut duplicate (new track above the source)", () => {
     assert.deepEqual(src.extra_material_refs, source.extra_material_refs);
   });
 
+  it("crop on the copy never touches the source segment's material", () => {
+    const fresh = tmpDraft();
+    try {
+      const dup = spawnCli(["duplicate", fresh.path, source.id]);
+      assert.equal(dup.status, 0, `stderr: ${dup.stderr}`);
+      const cropBefore = loadDraft(fresh.path).materials.videos.find((m) => m.id === source.material_id).crop;
+
+      const r = spawnCli(["crop", fresh.path, dup.json.new_segment_id, "--rect", "0.25,0.25,0.5,0.5"]);
+      assert.equal(r.status, 0, `stderr: ${r.stderr}`);
+
+      const draft = loadDraft(fresh.path);
+      const srcMat = draft.materials.videos.find((m) => m.id === source.material_id);
+      const copyMat = draft.materials.videos.find((m) => m.id === dup.json.material_id);
+      assert.equal(copyMat.crop.upper_left_x, 0.25, "copy's material got the crop");
+      assert.deepEqual(srcMat.crop, cropBefore, "source material's crop is untouched");
+    } finally {
+      fresh.cleanup();
+    }
+  });
+
   it("reports the cloned companions in cloned_materials", () => {
     const fresh = tmpDraft();
     try {
@@ -93,7 +118,10 @@ describe("capcut duplicate (new track above the source)", () => {
       assert.equal(r.status, 0, `stderr: ${r.stderr}`);
       assert.deepEqual(
         r.json.cloned_materials.map((m) => ({ type: m.type, source_id: m.source_id })),
-        source.extra_material_refs.map((ref) => ({ type: "speeds", source_id: ref })),
+        [
+          { type: "videos", source_id: source.material_id },
+          ...source.extra_material_refs.map((ref) => ({ type: "speeds", source_id: ref })),
+        ],
       );
       for (const m of r.json.cloned_materials) assert.notEqual(m.id, m.source_id);
     } finally {

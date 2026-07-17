@@ -427,3 +427,27 @@ describe("caption --color-cycle + --highlight-words (plain cues)", { skip: isWin
     assert.equal(c2.styles[0].font_color, "#00FF00");
   });
 });
+
+describe("import-srt --color-cycle × --style-ref precedence", () => {
+  const fix = tmpDraft();
+  after(() => fix.cleanup());
+
+  it("re-applies the per-cue cycle colour after copyTextStyle", () => {
+    const styleRef = loadDraft(fix.path).tracks.find((t) => t.type === "text").segments[0];
+    const srt = [
+      "1\n00:00:00,000 --> 00:00:02,000\nfirst cue\n",
+      "2\n00:00:02,000 --> 00:00:04,000\nsecond cue\n",
+    ].join("\n");
+    const r = spawnCli(["import-srt", fix.path, "-", "--style-ref", styleRef.id, "--color-cycle", "#FF0000,#00FF00"], {
+      input: srt,
+    });
+    assert.equal(r.status, 0, `stderr: ${r.stderr}`);
+
+    const draft = loadDraft(fix.path);
+    const segs = textTrack(draft, "subtitle").segments;
+    assert.equal(segs.length, 2);
+    // The style-ref replaces styles[0] wholesale; the cycle colour must win per cue.
+    assert.deepEqual(fillColor(materialContent(draft, segs[0]).styles[0]), RED);
+    assert.deepEqual(fillColor(materialContent(draft, segs[1]).styles[0]), GREEN);
+  });
+});

@@ -352,9 +352,11 @@ Edit:
              from issue #44: copy the clip above itself, then mask the copy).
              Default and --new-track: a fresh same-type track directly above
              the source. --track <track-name>: use that existing same-type
-             track; exits 1 when the target range is occupied there. The
-             source video/audio material stays shared; per-segment companion
-             materials (speed, canvas, mask, ...) are cloned with fresh ids.
+             track; exits 1 when the target range is occupied there. The media
+             file on disk stays shared, but the material entry and every
+             per-segment companion (speed, canvas, mask, ...) are cloned with
+             fresh ids, so edits like crop/mix-mode on the copy never touch
+             the source segment.
   export-srt <project> [options]                Export subtitles to SRT/WebVTT
   batch      <project>                          Run multiple edits from stdin (JSONL)
   restore    <project> [--step N | --list]      Undo writes (latest .bak, or N writes back; --list history)
@@ -2417,7 +2419,10 @@ function importCuesToDraft(
       trackName: flags.trackName ?? "subtitle",
     };
     const res = addText(draft, filePath, opts);
-    if (flags.styleRef) copyTextStyle(draft, flags.styleRef, res.materialId);
+    // --color-cycle wins over the style-ref base colour per cue: keep the
+    // fill colour addText just wrote instead of the ref's.
+    if (flags.styleRef)
+      copyTextStyle(draft, flags.styleRef, res.materialId, { keepFillColor: Boolean(emphasis.cycle) });
     if (hasStyleFlags) setTextStyle(draft, res.segmentId, styleOpts);
     if (emphasis.words) {
       // Emphasis ranges sit on top of the base styling written above; unmatched

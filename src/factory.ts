@@ -2,6 +2,7 @@ import { createHash, randomUUID } from "node:crypto";
 import { copyFileSync, cpSync, existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { basename, dirname, resolve } from "node:path";
 import { stripBom } from "./bom.js";
+import { uuidHex } from "./decorators.js";
 import type { Draft, Segment, Timerange, Track } from "./draft.js";
 import { findMaterialGlobal, findSegment, writeAtomic } from "./draft.js";
 import { findEnum, type Namespace } from "./enums.js";
@@ -392,7 +393,7 @@ export function planDraftRegistration(
   }
   let content: Record<string, unknown>;
   try {
-    content = JSON.parse(readFileSync(contentPath, "utf-8")) as Record<string, unknown>;
+    content = JSON.parse(stripBom(readFileSync(contentPath, "utf-8"))) as Record<string, unknown>;
   } catch (error) {
     throw new Error(
       `register needs a readable draft_content.json (the id/name/duration source), but it did not parse: ${
@@ -425,7 +426,7 @@ export function planDraftRegistration(
 
   // Target 1: the per-folder draft_meta_info.json sidecar.
   const metaPath = resolve(projectDir, "draft_meta_info.json");
-  const metaRaw = existsSync(metaPath) ? readFileSync(metaPath, "utf-8") : null;
+  const metaRaw = existsSync(metaPath) ? stripBom(readFileSync(metaPath, "utf-8")) : null;
   let metaParsed: Record<string, unknown> | null = null;
   if (metaRaw !== null) {
     try {
@@ -520,7 +521,7 @@ export function planDraftRegistration(
 
     // Target 2: the draft's entry in the store's root_meta_info.json index.
     const indexPath = resolve(storeRoot, "root_meta_info.json");
-    const indexRaw = existsSync(indexPath) ? readFileSync(indexPath, "utf-8") : null;
+    const indexRaw = existsSync(indexPath) ? stripBom(readFileSync(indexPath, "utf-8")) : null;
     if (indexRaw === null) {
       // No index yet (fresh CapCut / custom --drafts dir): create a minimal
       // one, exactly like init's registerDraftInIndex.
@@ -651,7 +652,7 @@ export function applyDraftRegistration(
 ): { applied: string[]; backups: string[] } {
   if (!options.forceWrite) {
     for (const write of result.writes) {
-      const current = existsSync(write.path) ? readFileSync(write.path, "utf-8") : null;
+      const current = existsSync(write.path) ? stripBom(readFileSync(write.path, "utf-8")) : null;
       if (current !== write.previous) {
         throw new Error(
           `Draft changed on disk after it was planned: ${write.file}. ` +
@@ -885,7 +886,12 @@ export const STYLE_FIELDS = [
   "underline",
 ] as const;
 
-export function copyTextStyle(draft: Draft, refSegmentId: string, targetMaterialId: string): void {
+export function copyTextStyle(
+  draft: Draft,
+  refSegmentId: string,
+  targetMaterialId: string,
+  opts: { keepFillColor?: boolean } = {},
+): void {
   const refSeg = findSegment(draft, refSegmentId)?.segment;
   if (!refSeg) throw new Error(`Style-ref segment not found: ${refSegmentId}`);
   const texts = draft.materials.texts as unknown as Array<Record<string, unknown>>;
@@ -894,17 +900,21 @@ export function copyTextStyle(draft: Draft, refSegmentId: string, targetMaterial
   if (!refMat) throw new Error(`Style-ref is not a text segment: ${refSegmentId}`);
   if (!tgtMat) throw new Error(`Target material not found: ${targetMaterialId}`);
   for (const f of STYLE_FIELDS) {
+    if (opts.keepFillColor && f === "text_color") continue;
     if (refMat[f] !== undefined) tgtMat[f] = refMat[f];
   }
   // Mirror the fill color encoded inside `content`'s styles[0] too — CapCut
-  // renders from that. Preserve the new cue's text.
+  // renders from that. Preserve the new cue's text, and with keepFillColor
+  // (import-srt --color-cycle) the cue's already-written fill colour.
   if (typeof refMat.content === "string" && typeof tgtMat.content === "string") {
     try {
       const refC = JSON.parse(refMat.content) as { styles?: Array<Record<string, unknown>>; text?: string };
       const tgtC = JSON.parse(tgtMat.content) as { styles?: Array<Record<string, unknown>>; text?: string };
       if (refC.styles && refC.styles.length > 0 && tgtC.styles && tgtC.styles.length > 0) {
         const preservedRange = tgtC.styles[0].range;
+        const preservedFill = opts.keepFillColor ? tgtC.styles[0].fill : undefined;
         tgtC.styles[0] = { ...refC.styles[0], range: preservedRange };
+        if (preservedFill !== undefined) tgtC.styles[0].fill = preservedFill;
         tgtMat.content = JSON.stringify(tgtC);
       }
     } catch {
@@ -1462,10 +1472,10 @@ export interface DuplicateSegmentResult {
   clonedMaterials: Array<{ type: string; id: string; source_id: string }>;
 }
 
-// The heavy file-backed media buckets. A duplicate SHARES these by reference —
-// both segments point at the same source clip. Every other material the app
-// treats as a per-segment instance and must be cloned (see below).
-const SHARED_PRIMARY_BUCKETS = new Set(["videos", "audios"]);
+// Every material entry is per-segment state, including videos/audios: the
+// media FILE on disk stays shared, but the entry must be cloned so
+// material-level edits (crop, mix-mode, replace-media) on the copy never
+// leak to the source segment underneath it.
 
 /**
  * Duplicate a segment at the SAME timeline position/duration onto a track that
@@ -1531,16 +1541,11 @@ export function duplicateSegment(
   newSeg.raw_segment_id = track.id;
   const clonedMaterials: DuplicateSegmentResult["clonedMaterials"] = [];
 
-  // Non-media primaries (a text segment's text material, a sticker's sticker
-  // material, ...) are 1:1 with their segment — clone them like the
-  // companions. Only videos/audios stay shared.
-  if (!SHARED_PRIMARY_BUCKETS.has(primary.type)) {
-    const clone = structuredClone(primary.material);
-    clone.id = uuid();
-    draft.materials[primary.type].push(clone);
-    newSeg.material_id = clone.id as string;
-    clonedMaterials.push({ type: primary.type, id: clone.id as string, source_id: sourceSeg.material_id });
-  }
+  const primaryClone = structuredClone(primary.material);
+  primaryClone.id = uuid();
+  draft.materials[primary.type].push(primaryClone);
+  newSeg.material_id = primaryClone.id as string;
+  clonedMaterials.push({ type: primary.type, id: primaryClone.id as string, source_id: sourceSeg.material_id });
 
   // Per-segment companions referenced via extra_material_refs (speed,
   // placeholder_info, sound_channel_mapping, vocal_separation, canvas,
@@ -1560,13 +1565,13 @@ export function duplicateSegment(
   newSeg.extra_material_refs = newRefs;
 
   // Keyframe lists/entries live embedded in the segment; re-mint their ids on
-  // the copy (dash-less hex, matching what addKeyframes writes).
+  // the copy with the same uuidHex scheme addKeyframes writes.
   if (Array.isArray(newSeg.common_keyframes)) {
     for (const list of newSeg.common_keyframes as Array<Record<string, unknown>>) {
-      if (typeof list.id === "string") list.id = uuid().replace(/-/g, "");
+      if (typeof list.id === "string") list.id = uuidHex();
       if (Array.isArray(list.keyframe_list)) {
         for (const kf of list.keyframe_list as Array<Record<string, unknown>>) {
-          if (typeof kf.id === "string") kf.id = uuid().replace(/-/g, "");
+          if (typeof kf.id === "string") kf.id = uuidHex();
         }
       }
     }

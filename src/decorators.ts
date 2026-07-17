@@ -120,7 +120,7 @@ export interface KeyframeInput {
   easing?: string; // per-keyframe override of the per-call easing
 }
 
-function uuidHex(): string {
+export function uuidHex(): string {
   return randomUUID().replace(/-/g, "");
 }
 
