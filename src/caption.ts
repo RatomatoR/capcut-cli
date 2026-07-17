@@ -3,7 +3,13 @@ import { randomUUID as uuid } from "node:crypto";
 import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { setTextRanges } from "./decorators.js";
+import {
+  buildEmphasisRanges,
+  DEFAULT_KEYWORD_SIZE,
+  KARAOKE_HIGHLIGHT_COLOR,
+  setTextRanges,
+  type TextRangeInput,
+} from "./decorators.js";
 import type { Draft, Segment, Track } from "./draft.js";
 import { findSegment } from "./draft.js";
 import { captionStyleFromPreset, type TextStylePreset } from "./preset.js";
@@ -23,6 +29,10 @@ export interface CaptionOptions {
   maxWords?: number;
   maxChars?: number;
   maxGapMs?: number;
+  highlightWords?: string[]; // per-cue keyword emphasis (case-insensitive whole-word)
+  keywordColor?: string; // emphasis colour; default KARAOKE_HIGHLIGHT_COLOR
+  keywordSize?: number; // emphasis multiplier on the cue's base font size; default DEFAULT_KEYWORD_SIZE
+  colorCycle?: string[]; // rotate the BASE text colour per cue in list order
 }
 
 export interface CaptionWord {
@@ -50,6 +60,8 @@ export interface CaptionResult {
   engine_name?: string;
   words?: number;
   karaoke?: boolean;
+  keyword_matches?: number;
+  color_cycle?: number;
 }
 
 /**
@@ -106,23 +118,62 @@ export function captionDraft(draft: Draft, opts: CaptionOptions): CaptionResult 
 
   if (!Array.isArray(draft.materials.texts)) draft.materials.texts = [];
 
+  const highlightWords = opts.highlightWords ?? [];
+  const keywordColor = opts.keywordColor ?? KARAOKE_HIGHLIGHT_COLOR;
+  const keywordSize = opts.keywordSize ?? DEFAULT_KEYWORD_SIZE;
+  const colorCycle = opts.colorCycle ?? [];
+
   let created = 0;
-  for (const cue of cues) {
+  let keywordMatches = 0;
+  for (let cueIndex = 0; cueIndex < cues.length; cueIndex++) {
+    const cue = cues[cueIndex];
+    // --color-cycle rotates the BASE colour per cue; keyword emphasis sits on top.
+    const cycleColor = colorCycle.length > 0 ? colorCycle[cueIndex % colorCycle.length] : undefined;
+    const cueStyle = cycleColor === undefined ? baseStyle : { ...baseStyle, font_color: cycleColor };
+    const emphasis = (text: string, presetRanges?: TextRangeInput[]) =>
+      buildEmphasisRanges(text, {
+        words: highlightWords,
+        color: keywordColor,
+        sizeMultiplier: keywordSize,
+        baseSize: Number(cueStyle.font_size ?? 15),
+        baseColor: String(cueStyle.font_color ?? "#FFFFFF"),
+        baseBold: Boolean(cueStyle.bold ?? false),
+        presetRanges,
+      });
     if (opts.karaoke && cue.words && cue.words.length > 0) {
       const fullText = cue.words.map((word) => word.word).join(" ");
       let cursor = 0;
+      let cueMatches = 0;
       for (const word of cue.words) {
         const start = cursor;
         const end = start + word.word.length;
-        const segmentId = addCaptionSegment(draft, track, fullText, word.startUs, word.endUs, baseStyle);
-        setTextRanges(draft, segmentId, [
-          { start, end, font_color: "#FFD700", font_size: Number(baseStyle.font_size ?? 15) * 1.08, bold: true },
-        ]);
+        const segmentId = addCaptionSegment(draft, track, fullText, word.startUs, word.endUs, cueStyle);
+        const karaokeRange: TextRangeInput = {
+          start,
+          end,
+          font_color: KARAOKE_HIGHLIGHT_COLOR,
+          font_size: Number(cueStyle.font_size ?? 15) * 1.08,
+          bold: true,
+        };
+        if (highlightWords.length > 0 || cycleColor !== undefined) {
+          // Karaoke ranges are built first; keyword matches override those words.
+          const { ranges, matches } = emphasis(fullText, [karaokeRange]);
+          setTextRanges(draft, segmentId, ranges);
+          cueMatches = matches;
+        } else {
+          setTextRanges(draft, segmentId, [karaokeRange]);
+        }
         cursor = end + 1;
         created++;
       }
+      keywordMatches += cueMatches;
     } else {
-      addCaptionSegment(draft, track, cue.text, cue.startUs, cue.endUs, baseStyle);
+      const segmentId = addCaptionSegment(draft, track, cue.text, cue.startUs, cue.endUs, cueStyle);
+      if (highlightWords.length > 0) {
+        const { ranges, matches } = emphasis(cue.text);
+        if (ranges.length > 0) setTextRanges(draft, segmentId, ranges);
+        keywordMatches += matches;
+      }
       created++;
     }
   }
@@ -138,6 +189,9 @@ export function captionDraft(draft: Draft, opts: CaptionOptions): CaptionResult 
     engine_name: transcription.engine,
     words: transcription.words.length,
     karaoke: opts.karaoke ?? false,
+    // undefined when the flags are off, so JSON output stays byte-identical.
+    keyword_matches: highlightWords.length > 0 ? keywordMatches : undefined,
+    color_cycle: colorCycle.length > 0 ? colorCycle.length : undefined,
   };
 }
 
