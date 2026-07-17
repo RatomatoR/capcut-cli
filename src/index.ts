@@ -75,17 +75,21 @@ import {
   addText,
   addVideo,
   applyTemplate,
+  type CropRect,
   copyTextStyle,
+  cropRectForRatio,
   cutProject,
   effectSlugs,
   filterCatalogue,
   filterSlugs,
+  getCrop,
   initDraft,
   mixModeSlugs,
   resolveAssetPath,
   saveTemplate,
   setAudioFade,
   setCover,
+  setCrop,
   setMixMode,
   uuid,
 } from "./factory.js";
@@ -127,6 +131,7 @@ export const COMMANDS = [
   "add-audio",
   "add-video",
   "add-text",
+  "crop",
   "cut",
   "keyframe",
   "transition",
@@ -318,6 +323,20 @@ Edit:
   volume     <project> <id> <level>             Set volume (0.0-1.0)
   trim       <project> <id> <start> <duration>  Trim segment (times in seconds)
   opacity    <project> <id> <alpha>             Set opacity (0.0-1.0)
+  crop       <project> <segment-id> [options]   Read or set the source-material crop
+             No flags: read-only — print the material's crop struct as JSON
+             (plus source width/height when stored) and write nothing.
+             Options:
+               --ratio <r>        free|1:1|16:9|9:16|4:3|3:4 — centered maximal
+                                  crop of that aspect against the source
+                                  width/height stored in the draft (errors if
+                                  the dims are missing/zero: pass --rect)
+               --rect <x,y,w,h>   Explicit normalized rect, 0..1 fractions of
+                                  the source frame; overrides --ratio
+               --reset            Restore the full frame
+             When the material carries a crop_ratio field it is stamped
+             "free" (CapCut's preset enum values are not published), so the
+             app recomputes from the corner points.
   export-srt <project> [options]                Export subtitles to SRT/WebVTT
   batch      <project>                          Run multiple edits from stdin (JSONL)
   restore    <project> [--step N | --list]      Undo writes (latest .bak, or N writes back; --list history)
@@ -734,6 +753,10 @@ interface Flags {
   minGap?: number;
   limit?: number;
   json?: boolean;
+  // crop
+  ratio?: string;
+  rect?: string;
+  reset?: boolean;
 }
 
 // Map CLI enum flags -> enums.json category key. Order matters for HELP text.
@@ -1073,6 +1096,12 @@ function parseFlags(args: string[]): { positional: string[]; flags: Flags } {
       flags.limit = parseInt(args[++i], 10);
     } else if (a === "--json") {
       flags.json = true;
+    } else if (a === "--ratio" && i + 1 < args.length) {
+      flags.ratio = args[++i];
+    } else if (a === "--rect" && i + 1 < args.length) {
+      flags.rect = args[++i];
+    } else if (a === "--reset") {
+      flags.reset = true;
     } else {
       const hit = ENUM_FLAG_MAP.find((f) => f.flag === a);
       if (hit) {
@@ -1985,6 +2014,34 @@ function cmdMixMode(draft: Draft, filePath: string, positional: string[], flags:
   const mode = positional[3];
   if (!segId || !mode) die(`Usage: capcut mix-mode <project> <segment-id> <mode>\nModes: ${mixModeSlugs().join(", ")}`);
   const result = setMixMode(draft, segId, mode);
+  saveDraft(filePath, draft);
+  out({ ok: true, ...result }, flags);
+}
+
+function cmdCrop(draft: Draft, filePath: string, positional: string[], flags: Flags): void {
+  const segId = positional[2];
+  if (!segId) die(`Usage: capcut crop <project> <segment-id> [--ratio <r> | --rect <x,y,w,h> | --reset]`);
+  // No write flag: read-only — print the material's crop, write nothing.
+  if (flags.rect === undefined && flags.ratio === undefined && !flags.reset) {
+    out(getCrop(draft, segId), flags);
+    return;
+  }
+  let rect: CropRect;
+  if (flags.rect !== undefined) {
+    // --rect beats --ratio when both are given.
+    const parts = flags.rect.split(",").map((p) => parseFloat(p.trim()));
+    if (parts.length !== 4 || parts.some((n) => Number.isNaN(n))) {
+      die(`--rect expects four comma-separated numbers: x,y,w,h (got "${flags.rect}")`);
+    }
+    rect = { x: parts[0], y: parts[1], w: parts[2], h: parts[3] };
+  } else if (flags.ratio !== undefined) {
+    const info = getCrop(draft, segId);
+    rect = cropRectForRatio(info.width ?? 0, info.height ?? 0, flags.ratio);
+  } else {
+    // --reset: full frame.
+    rect = { x: 0, y: 0, w: 1, h: 1 };
+  }
+  const result = setCrop(draft, segId, rect);
   saveDraft(filePath, draft);
   out({ ok: true, ...result }, flags);
 }
@@ -3022,6 +3079,7 @@ const SUMMARIES: Record<string, string> = {
   "add-audio": "Add a local or Wikimedia audio file on an audio track.",
   "add-video": "Add a local or Wikimedia video/image on a video track.",
   "add-text": "Add a text segment with font/color/position options.",
+  crop: "Read or set a video/photo segment's source-material crop (--ratio preset, --rect x,y,w,h, or --reset).",
   cut: "Extract a time range into a new standalone draft.",
   keyframe: "Add a keyframe (position/scale/rotation/alpha/volume); single or --batch.",
   transition: "Add a transition between segments.",
@@ -3724,6 +3782,10 @@ async function main(): Promise<void> {
     case "add-text":
       requireArgs(positional, 5, "capcut add-text <project> <start> <duration> <text>");
       cmdAddText(draft, filePath, positional, flags);
+      break;
+    case "crop":
+      requireArgs(positional, 3, "capcut crop <project> <segment-id> [--ratio <r> | --rect <x,y,w,h> | --reset]");
+      cmdCrop(draft, filePath, positional, flags);
       break;
     case "cut":
       requireArgs(positional, 4, "capcut cut <project> <start> <end> --out <path>");
