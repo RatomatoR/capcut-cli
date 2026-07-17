@@ -2,8 +2,9 @@ import { createHash, randomUUID } from "node:crypto";
 import { copyFileSync, cpSync, existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { basename, dirname, resolve } from "node:path";
 import type { Draft, Segment, Timerange, Track } from "./draft.js";
-import { findMaterialGlobal, findSegment } from "./draft.js";
+import { findMaterialGlobal, findSegment, writeAtomic } from "./draft.js";
 import { findEnum, type Namespace } from "./enums.js";
+import { isManagedDraftPath } from "./store.js";
 import { fetchWikimediaAsset, isWikimediaUrl, type WikimediaAsset } from "./wikimedia.js";
 
 /**
@@ -154,6 +155,7 @@ interface RegisterOptions {
   draftId: string;
   name: string;
   nowMs: number;
+  durationUs?: number; // draft duration in microseconds (tm_duration); init drafts start at 0
 }
 
 /**
@@ -178,7 +180,7 @@ function buildDraftEntry(opts: RegisterOptions): Record<string, unknown> {
     tm_draft_create: tmMicros,
     tm_draft_modified: tmMicros,
     tm_draft_removed: 0,
-    tm_duration: 0,
+    tm_duration: opts.durationUs ?? 0,
   };
 }
 
@@ -191,7 +193,7 @@ const IDENTIFYING_FIELDS = (opts: RegisterOptions): Record<string, unknown> => (
   tm_draft_create: opts.nowMs * 1000,
   tm_draft_modified: opts.nowMs * 1000,
   tm_draft_removed: 0,
-  tm_duration: 0,
+  tm_duration: opts.durationUs ?? 0,
 });
 
 /** Find the array property that holds the per-draft entries (e.g. all_draft_store). */
@@ -254,6 +256,420 @@ export function registerDraftInIndex(opts: RegisterOptions): boolean {
   writeFileSync(`${indexPath}.bak`, raw, "utf-8");
   writeFileSync(indexPath, JSON.stringify(index, null, 0), "utf-8");
   return true;
+}
+
+// --- Register (meta-repair for EXISTING drafts; see cmdRegister in index.ts) ---
+// `init` registers a draft only at creation time (registerDraftInIndex above).
+// `capcut register` covers the other half: an existing folder whose
+// draft_meta_info.json sidecar or root_meta_info.json entry is missing/stale
+// and therefore invisible to the CapCut app. draft_content.json is the
+// read-only source of id/name/duration and is never written.
+
+export interface RegistrationTarget {
+  file: "draft_meta_info.json" | "root_meta_info.json";
+  path: string | null;
+  state: "ok" | "missing" | "unreadable" | "stale" | "unregistered" | "unknown-store-root";
+  action: "none" | "create" | "update" | "blocked";
+  detail: string;
+  stale_fields: string[];
+}
+
+export interface RegistrationPlan {
+  project_dir: string;
+  content_path: string;
+  draft_id: string;
+  draft_name: string;
+  duration_us: number;
+  store_root: string | null;
+  store_root_source: string;
+  needs_repair: boolean;
+  targets: RegistrationTarget[];
+  /** Files --apply would write (target action create/update). */
+  repairs: string[];
+  /** Targets needing attention that the CLI refuses to write (target action blocked). */
+  blocked: string[];
+}
+
+interface RegistrationWrite {
+  file: RegistrationTarget["file"];
+  path: string;
+  content: string;
+  /** Raw pre-plan content, null when the file did not exist (no .bak then). */
+  previous: string | null;
+}
+
+export interface RegistrationResult {
+  plan: RegistrationPlan;
+  writes: RegistrationWrite[];
+}
+
+/**
+ * A draft's store root is its parent directory — the CapCut app lists drafts
+ * from the root_meta_info.json index there (the same file `init` writes via
+ * registerDraftInIndex). The parent counts as a KNOWN store root when it
+ * already holds a root_meta_info.json, when --drafts names it explicitly
+ * (init's custom-drafts case, where the index may not exist yet), or when the
+ * draft lives under the managed com.lveditor.draft location init defaults to.
+ * Anything else is reported explicitly and never written to.
+ */
+function discoverStoreRoot(projectDir: string, draftsDir?: string): { root: string | null; source: string } {
+  const parent = dirname(projectDir);
+  if (existsSync(resolve(parent, "root_meta_info.json"))) {
+    return { root: parent, source: "root_meta_info.json found in the parent directory" };
+  }
+  if (draftsDir && resolve(draftsDir) === parent) return { root: parent, source: "--drafts" };
+  if (isManagedDraftPath(`${projectDir}/`)) return { root: parent, source: "managed com.lveditor.draft path" };
+  const mismatch = draftsDir ? ` and the draft is not directly inside --drafts ${resolve(draftsDir)}` : "";
+  return {
+    root: null,
+    source: `no root_meta_info.json in the parent directory and not a com.lveditor.draft path${mismatch}`,
+  };
+}
+
+/**
+ * Compare an existing sidecar/index entry against what draft_content.json says
+ * and return the stale field names plus the repaired object (unknown fields
+ * preserved, tm_draft_modified bumped). draft_name is CapCut's display name —
+ * an existing non-empty value is user data and wins; it is only filled when
+ * missing/empty.
+ */
+function registrationFixes(
+  existing: Record<string, unknown>,
+  opts: RegisterOptions,
+): { stale: string[]; fixed: Record<string, unknown> } {
+  const wanted: Record<string, unknown> = {
+    draft_id: opts.draftId,
+    draft_fold_path: opts.draftPath,
+    draft_json_file: opts.filePath,
+    draft_root_path: opts.draftsDir,
+    tm_duration: opts.durationUs ?? 0,
+  };
+  const stale = Object.keys(wanted).filter((key) => existing[key] !== wanted[key]);
+  if (typeof existing.draft_name !== "string" || existing.draft_name === "") {
+    stale.push("draft_name");
+    wanted.draft_name = opts.name;
+  }
+  if (stale.length === 0) return { stale, fixed: existing };
+  const fixed: Record<string, unknown> = {
+    ...structuredClone(existing),
+    ...wanted,
+    tm_draft_modified: opts.nowMs * 1000,
+  };
+  if (typeof fixed.tm_draft_create !== "number") fixed.tm_draft_create = opts.nowMs * 1000;
+  return { stale, fixed };
+}
+
+/**
+ * Plan for `capcut register`: report whether an existing draft's
+ * draft_meta_info.json sidecar and root_meta_info.json entry are present and
+ * agree with draft_content.json (the read-only id/name/duration source), and
+ * prepare the exact writes --apply would make. Accepts a project directory or
+ * its draft_content.json path; any other explicitly named file is rejected so
+ * the plan and the write always cover the same target set. An unreadable
+ * root_meta_info.json is never rewritten (it lists EVERY draft); it is
+ * reported blocked instead — as is everything when the draft does not live
+ * inside a known store root.
+ */
+export function planDraftRegistration(
+  input: string,
+  options: { draftsDir?: string; now?: number } = {},
+): RegistrationResult {
+  const resolved = resolve(input);
+  if (existsSync(resolved) && statSync(resolved).isFile() && basename(resolved) !== "draft_content.json") {
+    throw new Error(
+      `register repairs a draft's registration metadata from draft_content.json and cannot target ${basename(resolved)} directly. ` +
+        `Pass the project directory instead: capcut register ${dirname(resolved)}`,
+    );
+  }
+  const projectDir = existsSync(resolved) && statSync(resolved).isFile() ? dirname(resolved) : resolved;
+  const contentPath = resolve(projectDir, "draft_content.json");
+  if (!existsSync(contentPath)) {
+    throw new Error(
+      "register needs a readable draft_content.json (the id/name/duration source). " +
+        "Run `capcut diagnose <project>` to inspect what is on disk.",
+    );
+  }
+  let content: Record<string, unknown>;
+  try {
+    content = JSON.parse(readFileSync(contentPath, "utf-8")) as Record<string, unknown>;
+  } catch (error) {
+    throw new Error(
+      `register needs a readable draft_content.json (the id/name/duration source), but it did not parse: ${
+        error instanceof Error ? error.message : String(error)
+      }`,
+    );
+  }
+  if (typeof content.id !== "string" || content.id === "") {
+    throw new Error(
+      'register cannot derive a draft id: draft_content.json has no "id". Refusing to invent one — ' +
+        "run `capcut diagnose <project>` to inspect the draft.",
+    );
+  }
+
+  const name = typeof content.name === "string" && content.name !== "" ? content.name : basename(projectDir);
+  const durationUs = typeof content.duration === "number" && Number.isFinite(content.duration) ? content.duration : 0;
+  const { root: storeRoot, source: storeRootSource } = discoverStoreRoot(projectDir, options.draftsDir);
+  const opts: RegisterOptions = {
+    draftsDir: storeRoot ?? dirname(projectDir),
+    draftPath: projectDir,
+    filePath: contentPath,
+    draftId: content.id,
+    name,
+    nowMs: options.now ?? Date.now(),
+    durationUs,
+  };
+
+  const targets: RegistrationTarget[] = [];
+  const writes: RegistrationWrite[] = [];
+
+  // Target 1: the per-folder draft_meta_info.json sidecar.
+  const metaPath = resolve(projectDir, "draft_meta_info.json");
+  const metaRaw = existsSync(metaPath) ? readFileSync(metaPath, "utf-8") : null;
+  let metaParsed: Record<string, unknown> | null = null;
+  if (metaRaw !== null) {
+    try {
+      const parsed = JSON.parse(metaRaw) as unknown;
+      if (parsed && typeof parsed === "object" && !Array.isArray(parsed))
+        metaParsed = parsed as Record<string, unknown>;
+    } catch {
+      // Unparseable sidecar: metaParsed stays null and is treated as corrupt below.
+    }
+  }
+  if (storeRoot === null) {
+    // Without a known store root there is no draft_root_path to derive and no
+    // index to update — report only, never write (the contract for drafts
+    // living outside any known store).
+    if (metaRaw !== null && metaParsed !== null) {
+      targets.push({
+        file: "draft_meta_info.json",
+        path: metaPath,
+        state: "ok",
+        action: "none",
+        detail: "present and readable (store root unknown, so draft_root_path was not verified)",
+        stale_fields: [],
+      });
+    } else {
+      targets.push({
+        file: "draft_meta_info.json",
+        path: metaPath,
+        state: metaRaw === null ? "missing" : "unreadable",
+        action: "blocked",
+        detail:
+          "cannot be recreated without a known store root (draft_root_path). " +
+          "Pass --drafts <dir> if the store root is elsewhere.",
+        stale_fields: [],
+      });
+    }
+    targets.push({
+      file: "root_meta_info.json",
+      path: null,
+      state: "unknown-store-root",
+      action: "blocked",
+      detail: `${projectDir} does not live inside a known CapCut draft store (${storeRootSource}). Pass --drafts <dir> if the store root is elsewhere.`,
+      stale_fields: [],
+    });
+  } else {
+    if (metaRaw === null || metaParsed === null) {
+      const entry = buildDraftEntry(opts);
+      targets.push({
+        file: "draft_meta_info.json",
+        path: metaPath,
+        state: metaRaw === null ? "missing" : "unreadable",
+        action: metaRaw === null ? "create" : "update",
+        detail:
+          metaRaw === null
+            ? "missing — the sidecar will be recreated from draft_content.json"
+            : "does not parse as JSON — the sidecar will be rewritten from draft_content.json (.bak keeps the old bytes)",
+        stale_fields: [],
+      });
+      writes.push({
+        file: "draft_meta_info.json",
+        path: metaPath,
+        content: JSON.stringify(entry, null, 0),
+        previous: metaRaw,
+      });
+    } else {
+      const { stale, fixed } = registrationFixes(metaParsed, opts);
+      if (stale.length === 0) {
+        targets.push({
+          file: "draft_meta_info.json",
+          path: metaPath,
+          state: "ok",
+          action: "none",
+          detail: "present and agrees with draft_content.json",
+          stale_fields: [],
+        });
+      } else {
+        targets.push({
+          file: "draft_meta_info.json",
+          path: metaPath,
+          state: "stale",
+          action: "update",
+          detail: `stale fields (${stale.join(", ")}) will be repaired from draft_content.json; other fields are preserved`,
+          stale_fields: stale,
+        });
+        writes.push({
+          file: "draft_meta_info.json",
+          path: metaPath,
+          content: JSON.stringify(fixed, null, 0),
+          previous: metaRaw,
+        });
+      }
+    }
+
+    // Target 2: the draft's entry in the store's root_meta_info.json index.
+    const indexPath = resolve(storeRoot, "root_meta_info.json");
+    const indexRaw = existsSync(indexPath) ? readFileSync(indexPath, "utf-8") : null;
+    if (indexRaw === null) {
+      // No index yet (fresh CapCut / custom --drafts dir): create a minimal
+      // one, exactly like init's registerDraftInIndex.
+      targets.push({
+        file: "root_meta_info.json",
+        path: indexPath,
+        state: "missing",
+        action: "create",
+        detail: "missing — a minimal index holding this draft will be created (matches init on a fresh store)",
+        stale_fields: [],
+      });
+      writes.push({
+        file: "root_meta_info.json",
+        path: indexPath,
+        content: JSON.stringify({ all_draft_store: [buildDraftEntry(opts)] }, null, 0),
+        previous: null,
+      });
+    } else {
+      let index: Record<string, unknown> | null = null;
+      try {
+        const parsed = JSON.parse(indexRaw) as unknown;
+        if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) index = parsed as Record<string, unknown>;
+      } catch {
+        // Unreadable index — leave it untouched rather than corrupt it (it lists every draft).
+      }
+      if (index === null) {
+        targets.push({
+          file: "root_meta_info.json",
+          path: indexPath,
+          state: "unreadable",
+          action: "blocked",
+          detail:
+            "does not parse as JSON; refusing to rewrite the index that lists every draft. " +
+            "Restore it from a backup or let the CapCut app rebuild it, then re-run register.",
+          stale_fields: [],
+        });
+      } else {
+        const storeKey = findDraftStoreKey(index) ?? "all_draft_store";
+        const store = (Array.isArray(index[storeKey]) ? index[storeKey] : []) as Array<Record<string, unknown>>;
+        const entryIndex = store.findIndex((e) => e && typeof e === "object" && e.draft_fold_path === projectDir);
+        if (entryIndex === -1) {
+          // Clone the shape of a real entry (matches the installed CapCut
+          // version) and override the identifying fields — same as init.
+          const template = store[0];
+          const entry =
+            template && typeof template === "object"
+              ? { ...structuredClone(template), ...IDENTIFYING_FIELDS(opts) }
+              : buildDraftEntry(opts);
+          const updated = { ...index, [storeKey]: [...store, entry] };
+          targets.push({
+            file: "root_meta_info.json",
+            path: indexPath,
+            state: "unregistered",
+            action: "update",
+            detail: `no entry for this folder in ${storeKey} — one will be appended; existing entries are preserved`,
+            stale_fields: [],
+          });
+          writes.push({
+            file: "root_meta_info.json",
+            path: indexPath,
+            content: JSON.stringify(updated, null, 0),
+            previous: indexRaw,
+          });
+        } else {
+          const { stale, fixed } = registrationFixes(store[entryIndex], opts);
+          if (stale.length === 0) {
+            targets.push({
+              file: "root_meta_info.json",
+              path: indexPath,
+              state: "ok",
+              action: "none",
+              detail: `entry present in ${storeKey} and agrees with draft_content.json`,
+              stale_fields: [],
+            });
+          } else {
+            const updatedStore = [...store];
+            updatedStore[entryIndex] = fixed;
+            const updated = { ...index, [storeKey]: updatedStore };
+            targets.push({
+              file: "root_meta_info.json",
+              path: indexPath,
+              state: "stale",
+              action: "update",
+              detail: `entry has stale fields (${stale.join(", ")}) that will be repaired from draft_content.json; other fields and entries are preserved`,
+              stale_fields: stale,
+            });
+            writes.push({
+              file: "root_meta_info.json",
+              path: indexPath,
+              content: JSON.stringify(updated, null, 0),
+              previous: indexRaw,
+            });
+          }
+        }
+      }
+    }
+  }
+
+  const repairs = targets.filter((t) => t.action === "create" || t.action === "update").map((t) => t.file);
+  const blocked = targets.filter((t) => t.action === "blocked").map((t) => t.file);
+  return {
+    plan: {
+      project_dir: projectDir,
+      content_path: contentPath,
+      draft_id: content.id,
+      draft_name: name,
+      duration_us: durationUs,
+      store_root: storeRoot,
+      store_root_source: storeRootSource,
+      needs_repair: repairs.length > 0,
+      targets,
+      repairs,
+      blocked,
+    },
+    writes,
+  };
+}
+
+/**
+ * Perform the writes a registration plan prepared: temp+fsync+rename per file,
+ * with a `.bak` of the pre-plan content for every file that already existed.
+ * Unless forceWrite, refuses when a target changed on disk between the plan
+ * read and now (the sync-timelines optimistic-concurrency rule).
+ */
+export function applyDraftRegistration(
+  result: RegistrationResult,
+  options: { forceWrite?: boolean } = {},
+): { applied: string[]; backups: string[] } {
+  if (!options.forceWrite) {
+    for (const write of result.writes) {
+      const current = existsSync(write.path) ? readFileSync(write.path, "utf-8") : null;
+      if (current !== write.previous) {
+        throw new Error(
+          `Draft changed on disk after it was planned: ${write.file}. ` +
+            "Re-run register, or pass --force-write to overwrite intentionally.",
+        );
+      }
+    }
+  }
+  const applied: string[] = [];
+  const backups: string[] = [];
+  for (const write of result.writes) {
+    if (write.previous !== null) {
+      writeAtomic(`${write.path}.bak`, write.previous);
+      backups.push(`${write.file}.bak`);
+    }
+    writeAtomic(write.path, write.content);
+    applied.push(write.file);
+  }
+  return { applied, backups };
 }
 
 // --- Companion materials (CapCut 6.5+ creates these per-segment) ---

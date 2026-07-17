@@ -173,6 +173,7 @@ const usages = {
   "add-sfx": "capcut add-sfx <project> <slug> <start> <duration> [options]",
   chroma: "capcut chroma <project> <id> (--color <hex> | --off) [options]",
   prune: "capcut prune <project>",
+  register: "capcut register <project-dir> [--apply] [--drafts <dir>]",
   relink: "capcut relink <project> (--dir <path> | --from <prefix> --to <prefix>)",
   timeline: "capcut timeline <project> [--cols <number>]",
   projects: "capcut projects [query] [--drafts <path>] [--names]",
@@ -353,6 +354,15 @@ const optionsByCommand: Record<string, OptionSpec[]> = {
     option("intensity", ["--intensity"], "number", "Key intensity."),
     option("off", ["--off"], "boolean", "Remove chroma key."),
   ],
+  register: [
+    option(
+      "apply",
+      ["--apply"],
+      "boolean",
+      "Write the repaired draft_meta_info.json / root_meta_info.json entry (default: print the plan only).",
+    ),
+    option("drafts", ["--drafts"], "path", "Draft store root when the draft does not live inside a known one."),
+  ],
   relink: [
     option("dir", ["--dir"], "path", "Directory containing replacement files."),
     option("from", ["--from"], "path", "Old path prefix."),
@@ -447,7 +457,7 @@ optionsByCommand["image-anim"] = optionsByCommand["text-anim"];
 //   --easing            -> keyframe
 //   --granularity, --format -> export-srt
 //   --preset            -> add-text, text-style, caption
-//   --apply             -> sync-timelines
+//   --apply             -> register, sync-timelines
 //   --threshold, --min-gap, --limit, --json -> detect-scenes
 // Everywhere else they fall through to the positional stream verbatim, matching
 // pre-release behaviour where these tokens were unknown and preserved.
@@ -507,6 +517,7 @@ const mutating = new Set([
   "add-sfx",
   "chroma",
   "prune",
+  "register",
   "relink",
   "replace-media",
   "sync-timelines",

@@ -74,6 +74,7 @@ import {
   addSticker,
   addText,
   addVideo,
+  applyDraftRegistration,
   applyTemplate,
   copyTextStyle,
   cutProject,
@@ -82,6 +83,7 @@ import {
   filterSlugs,
   initDraft,
   mixModeSlugs,
+  planDraftRegistration,
   resolveAssetPath,
   saveTemplate,
   setAudioFade,
@@ -156,6 +158,7 @@ export const COMMANDS = [
   "add-sfx",
   "chroma",
   "prune",
+  "register",
   "relink",
   "replace-media",
   "timeline",
@@ -324,6 +327,20 @@ Edit:
 
 Maintenance & inspection:
   prune      <project>                          Remove materials no segment references
+  register   <project-dir> [--apply] [--drafts <dir>]  Repair an EXISTING draft's
+             registration metadata so the CapCut app lists it again (init only
+             registers drafts it creates): recreates a missing/corrupt
+             draft_meta_info.json sidecar and inserts/updates the draft's entry
+             in the store's root_meta_info.json. id/name/duration derive from
+             draft_content.json, which is never written. Prints the per-target
+             plan (needs_repair + detail) by default; --apply writes atomically
+             with a .bak per file modified and no-ops (applied: []) when the
+             draft is already registered. A draft that does not live inside a
+             known store root (parent with root_meta_info.json, a managed
+             com.lveditor.draft path, or --drafts <dir>) is reported explicitly
+             and nothing is written. Refuses to write while the editor is
+             running unless --force-write. Exits 2 on --apply when a target
+             stays blocked (unknown store root, unreadable root_meta_info.json).
   relink     <project> --dir <d> | --from <p> --to <q>  Repair broken media paths
   replace-media <project> <segment-id> <new-file> [--retime]
              Swap a segment's source clip (placeholder > final render) while
@@ -2580,6 +2597,92 @@ function cmdDiagnose(projectPath: string | undefined, flags: Flags): void {
   }
 }
 
+// `register` is the meta-repair sidecar for EXISTING drafts: `init` registers
+// a draft only at creation time (factory.ts registerDraftInIndex), so an
+// existing folder missing draft_meta_info.json or its entry in the store's
+// root_meta_info.json is invisible to the CapCut app with no repair path.
+// draft_content.json is the read-only id/name/duration source and is NEVER
+// written. Plan-only by default; --apply writes atomically with a .bak per
+// file modified and is idempotent (re-run -> applied: [], exit 0). Returns the
+// exit code: 0 ok (the plan form always exits 0), 1 via die(), 2 when --apply
+// leaves a target blocked (draft outside any known store root, unreadable
+// root_meta_info.json).
+function cmdRegister(projectPath: string | undefined, flags: Flags): number {
+  if (!projectPath) die("Usage: capcut register <project-dir> [--apply] [--drafts <dir>]");
+  const result = planDraftRegistration(projectPath, { draftsDir: flags.drafts });
+  const { plan } = result;
+
+  const warnBlocked = (): void => {
+    if (flags.quiet) return;
+    for (const target of plan.targets) {
+      if (target.action === "blocked") process.stderr.write(`WARNING ${target.file}: ${target.detail}\n`);
+    }
+  };
+
+  if (!flags.apply) {
+    const message = plan.needs_repair
+      ? `Would write ${plan.repairs.join(", ")}. Re-run with --apply to write.`
+      : plan.blocked.length > 0
+        ? `Registration cannot be verified or repaired: ${plan.blocked.join(", ")} — see targets.`
+        : "Draft is registered: draft_meta_info.json and the store's root_meta_info.json entry agree with draft_content.json.";
+    out({ ok: plan.blocked.length === 0, applied: false, message, ...plan }, flags);
+    if (!flags.quiet) {
+      for (const target of plan.targets) {
+        if (target.action === "create" || target.action === "update") {
+          process.stderr.write(`plan: ${target.action} ${target.file} (${target.detail})\n`);
+        }
+      }
+      warnBlocked();
+      process.stderr.write(plan.needs_repair ? "Plan only — re-run with --apply to write.\n" : `${message}\n`);
+    }
+    return 0;
+  }
+
+  if (plan.repairs.length === 0) {
+    const ok = plan.blocked.length === 0;
+    const message = ok
+      ? "Draft is already registered — nothing to write."
+      : `Nothing writable: ${plan.blocked.join(", ")} cannot be repaired by the CLI — see targets.`;
+    out({ ok, applied: [], backups: [], message, ...plan }, flags);
+    if (!flags.quiet) process.stderr.write(`${message}\n`);
+    warnBlocked();
+    return ok ? 0 : 2;
+  }
+
+  if (!flags.forceWrite) {
+    const running = editorProcesses();
+    if (running.length > 0) {
+      die(
+        `${running.join(" / ")} is running. Close the editor before repairing this draft's registration, ` +
+          "or pass --force-write if you accept that the app may overwrite the change.",
+      );
+    }
+  }
+
+  if (isDryRun()) {
+    const message = `Dry run — plan only. Would write ${plan.repairs.join(", ")}; nothing was written.`;
+    out({ ok: true, applied: [], backups: [], would_apply: plan.repairs, message, ...plan }, flags);
+    if (!flags.quiet) process.stderr.write(`${message}\n`);
+    warnBlocked();
+    return 0;
+  }
+
+  const { applied, backups } = applyDraftRegistration(result, { forceWrite: flags.forceWrite === true });
+
+  const verify = planDraftRegistration(projectPath, { draftsDir: flags.drafts });
+  if (verify.plan.needs_repair) {
+    die(
+      `register wrote ${applied.join(", ")} but the draft still needs repair (${verify.plan.repairs.join(", ")}). ` +
+        "Restore from the .bak files and report this.",
+    );
+  }
+  const ok = plan.blocked.length === 0;
+  out({ ok, applied, backups, ...verify.plan }, flags);
+  if (!flags.quiet) process.stderr.write(`Registered from draft_content.json: wrote ${applied.join(", ")}\n`);
+  warnBlocked();
+  return ok ? 0 : 2;
+}
+
 // `sync-timelines` repairs a draft whose mirror files (template-2.tmp /
 // draft_info.json — including the pre-open mirror's stale GUID) drifted from
 // draft_content.json, the CapCut >= 8.7 "CLI edit silently ignored" failure
@@ -3056,6 +3159,8 @@ const SUMMARIES: Record<string, string> = {
   "sync-timelines":
     "Reconcile drifted timeline mirrors (template-2.tmp, draft_info.json) from a read-only draft_content.json (plan with mtimes by default; --apply rewrites only the drifted mirrors).",
   prune: "Remove materials no segment references.",
+  register:
+    "Repair an existing draft's registration metadata (draft_meta_info.json + root_meta_info.json entry) from a read-only draft_content.json so the CapCut app lists it (plan by default; --apply writes with .bak).",
   relink: "Repair broken media paths (--dir or --from/--to).",
   timeline: "Show the track/segment layout (JSON, or -H ASCII bars).",
   projects: "List CapCut/JianYing draft folders on disk.",
@@ -3489,6 +3594,12 @@ async function main(): Promise<void> {
       process.stderr.write(`Review the files, then attach the folder to issue #35.\n`);
     }
     process.exit(0);
+  }
+
+  // `register` reads draft_content.json directly — no loadDraft: the draft may
+  // be missing exactly the sidecar files sibling discovery would look at.
+  if (cmd === "register") {
+    process.exit(cmdRegister(projectPath, flags));
   }
 
   // `sync-timelines` must see drifted/unreadable siblings itself — loadDraft would
