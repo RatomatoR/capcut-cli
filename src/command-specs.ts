@@ -124,6 +124,31 @@ const TEXT_STYLE: OptionSpec[] = [
   option("bg_v_offset", ["--bg-v-offset"], "number", "Background vertical offset."),
 ];
 
+const KEYWORD_EMPHASIS: OptionSpec[] = [
+  option(
+    "color_cycle",
+    ["--color-cycle"],
+    "string",
+    "Rotate the base text colour per cue: comma-separated #RRGGBB list, in order. Wins over --color per cue; independent of keyword emphasis.",
+  ),
+  option(
+    "highlight_words",
+    ["--highlight-words"],
+    "string",
+    "Emphasize case-insensitive whole-word matches per cue: comma-separated words, or @file with one word/phrase per line.",
+  ),
+  option("keyword_color", ["--keyword-color"], "string", "Emphasis colour for --highlight-words matches.", {
+    default: "#FFD700",
+  }),
+  option(
+    "keyword_size",
+    ["--keyword-size"],
+    "number",
+    "Emphasis size for --highlight-words matches, as a multiplier on the cue's base font size.",
+    { default: 1.2 },
+  ),
+];
+
 const usages = {
   info: "capcut info <project>",
   version: "capcut version <project>",
@@ -312,6 +337,7 @@ const optionsByCommand: Record<string, OptionSpec[]> = {
     STYLE_REF,
     option("time_offset", ["--time-offset"], "time", "Shift imported cues."),
     ...TEXT_STYLE,
+    ...KEYWORD_EMPHASIS,
   ],
   "import-ass": [
     TRACK_NAME,
@@ -335,6 +361,7 @@ const optionsByCommand: Record<string, OptionSpec[]> = {
     TRACK_NAME,
     STYLE_REF,
     PRESET,
+    ...KEYWORD_EMPHASIS,
   ],
   translate: [
     option("to", ["--to"], "string", "Target language."),
@@ -449,14 +476,20 @@ optionsByCommand["image-anim"] = optionsByCommand["text-anim"];
 //   --preset            -> add-text, text-style, caption
 //   --apply             -> sync-timelines
 //   --threshold, --min-gap, --limit, --json -> detect-scenes
+//   --highlight-words, --keyword-color, --keyword-size, --color-cycle
+//                       -> caption, import-srt (v0.14 keyword emphasis)
 // Everywhere else they fall through to the positional stream verbatim, matching
 // pre-release behaviour where these tokens were unknown and preserved.
 export const RELEASE_SCOPED_FLAGS: ReadonlySet<string> = new Set([
   "--apply",
+  "--color-cycle",
   "--easing",
   "--format",
   "--granularity",
+  "--highlight-words",
   "--json",
+  "--keyword-color",
+  "--keyword-size",
   "--limit",
   "--min-gap",
   "--preset",

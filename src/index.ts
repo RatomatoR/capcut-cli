@@ -32,7 +32,10 @@ import {
   addTransition,
   bubbleCatalogue,
   bubbleSlugs,
+  buildEmphasisRanges,
+  DEFAULT_KEYWORD_SIZE,
   imageAnimSlugs,
+  KARAOKE_HIGHLIGHT_COLOR,
   keyframeProperties,
   maskSlugs,
   parseKeyframeValue,
@@ -495,6 +498,23 @@ Caption (v0.4 — real subtitle objects, fixes import-srt mimicry):
                --style-ref <seg-id> Mirror styling from existing text segment
                --preset <file>      Base style from a make-preset file
                                     (same coverage as --style-ref)
+               --highlight-words <w1,w2,...|@file>
+                                    Emphasize these words in every cue
+                                    (case-insensitive whole-word match;
+                                    @file = one word/phrase per line)
+               --keyword-color <#RRGGBB>
+                                    Emphasis colour (default #FFD700, the
+                                    same gold --karaoke uses)
+               --keyword-size <n>   Emphasis size as a multiplier on the
+                                    cue's base font size (default 1.2)
+               --color-cycle <#hex1,#hex2,...>
+                                    Rotate the BASE text colour per cue in
+                                    list order (independent of emphasis)
+             Precedence: --color-cycle wins over the style-ref/preset base
+             colour per cue; keyword emphasis sits on top of base/karaoke
+             styling and overrides the matched words' colour/size; with
+             --karaoke, karaoke ranges are built first and keyword matches
+             override those words.
 
 Translate (v0.4 — multi-language draft clone):
   translate  <project> --to <lang> --out <path> [options]
@@ -554,6 +574,22 @@ Subtitles (Phase 3):
                --alpha --vertical --shadow --shadow-color --shadow-distance
                --border-width --border-color --border-alpha
                --bg-color --bg-alpha --bg-style --bg-round-radius --bg-h-offset
+               --highlight-words <w1,w2,...|@file>
+                                     Emphasize these words in every cue
+                                     (case-insensitive whole-word match;
+                                     @file = one word/phrase per line)
+               --keyword-color <#RRGGBB>
+                                     Emphasis colour (default #FFD700, the
+                                     same gold caption --karaoke uses)
+               --keyword-size <n>    Emphasis size as a multiplier on the
+                                     cue's base font size (default 1.2)
+               --color-cycle <#hex1,#hex2,...>
+                                     Rotate the BASE text colour per cue in
+                                     list order (independent of emphasis)
+             Precedence: --color sets the base colour for all cues unless
+             --color-cycle is given (then the cycle wins per cue); keyword
+             emphasis sits on top of the base styling and overrides the
+             matched words' colour/size.
   export-srt <project> [options]
              Export subtitles to stdout.
              Options:
@@ -682,6 +718,11 @@ interface Flags {
   karaoke?: boolean;
   maxWords?: number;
   maxGapMs?: number;
+  // caption / import-srt keyword emphasis + colour cycling
+  highlightWords?: string;
+  keywordColor?: string;
+  keywordSize?: number;
+  colorCycle?: string;
   noProbe?: boolean;
   ffprobeCmd?: string;
   // export-srt
@@ -985,6 +1026,14 @@ function parseFlags(args: string[]): { positional: string[]; flags: Flags } {
       flags.maxWords = parseInt(args[++i], 10);
     } else if (a === "--max-gap-ms" && i + 1 < args.length) {
       flags.maxGapMs = parseFloat(args[++i]);
+    } else if (a === "--highlight-words" && i + 1 < args.length) {
+      flags.highlightWords = args[++i];
+    } else if (a === "--keyword-color" && i + 1 < args.length) {
+      flags.keywordColor = args[++i];
+    } else if (a === "--keyword-size" && i + 1 < args.length) {
+      flags.keywordSize = parseFloat(args[++i]);
+    } else if (a === "--color-cycle" && i + 1 < args.length) {
+      flags.colorCycle = args[++i];
     } else if (a === "--no-probe") {
       flags.noProbe = true;
     } else if (a === "--granularity" && i + 1 < args.length) {
@@ -2129,6 +2178,68 @@ function cmdEnums(flags: Flags): void {
   }
 }
 
+// --- v0.14: keyword emphasis + colour cycling (caption, import-srt) ---
+
+const HEX_COLOR_RE = /^#[0-9a-fA-F]{6}$/;
+
+/** --highlight-words value: comma-separated words, or @file with one word/phrase per line. */
+function parseHighlightWords(raw: string): string[] {
+  const fromFile = raw.startsWith("@");
+  const text = fromFile ? readFileSync(raw.slice(1), "utf-8") : raw;
+  return (fromFile ? text.split(/\r?\n/) : text.split(","))
+    .map((word) => word.trim())
+    .filter((word) => word.length > 0);
+}
+
+interface KeywordEmphasisFlags {
+  words?: string[];
+  color: string;
+  size: number;
+  cycle?: string[];
+}
+
+/** Validate the four emphasis flags once, before any cue is written. */
+function keywordEmphasisFromFlags(flags: Flags): KeywordEmphasisFlags {
+  if (!flags.highlightWords) {
+    if (flags.keywordColor !== undefined) die("--keyword-color requires --highlight-words.");
+    if (flags.keywordSize !== undefined) die("--keyword-size requires --highlight-words.");
+  }
+  const words = flags.highlightWords ? parseHighlightWords(flags.highlightWords) : undefined;
+  if (words && words.length === 0) die("--highlight-words is empty. Pass w1,w2,... or @file with one word per line.");
+  const color = flags.keywordColor ?? KARAOKE_HIGHLIGHT_COLOR;
+  if (!HEX_COLOR_RE.test(color)) die(`--keyword-color must be #RRGGBB (got '${color}').`);
+  const size = flags.keywordSize ?? DEFAULT_KEYWORD_SIZE;
+  if (!Number.isFinite(size) || size <= 0 || size > 10) {
+    die(`--keyword-size must be a multiplier > 0 and <= 10 (got '${flags.keywordSize}').`);
+  }
+  let cycle: string[] | undefined;
+  if (flags.colorCycle !== undefined) {
+    cycle = flags.colorCycle
+      .split(",")
+      .map((c) => c.trim())
+      .filter((c) => c.length > 0);
+    if (cycle.length === 0) die("--color-cycle is empty. Pass a comma-separated #RRGGBB list.");
+    for (const c of cycle) {
+      if (!HEX_COLOR_RE.test(c)) die(`--color-cycle entries must be #RRGGBB (got '${c}').`);
+    }
+  }
+  return { words, color, size, cycle };
+}
+
+/** The cue's effective base font size: content styles[0].size after style-ref/flags applied. */
+function textBaseFontSize(draft: Draft, materialId: string): number {
+  const mat = (draft.materials.texts as unknown as Array<Record<string, unknown>>).find((t) => t.id === materialId);
+  try {
+    const content = JSON.parse(String(mat?.content)) as { styles?: Array<{ size?: number }> };
+    const size = content.styles?.[0]?.size;
+    if (typeof size === "number" && Number.isFinite(size)) return size;
+  } catch {
+    /* fall through */
+  }
+  const fallback = mat?.font_size;
+  return typeof fallback === "number" && Number.isFinite(fallback) ? fallback : 15;
+}
+
 function importCuesToDraft(
   draft: Draft,
   filePath: string,
@@ -2169,9 +2280,12 @@ function importCuesToDraft(
     bgVOffset: flags.bgVOffset,
   };
   const hasStyleFlags = Object.values(styleOpts).some((v) => v !== undefined);
+  const emphasis = keywordEmphasisFromFlags(flags);
 
   const created: Array<{ id: string; start_us: number; duration_us: number; text: string }> = [];
-  for (const cue of cues) {
+  let keywordMatches = 0;
+  for (let cueIndex = 0; cueIndex < cues.length; cueIndex++) {
+    const cue = cues[cueIndex];
     const start = cue.startUs + offsetUs;
     const duration = cue.endUs - cue.startUs;
     if (start < 0) die(`Cue ${cue.index} has negative start after --time-offset (${start}us)`);
@@ -2180,7 +2294,8 @@ function importCuesToDraft(
       start,
       duration,
       fontSize: flags.fontSize,
-      color: flags.color,
+      // --color-cycle rotates the base colour per cue and wins over --color.
+      color: emphasis.cycle ? emphasis.cycle[cueIndex % emphasis.cycle.length] : flags.color,
       alignment: flags.align,
       x: flags.x,
       y: flags.y,
@@ -2189,6 +2304,18 @@ function importCuesToDraft(
     const res = addText(draft, filePath, opts);
     if (flags.styleRef) copyTextStyle(draft, flags.styleRef, res.materialId);
     if (hasStyleFlags) setTextStyle(draft, res.segmentId, styleOpts);
+    if (emphasis.words) {
+      // Emphasis ranges sit on top of the base styling written above; unmatched
+      // text inherits the cue's styles[0] via setTextRanges' gap fill.
+      const { ranges, matches } = buildEmphasisRanges(cue.text, {
+        words: emphasis.words,
+        color: emphasis.color,
+        sizeMultiplier: emphasis.size,
+        baseSize: textBaseFontSize(draft, res.materialId),
+      });
+      if (ranges.length > 0) setTextRanges(draft, res.segmentId, ranges);
+      keywordMatches += matches;
+    }
     created.push({ id: res.segmentId, start_us: start, duration_us: duration, text: cue.text });
   }
 
@@ -2203,6 +2330,9 @@ function importCuesToDraft(
       time_offset_us: offsetUs,
       first: created[0],
       last: created[created.length - 1],
+      // undefined when the flags are off, so the JSON stays byte-identical.
+      keyword_matches: emphasis.words ? keywordMatches : undefined,
+      color_cycle: emphasis.cycle ? emphasis.cycle.length : undefined,
     },
     flags,
   );
@@ -2313,6 +2443,7 @@ function cmdCaption(draft: Draft, filePath: string, flags: Flags): void {
   if (!flags.audio && !flags.fromSegment) {
     die("Missing --audio <path> or --from-segment <id>. One is required.");
   }
+  const emphasis = keywordEmphasisFromFlags(flags);
   const result = captionDraft(draft, {
     audio: flags.audio,
     fromSegment: flags.fromSegment,
@@ -2327,6 +2458,10 @@ function cmdCaption(draft: Draft, filePath: string, flags: Flags): void {
     maxWords: flags.maxWords,
     maxChars: flags.maxChars,
     maxGapMs: flags.maxGapMs,
+    highlightWords: emphasis.words,
+    keywordColor: emphasis.color,
+    keywordSize: emphasis.size,
+    colorCycle: emphasis.cycle,
   });
   saveDraft(filePath, draft);
   out(result, flags);
