@@ -2300,7 +2300,7 @@ const HEX_COLOR_RE = /^#[0-9a-fA-F]{6}$/;
 /** --highlight-words value: comma-separated words, or @file with one word/phrase per line. */
 function parseHighlightWords(raw: string): string[] {
   const fromFile = raw.startsWith("@");
-  const text = fromFile ? readFileSync(raw.slice(1), "utf-8") : raw;
+  const text = fromFile ? stripBom(readFileSync(raw.slice(1), "utf-8")) : raw;
   return (fromFile ? text.split(/\r?\n/) : text.split(","))
     .map((word) => word.trim())
     .filter((word) => word.length > 0);

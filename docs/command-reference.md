@@ -24,7 +24,9 @@
 | `add-audio` | `capcut add-audio <project> <file-or-url> <start> [duration] [options]` | yes | Add a local or Wikimedia audio file on an audio track. |
 | `add-video` | `capcut add-video <project> <file-or-url> <start> [duration] [options]` | yes | Add a local or Wikimedia video/image on a video track. |
 | `add-text` | `capcut add-text <project> <start> <duration> <text> [options]` | yes | Add a text segment with font/color/position options. |
+| `crop` | `capcut crop <project> <segment-id> [--ratio <r> \| --rect <x,y,w,h> \| --reset]` | yes | Read or set a video/photo segment's source-material crop (--ratio preset, --rect x,y,w,h, or --reset). |
 | `cut` | `capcut cut <project> <start> <end> --out <path>` | yes | Extract a time range into a new standalone draft. |
+| `duplicate` | `capcut duplicate <project> <segment-id> [--track <track-name>] [--new-track]` | yes | Duplicate a segment at its same timeline position onto a track above the source. |
 | `keyframe` | `capcut keyframe <project> <id> <property> <time> <value> [--easing <name>] \| --batch` | yes | Add a keyframe (position/scale/rotation/alpha/volume); single or --batch. |
 | `transition` | `capcut transition <project> <id> <slug> [--duration <time>]` | yes | Add a transition between segments. |
 | `mask` | `capcut mask <project> <id> <slug> [options] \| --off` | yes | Apply a mask (linear/circle/heart/...) with geometry flags, or --off. |
@@ -53,6 +55,7 @@
 | `add-sfx` | `capcut add-sfx <project> <slug> <start> <duration> [options]` | yes | Add a sound effect on a dedicated track. |
 | `chroma` | `capcut chroma <project> <id> (--color <hex> \| --off) [options]` | yes | Green-screen / chroma key a video segment, or --off. |
 | `prune` | `capcut prune <project>` | yes | Remove materials no segment references. |
+| `register` | `capcut register <project-dir> [--apply] [--drafts <dir>]` | yes | Repair an existing draft's registration metadata (draft_meta_info.json + root_meta_info.json entry) from a read-only draft_content.json so the CapCut app lists it (plan by default; --apply writes with .bak). |
 | `relink` | `capcut relink <project> (--dir <path> \| --from <prefix> --to <prefix>)` | yes | Repair broken media paths (--dir or --from/--to). |
 | `replace-media` | `capcut replace-media <project> <segment-id> <new-file> [--retime]` | yes | Swap a segment's source file (placeholder > final) keeping its timing, effects, and keyframes. |
 | `timeline` | `capcut timeline <project> [--cols <number>]` | no | Show the track/segment layout (JSON, or -H ASCII bars). |
