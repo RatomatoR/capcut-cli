@@ -1,6 +1,7 @@
 import { createHash, randomUUID } from "node:crypto";
 import { copyFileSync, cpSync, existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { basename, dirname, resolve } from "node:path";
+import { stripBom } from "./bom.js";
 import type { Draft, Segment, Timerange, Track } from "./draft.js";
 import { findMaterialGlobal, findSegment } from "./draft.js";
 import { findEnum, type Namespace } from "./enums.js";
@@ -115,7 +116,7 @@ export function initDraft(opts: InitOptions): { draftPath: string; filePath: str
     const fp = resolve(draftPath, c);
     if (existsSync(fp)) {
       // Update the draft name + id
-      const raw = readFileSync(fp, "utf-8");
+      const raw = stripBom(readFileSync(fp, "utf-8"));
       const draft = JSON.parse(raw) as Draft;
       draft.name = opts.name;
       const draftId = uuid();
@@ -229,7 +230,7 @@ export function registerDraftInIndex(opts: RegisterOptions): boolean {
     return true;
   }
 
-  const raw = readFileSync(indexPath, "utf-8");
+  const raw = stripBom(readFileSync(indexPath, "utf-8"));
   let index: Record<string, unknown>;
   try {
     index = JSON.parse(raw) as Record<string, unknown>;
@@ -917,7 +918,7 @@ export function applyTemplate(
   duration: number,
   overrides?: { x?: number; y?: number; scaleX?: number; scaleY?: number; text?: string },
 ): { segmentId: string; materialId: string; trackId: string } {
-  const template = JSON.parse(readFileSync(templatePath, "utf-8")) as Template;
+  const template = JSON.parse(stripBom(readFileSync(templatePath, "utf-8"))) as Template;
 
   // Generate new IDs for everything
   const idMap = new Map<string, string>();

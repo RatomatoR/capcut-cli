@@ -1,0 +1,5 @@
+# UTF-8 BOM tolerance
+
+### Fixed
+
+- Every user-supplied text/JSON read now tolerates a leading UTF-8 BOM (`U+FEFF`), the byte prefix Windows PowerShell's `Set-Content` (and some editors) writes — previously the draft failed to load with a JSON parse error, `.capcutrc` was silently ignored, and the SRT/ASS/JSONL parsers misread the first token. Covered paths: `draft_content.json` / `draft_meta_info.json` / `root_meta_info.json` and every other draft store candidate, `--preset` files, `@file` arguments (e.g. `text-ranges --styles @ranges.json`), stdin (`import-srt -`, `import-ass -`, `batch`, `keyframe --batch` JSONL), subtitle files (`import-srt`, `import-ass`, `quickstart --srt`, `compile` captions ops), `compile` specs, template files, and `.capcutrc`. The CLI never writes a BOM: saving a BOM'd draft drops it (atomic write, `.bak` and history snapshots preserve the loaded content), the concurrent-change guard no longer reports a BOM-only difference as "changed on disk", and `fixture` bundles are emitted BOM-free. Output for BOM-free files is byte-identical to before. Prior art: capcut-cli-david `eb2f0e0` (thanks @Davidb-2107).

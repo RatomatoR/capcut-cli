@@ -10,6 +10,7 @@
 
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
+import { stripBom } from "./bom.js";
 import { diagnoseDraftStore, discoverDraftStore } from "./store.js";
 
 // Only the timeline envelopes are bundled — never assets/ media.
@@ -108,7 +109,7 @@ export function sanitizeDraftBundle(input: string, outDir: string): SanitizeRepo
   for (const name of TIMELINE_FILES) {
     const src = join(store.projectDir, name);
     if (!existsSync(src)) continue;
-    const raw = readFileSync(src, "utf-8");
+    const raw = stripBom(readFileSync(src, "utf-8"));
     const { text, count } = redact(raw, tally);
     writeFileSync(join(out, name), text, "utf-8");
     files.push({ file: name, bytes_in: Buffer.byteLength(raw), bytes_out: Buffer.byteLength(text), redactions: count });
