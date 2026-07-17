@@ -6,6 +6,7 @@
 // the missing utility was first-run friction, not another feature.
 
 import { existsSync, readFileSync } from "node:fs";
+import { stripBom } from "./bom.js";
 import { loadDraft, saveDraft } from "./draft.js";
 import { addAudio, addText, addVideo, initDraft } from "./factory.js";
 import { lintDraft, summarize } from "./lint.js";
@@ -123,7 +124,7 @@ export function runQuickstart(opts: QuickstartOptions): QuickstartResult {
   }
 
   if (opts.srt) {
-    const cues = parseSrt(readFileSync(opts.srt, "utf-8"));
+    const cues = parseSrt(stripBom(readFileSync(opts.srt, "utf-8")));
     if (cues.length === 0) throw new Error(`SRT produced 0 cues: ${opts.srt}`);
     for (const cue of cues) {
       addText(draft, filePath, { text: cue.text, start: cue.startUs, duration: cue.endUs - cue.startUs });

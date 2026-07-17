@@ -5,6 +5,7 @@ import { homedir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { parseAss } from "./ass.js";
+import { stripBom } from "./bom.js";
 import { captionDraft } from "./caption.js";
 import { removeChroma, setChroma } from "./chroma.js";
 import {
@@ -1680,7 +1681,7 @@ function cmdKeyframe(draft: Draft, filePath: string, positional: string[], flags
   const inputs: KeyframeInput[] = [];
 
   if (flags.batch) {
-    const raw = readFileSync(0, "utf-8").trim();
+    const raw = stripBom(readFileSync(0, "utf-8")).trim();
     if (!raw) die("No input on stdin for --batch");
     for (const line of raw.split("\n")) {
       const trimmed = line.trim();
@@ -2070,7 +2071,7 @@ function cmdTextRanges(draft: Draft, filePath: string, positional: string[], fla
   if (!flags.styles) die(`Missing --styles. Accepts @path.json or inline JSON array.`);
   let raw = flags.styles;
   if (raw.startsWith("@")) {
-    raw = readFileSync(raw.slice(1), "utf-8");
+    raw = stripBom(readFileSync(raw.slice(1), "utf-8"));
   }
   let parsed: unknown;
   try {
@@ -2211,7 +2212,7 @@ function importCuesToDraft(
 function cmdImportSrt(draft: Draft, filePath: string, positional: string[], flags: Flags): void {
   const srtArg = positional[2];
   if (!srtArg) die(`Usage: capcut import-srt <project> <srt-path-or-->`);
-  const srtContent = srtArg === "-" ? readFileSync(0, "utf-8") : readFileSync(srtArg, "utf-8");
+  const srtContent = stripBom(srtArg === "-" ? readFileSync(0, "utf-8") : readFileSync(srtArg, "utf-8"));
   const cues = parseSrt(srtContent);
   if (cues.length === 0) die(`SRT produced 0 cues`);
   importCuesToDraft(draft, filePath, cues, flags, "srt");
@@ -2220,7 +2221,7 @@ function cmdImportSrt(draft: Draft, filePath: string, positional: string[], flag
 function cmdImportAss(draft: Draft, filePath: string, positional: string[], flags: Flags): void {
   const assArg = positional[2];
   if (!assArg) die(`Usage: capcut import-ass <project> <ass-path-or-->`);
-  const assContent = assArg === "-" ? readFileSync(0, "utf-8") : readFileSync(assArg, "utf-8");
+  const assContent = stripBom(assArg === "-" ? readFileSync(0, "utf-8") : readFileSync(assArg, "utf-8"));
   const cues = parseAss(assContent);
   if (cues.length === 0) die(`ASS produced 0 cues`);
   importCuesToDraft(draft, filePath, cues, flags, "ass");
@@ -2493,7 +2494,7 @@ function execBatchOp(draft: Draft, filePath: string, op: BatchOp, flags: Flags):
 }
 
 function cmdBatch(draft: Draft, filePath: string, flags: Flags): void {
-  const input = readFileSync(0, "utf-8").trim();
+  const input = stripBom(readFileSync(0, "utf-8")).trim();
   if (!input) die("No input on stdin");
   const lines = input.split("\n");
   let working = structuredClone(draft);
@@ -2973,7 +2974,7 @@ function cmdProjects(positional: string[], flags: Flags): void {
       };
       if (flags.names) {
         try {
-          const d = JSON.parse(readFileSync(draftFile, "utf-8")) as { name?: string };
+          const d = JSON.parse(stripBom(readFileSync(draftFile, "utf-8"))) as { name?: string };
           rec.name = d.name || undefined;
         } catch {
           /* unreadable draft — leave name undefined */
@@ -3109,7 +3110,7 @@ function loadConfig(): { path: string | null; config: CapcutConfig } {
   for (const p of [path.join(process.cwd(), ".capcutrc"), path.join(homedir(), ".capcutrc")]) {
     if (!existsSync(p)) continue;
     try {
-      const cfg = JSON.parse(readFileSync(p, "utf-8")) as CapcutConfig;
+      const cfg = JSON.parse(stripBom(readFileSync(p, "utf-8"))) as CapcutConfig;
       return { path: p, config: cfg };
     } catch {
       // Malformed config is ignored rather than crashing every command.
@@ -3145,7 +3146,7 @@ function cmdConfig(flags: Flags): void {
 // be loaded at once for diff/concat).
 function readDraft(input: string): { draft: Draft; filePath: string } {
   const filePath = findDraft(input);
-  return { draft: JSON.parse(readFileSync(filePath, "utf-8")) as Draft, filePath };
+  return { draft: JSON.parse(stripBom(readFileSync(filePath, "utf-8"))) as Draft, filePath };
 }
 
 function indexSegments(draft: Draft): Map<string, { seg: Segment; track: string }> {
@@ -3242,7 +3243,7 @@ function cmdConcat(positional: string[], flags: Flags): void {
   const bInput = positional[2];
   if (!aInput || !bInput) die("Usage: capcut concat <projectA> <draftB> [--out <path>]");
   const { draft: a, filePath: aFile } = loadDraft(aInput);
-  const b = JSON.parse(readFileSync(findDraft(bInput), "utf-8")) as Draft;
+  const b = JSON.parse(stripBom(readFileSync(findDraft(bInput), "utf-8"))) as Draft;
 
   const offset = a.duration || 0;
   const aSegIds = new Set<string>();
@@ -3305,7 +3306,7 @@ function cmdCompile(positional: string[], flags: Flags): void {
 
   let spec: CompileSpec;
   try {
-    spec = parseSpec(readFileSync(specPath, "utf-8"));
+    spec = parseSpec(stripBom(readFileSync(specPath, "utf-8")));
   } catch (e) {
     die((e as Error).message);
   }

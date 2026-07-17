@@ -1,5 +1,6 @@
 import { existsSync, readFileSync } from "node:fs";
 import { basename, dirname, isAbsolute, resolve } from "node:path";
+import { stripBom } from "./bom.js";
 import {
   addKeyframes,
   addTransition,
@@ -489,7 +490,7 @@ export function compileDraft(spec: CompileSpec, opts: CompileOptions): CompileRe
         break;
       }
       case "captions": {
-        const cues = parseSrt(readFileSync(resolvePath(operation.path, opts.specDir), "utf-8"));
+        const cues = parseSrt(stripBom(readFileSync(resolvePath(operation.path, opts.specDir), "utf-8")));
         const offset = Math.round((operation.timeOffset ?? 0) * US);
         for (const cue of cues) {
           const result = addText(draft, filePath, {
