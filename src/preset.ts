@@ -1,4 +1,5 @@
 import { readFileSync } from "node:fs";
+import { stripBom } from "./bom.js";
 import { setBubble, setTextRanges, type TextRangeInput } from "./decorators.js";
 import type { Draft, MaterialText } from "./draft.js";
 import { findMaterial, findSegment } from "./draft.js";
@@ -278,7 +279,7 @@ export function parsePreset(raw: string, source: string): TextStylePreset {
 export function loadPresetFile(path: string): TextStylePreset {
   let raw: string;
   try {
-    raw = readFileSync(path, "utf-8");
+    raw = stripBom(readFileSync(path, "utf-8"));
   } catch {
     throw new Error(`Preset file not found: ${path}`);
   }

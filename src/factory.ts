@@ -1,9 +1,12 @@
 import { createHash, randomUUID } from "node:crypto";
 import { copyFileSync, cpSync, existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { basename, dirname, resolve } from "node:path";
+import { stripBom } from "./bom.js";
+import { uuidHex } from "./decorators.js";
 import type { Draft, Segment, Timerange, Track } from "./draft.js";
-import { findMaterialGlobal, findSegment } from "./draft.js";
+import { findMaterialGlobal, findSegment, writeAtomic } from "./draft.js";
 import { findEnum, type Namespace } from "./enums.js";
+import { isManagedDraftPath } from "./store.js";
 import { fetchWikimediaAsset, isWikimediaUrl, type WikimediaAsset } from "./wikimedia.js";
 
 /**
@@ -115,7 +118,7 @@ export function initDraft(opts: InitOptions): { draftPath: string; filePath: str
     const fp = resolve(draftPath, c);
     if (existsSync(fp)) {
       // Update the draft name + id
-      const raw = readFileSync(fp, "utf-8");
+      const raw = stripBom(readFileSync(fp, "utf-8"));
       const draft = JSON.parse(raw) as Draft;
       draft.name = opts.name;
       const draftId = uuid();
@@ -154,6 +157,7 @@ interface RegisterOptions {
   draftId: string;
   name: string;
   nowMs: number;
+  durationUs?: number; // draft duration in microseconds (tm_duration); init drafts start at 0
 }
 
 /**
@@ -178,7 +182,7 @@ function buildDraftEntry(opts: RegisterOptions): Record<string, unknown> {
     tm_draft_create: tmMicros,
     tm_draft_modified: tmMicros,
     tm_draft_removed: 0,
-    tm_duration: 0,
+    tm_duration: opts.durationUs ?? 0,
   };
 }
 
@@ -191,7 +195,7 @@ const IDENTIFYING_FIELDS = (opts: RegisterOptions): Record<string, unknown> => (
   tm_draft_create: opts.nowMs * 1000,
   tm_draft_modified: opts.nowMs * 1000,
   tm_draft_removed: 0,
-  tm_duration: 0,
+  tm_duration: opts.durationUs ?? 0,
 });
 
 /** Find the array property that holds the per-draft entries (e.g. all_draft_store). */
@@ -229,7 +233,7 @@ export function registerDraftInIndex(opts: RegisterOptions): boolean {
     return true;
   }
 
-  const raw = readFileSync(indexPath, "utf-8");
+  const raw = stripBom(readFileSync(indexPath, "utf-8"));
   let index: Record<string, unknown>;
   try {
     index = JSON.parse(raw) as Record<string, unknown>;
@@ -254,6 +258,420 @@ export function registerDraftInIndex(opts: RegisterOptions): boolean {
   writeFileSync(`${indexPath}.bak`, raw, "utf-8");
   writeFileSync(indexPath, JSON.stringify(index, null, 0), "utf-8");
   return true;
+}
+
+// --- Register (meta-repair for EXISTING drafts; see cmdRegister in index.ts) ---
+// `init` registers a draft only at creation time (registerDraftInIndex above).
+// `capcut register` covers the other half: an existing folder whose
+// draft_meta_info.json sidecar or root_meta_info.json entry is missing/stale
+// and therefore invisible to the CapCut app. draft_content.json is the
+// read-only source of id/name/duration and is never written.
+
+export interface RegistrationTarget {
+  file: "draft_meta_info.json" | "root_meta_info.json";
+  path: string | null;
+  state: "ok" | "missing" | "unreadable" | "stale" | "unregistered" | "unknown-store-root";
+  action: "none" | "create" | "update" | "blocked";
+  detail: string;
+  stale_fields: string[];
+}
+
+export interface RegistrationPlan {
+  project_dir: string;
+  content_path: string;
+  draft_id: string;
+  draft_name: string;
+  duration_us: number;
+  store_root: string | null;
+  store_root_source: string;
+  needs_repair: boolean;
+  targets: RegistrationTarget[];
+  /** Files --apply would write (target action create/update). */
+  repairs: string[];
+  /** Targets needing attention that the CLI refuses to write (target action blocked). */
+  blocked: string[];
+}
+
+interface RegistrationWrite {
+  file: RegistrationTarget["file"];
+  path: string;
+  content: string;
+  /** Raw pre-plan content, null when the file did not exist (no .bak then). */
+  previous: string | null;
+}
+
+export interface RegistrationResult {
+  plan: RegistrationPlan;
+  writes: RegistrationWrite[];
+}
+
+/**
+ * A draft's store root is its parent directory — the CapCut app lists drafts
+ * from the root_meta_info.json index there (the same file `init` writes via
+ * registerDraftInIndex). The parent counts as a KNOWN store root when it
+ * already holds a root_meta_info.json, when --drafts names it explicitly
+ * (init's custom-drafts case, where the index may not exist yet), or when the
+ * draft lives under the managed com.lveditor.draft location init defaults to.
+ * Anything else is reported explicitly and never written to.
+ */
+function discoverStoreRoot(projectDir: string, draftsDir?: string): { root: string | null; source: string } {
+  const parent = dirname(projectDir);
+  if (existsSync(resolve(parent, "root_meta_info.json"))) {
+    return { root: parent, source: "root_meta_info.json found in the parent directory" };
+  }
+  if (draftsDir && resolve(draftsDir) === parent) return { root: parent, source: "--drafts" };
+  if (isManagedDraftPath(`${projectDir}/`)) return { root: parent, source: "managed com.lveditor.draft path" };
+  const mismatch = draftsDir ? ` and the draft is not directly inside --drafts ${resolve(draftsDir)}` : "";
+  return {
+    root: null,
+    source: `no root_meta_info.json in the parent directory and not a com.lveditor.draft path${mismatch}`,
+  };
+}
+
+/**
+ * Compare an existing sidecar/index entry against what draft_content.json says
+ * and return the stale field names plus the repaired object (unknown fields
+ * preserved, tm_draft_modified bumped). draft_name is CapCut's display name —
+ * an existing non-empty value is user data and wins; it is only filled when
+ * missing/empty.
+ */
+function registrationFixes(
+  existing: Record<string, unknown>,
+  opts: RegisterOptions,
+): { stale: string[]; fixed: Record<string, unknown> } {
+  const wanted: Record<string, unknown> = {
+    draft_id: opts.draftId,
+    draft_fold_path: opts.draftPath,
+    draft_json_file: opts.filePath,
+    draft_root_path: opts.draftsDir,
+    tm_duration: opts.durationUs ?? 0,
+  };
+  const stale = Object.keys(wanted).filter((key) => existing[key] !== wanted[key]);
+  if (typeof existing.draft_name !== "string" || existing.draft_name === "") {
+    stale.push("draft_name");
+    wanted.draft_name = opts.name;
+  }
+  if (stale.length === 0) return { stale, fixed: existing };
+  const fixed: Record<string, unknown> = {
+    ...structuredClone(existing),
+    ...wanted,
+    tm_draft_modified: opts.nowMs * 1000,
+  };
+  if (typeof fixed.tm_draft_create !== "number") fixed.tm_draft_create = opts.nowMs * 1000;
+  return { stale, fixed };
+}
+
+/**
+ * Plan for `capcut register`: report whether an existing draft's
+ * draft_meta_info.json sidecar and root_meta_info.json entry are present and
+ * agree with draft_content.json (the read-only id/name/duration source), and
+ * prepare the exact writes --apply would make. Accepts a project directory or
+ * its draft_content.json path; any other explicitly named file is rejected so
+ * the plan and the write always cover the same target set. An unreadable
+ * root_meta_info.json is never rewritten (it lists EVERY draft); it is
+ * reported blocked instead — as is everything when the draft does not live
+ * inside a known store root.
+ */
+export function planDraftRegistration(
+  input: string,
+  options: { draftsDir?: string; now?: number } = {},
+): RegistrationResult {
+  const resolved = resolve(input);
+  if (existsSync(resolved) && statSync(resolved).isFile() && basename(resolved) !== "draft_content.json") {
+    throw new Error(
+      `register repairs a draft's registration metadata from draft_content.json and cannot target ${basename(resolved)} directly. ` +
+        `Pass the project directory instead: capcut register ${dirname(resolved)}`,
+    );
+  }
+  const projectDir = existsSync(resolved) && statSync(resolved).isFile() ? dirname(resolved) : resolved;
+  const contentPath = resolve(projectDir, "draft_content.json");
+  if (!existsSync(contentPath)) {
+    throw new Error(
+      "register needs a readable draft_content.json (the id/name/duration source). " +
+        "Run `capcut diagnose <project>` to inspect what is on disk.",
+    );
+  }
+  let content: Record<string, unknown>;
+  try {
+    content = JSON.parse(stripBom(readFileSync(contentPath, "utf-8"))) as Record<string, unknown>;
+  } catch (error) {
+    throw new Error(
+      `register needs a readable draft_content.json (the id/name/duration source), but it did not parse: ${
+        error instanceof Error ? error.message : String(error)
+      }`,
+    );
+  }
+  if (typeof content.id !== "string" || content.id === "") {
+    throw new Error(
+      'register cannot derive a draft id: draft_content.json has no "id". Refusing to invent one — ' +
+        "run `capcut diagnose <project>` to inspect the draft.",
+    );
+  }
+
+  const name = typeof content.name === "string" && content.name !== "" ? content.name : basename(projectDir);
+  const durationUs = typeof content.duration === "number" && Number.isFinite(content.duration) ? content.duration : 0;
+  const { root: storeRoot, source: storeRootSource } = discoverStoreRoot(projectDir, options.draftsDir);
+  const opts: RegisterOptions = {
+    draftsDir: storeRoot ?? dirname(projectDir),
+    draftPath: projectDir,
+    filePath: contentPath,
+    draftId: content.id,
+    name,
+    nowMs: options.now ?? Date.now(),
+    durationUs,
+  };
+
+  const targets: RegistrationTarget[] = [];
+  const writes: RegistrationWrite[] = [];
+
+  // Target 1: the per-folder draft_meta_info.json sidecar.
+  const metaPath = resolve(projectDir, "draft_meta_info.json");
+  const metaRaw = existsSync(metaPath) ? stripBom(readFileSync(metaPath, "utf-8")) : null;
+  let metaParsed: Record<string, unknown> | null = null;
+  if (metaRaw !== null) {
+    try {
+      const parsed = JSON.parse(metaRaw) as unknown;
+      if (parsed && typeof parsed === "object" && !Array.isArray(parsed))
+        metaParsed = parsed as Record<string, unknown>;
+    } catch {
+      // Unparseable sidecar: metaParsed stays null and is treated as corrupt below.
+    }
+  }
+  if (storeRoot === null) {
+    // Without a known store root there is no draft_root_path to derive and no
+    // index to update — report only, never write (the contract for drafts
+    // living outside any known store).
+    if (metaRaw !== null && metaParsed !== null) {
+      targets.push({
+        file: "draft_meta_info.json",
+        path: metaPath,
+        state: "ok",
+        action: "none",
+        detail: "present and readable (store root unknown, so draft_root_path was not verified)",
+        stale_fields: [],
+      });
+    } else {
+      targets.push({
+        file: "draft_meta_info.json",
+        path: metaPath,
+        state: metaRaw === null ? "missing" : "unreadable",
+        action: "blocked",
+        detail:
+          "cannot be recreated without a known store root (draft_root_path). " +
+          "Pass --drafts <dir> if the store root is elsewhere.",
+        stale_fields: [],
+      });
+    }
+    targets.push({
+      file: "root_meta_info.json",
+      path: null,
+      state: "unknown-store-root",
+      action: "blocked",
+      detail: `${projectDir} does not live inside a known CapCut draft store (${storeRootSource}). Pass --drafts <dir> if the store root is elsewhere.`,
+      stale_fields: [],
+    });
+  } else {
+    if (metaRaw === null || metaParsed === null) {
+      const entry = buildDraftEntry(opts);
+      targets.push({
+        file: "draft_meta_info.json",
+        path: metaPath,
+        state: metaRaw === null ? "missing" : "unreadable",
+        action: metaRaw === null ? "create" : "update",
+        detail:
+          metaRaw === null
+            ? "missing — the sidecar will be recreated from draft_content.json"
+            : "does not parse as JSON — the sidecar will be rewritten from draft_content.json (.bak keeps the old bytes)",
+        stale_fields: [],
+      });
+      writes.push({
+        file: "draft_meta_info.json",
+        path: metaPath,
+        content: JSON.stringify(entry, null, 0),
+        previous: metaRaw,
+      });
+    } else {
+      const { stale, fixed } = registrationFixes(metaParsed, opts);
+      if (stale.length === 0) {
+        targets.push({
+          file: "draft_meta_info.json",
+          path: metaPath,
+          state: "ok",
+          action: "none",
+          detail: "present and agrees with draft_content.json",
+          stale_fields: [],
+        });
+      } else {
+        targets.push({
+          file: "draft_meta_info.json",
+          path: metaPath,
+          state: "stale",
+          action: "update",
+          detail: `stale fields (${stale.join(", ")}) will be repaired from draft_content.json; other fields are preserved`,
+          stale_fields: stale,
+        });
+        writes.push({
+          file: "draft_meta_info.json",
+          path: metaPath,
+          content: JSON.stringify(fixed, null, 0),
+          previous: metaRaw,
+        });
+      }
+    }
+
+    // Target 2: the draft's entry in the store's root_meta_info.json index.
+    const indexPath = resolve(storeRoot, "root_meta_info.json");
+    const indexRaw = existsSync(indexPath) ? stripBom(readFileSync(indexPath, "utf-8")) : null;
+    if (indexRaw === null) {
+      // No index yet (fresh CapCut / custom --drafts dir): create a minimal
+      // one, exactly like init's registerDraftInIndex.
+      targets.push({
+        file: "root_meta_info.json",
+        path: indexPath,
+        state: "missing",
+        action: "create",
+        detail: "missing — a minimal index holding this draft will be created (matches init on a fresh store)",
+        stale_fields: [],
+      });
+      writes.push({
+        file: "root_meta_info.json",
+        path: indexPath,
+        content: JSON.stringify({ all_draft_store: [buildDraftEntry(opts)] }, null, 0),
+        previous: null,
+      });
+    } else {
+      let index: Record<string, unknown> | null = null;
+      try {
+        const parsed = JSON.parse(indexRaw) as unknown;
+        if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) index = parsed as Record<string, unknown>;
+      } catch {
+        // Unreadable index — leave it untouched rather than corrupt it (it lists every draft).
+      }
+      if (index === null) {
+        targets.push({
+          file: "root_meta_info.json",
+          path: indexPath,
+          state: "unreadable",
+          action: "blocked",
+          detail:
+            "does not parse as JSON; refusing to rewrite the index that lists every draft. " +
+            "Restore it from a backup or let the CapCut app rebuild it, then re-run register.",
+          stale_fields: [],
+        });
+      } else {
+        const storeKey = findDraftStoreKey(index) ?? "all_draft_store";
+        const store = (Array.isArray(index[storeKey]) ? index[storeKey] : []) as Array<Record<string, unknown>>;
+        const entryIndex = store.findIndex((e) => e && typeof e === "object" && e.draft_fold_path === projectDir);
+        if (entryIndex === -1) {
+          // Clone the shape of a real entry (matches the installed CapCut
+          // version) and override the identifying fields — same as init.
+          const template = store[0];
+          const entry =
+            template && typeof template === "object"
+              ? { ...structuredClone(template), ...IDENTIFYING_FIELDS(opts) }
+              : buildDraftEntry(opts);
+          const updated = { ...index, [storeKey]: [...store, entry] };
+          targets.push({
+            file: "root_meta_info.json",
+            path: indexPath,
+            state: "unregistered",
+            action: "update",
+            detail: `no entry for this folder in ${storeKey} — one will be appended; existing entries are preserved`,
+            stale_fields: [],
+          });
+          writes.push({
+            file: "root_meta_info.json",
+            path: indexPath,
+            content: JSON.stringify(updated, null, 0),
+            previous: indexRaw,
+          });
+        } else {
+          const { stale, fixed } = registrationFixes(store[entryIndex], opts);
+          if (stale.length === 0) {
+            targets.push({
+              file: "root_meta_info.json",
+              path: indexPath,
+              state: "ok",
+              action: "none",
+              detail: `entry present in ${storeKey} and agrees with draft_content.json`,
+              stale_fields: [],
+            });
+          } else {
+            const updatedStore = [...store];
+            updatedStore[entryIndex] = fixed;
+            const updated = { ...index, [storeKey]: updatedStore };
+            targets.push({
+              file: "root_meta_info.json",
+              path: indexPath,
+              state: "stale",
+              action: "update",
+              detail: `entry has stale fields (${stale.join(", ")}) that will be repaired from draft_content.json; other fields and entries are preserved`,
+              stale_fields: stale,
+            });
+            writes.push({
+              file: "root_meta_info.json",
+              path: indexPath,
+              content: JSON.stringify(updated, null, 0),
+              previous: indexRaw,
+            });
+          }
+        }
+      }
+    }
+  }
+
+  const repairs = targets.filter((t) => t.action === "create" || t.action === "update").map((t) => t.file);
+  const blocked = targets.filter((t) => t.action === "blocked").map((t) => t.file);
+  return {
+    plan: {
+      project_dir: projectDir,
+      content_path: contentPath,
+      draft_id: content.id,
+      draft_name: name,
+      duration_us: durationUs,
+      store_root: storeRoot,
+      store_root_source: storeRootSource,
+      needs_repair: repairs.length > 0,
+      targets,
+      repairs,
+      blocked,
+    },
+    writes,
+  };
+}
+
+/**
+ * Perform the writes a registration plan prepared: temp+fsync+rename per file,
+ * with a `.bak` of the pre-plan content for every file that already existed.
+ * Unless forceWrite, refuses when a target changed on disk between the plan
+ * read and now (the sync-timelines optimistic-concurrency rule).
+ */
+export function applyDraftRegistration(
+  result: RegistrationResult,
+  options: { forceWrite?: boolean } = {},
+): { applied: string[]; backups: string[] } {
+  if (!options.forceWrite) {
+    for (const write of result.writes) {
+      const current = existsSync(write.path) ? stripBom(readFileSync(write.path, "utf-8")) : null;
+      if (current !== write.previous) {
+        throw new Error(
+          `Draft changed on disk after it was planned: ${write.file}. ` +
+            "Re-run register, or pass --force-write to overwrite intentionally.",
+        );
+      }
+    }
+  }
+  const applied: string[] = [];
+  const backups: string[] = [];
+  for (const write of result.writes) {
+    if (write.previous !== null) {
+      writeAtomic(`${write.path}.bak`, write.previous);
+      backups.push(`${write.file}.bak`);
+    }
+    writeAtomic(write.path, write.content);
+    applied.push(write.file);
+  }
+  return { applied, backups };
 }
 
 // --- Companion materials (CapCut 6.5+ creates these per-segment) ---
@@ -468,7 +886,12 @@ export const STYLE_FIELDS = [
   "underline",
 ] as const;
 
-export function copyTextStyle(draft: Draft, refSegmentId: string, targetMaterialId: string): void {
+export function copyTextStyle(
+  draft: Draft,
+  refSegmentId: string,
+  targetMaterialId: string,
+  opts: { keepFillColor?: boolean } = {},
+): void {
   const refSeg = findSegment(draft, refSegmentId)?.segment;
   if (!refSeg) throw new Error(`Style-ref segment not found: ${refSegmentId}`);
   const texts = draft.materials.texts as unknown as Array<Record<string, unknown>>;
@@ -477,17 +900,21 @@ export function copyTextStyle(draft: Draft, refSegmentId: string, targetMaterial
   if (!refMat) throw new Error(`Style-ref is not a text segment: ${refSegmentId}`);
   if (!tgtMat) throw new Error(`Target material not found: ${targetMaterialId}`);
   for (const f of STYLE_FIELDS) {
+    if (opts.keepFillColor && f === "text_color") continue;
     if (refMat[f] !== undefined) tgtMat[f] = refMat[f];
   }
   // Mirror the fill color encoded inside `content`'s styles[0] too — CapCut
-  // renders from that. Preserve the new cue's text.
+  // renders from that. Preserve the new cue's text, and with keepFillColor
+  // (import-srt --color-cycle) the cue's already-written fill colour.
   if (typeof refMat.content === "string" && typeof tgtMat.content === "string") {
     try {
       const refC = JSON.parse(refMat.content) as { styles?: Array<Record<string, unknown>>; text?: string };
       const tgtC = JSON.parse(tgtMat.content) as { styles?: Array<Record<string, unknown>>; text?: string };
       if (refC.styles && refC.styles.length > 0 && tgtC.styles && tgtC.styles.length > 0) {
         const preservedRange = tgtC.styles[0].range;
+        const preservedFill = opts.keepFillColor ? tgtC.styles[0].fill : undefined;
         tgtC.styles[0] = { ...refC.styles[0], range: preservedRange };
+        if (preservedFill !== undefined) tgtC.styles[0].fill = preservedFill;
         tgtMat.content = JSON.stringify(tgtC);
       }
     } catch {
@@ -917,7 +1344,7 @@ export function applyTemplate(
   duration: number,
   overrides?: { x?: number; y?: number; scaleX?: number; scaleY?: number; text?: string },
 ): { segmentId: string; materialId: string; trackId: string } {
-  const template = JSON.parse(readFileSync(templatePath, "utf-8")) as Template;
+  const template = JSON.parse(stripBom(readFileSync(templatePath, "utf-8"))) as Template;
 
   // Generate new IDs for everything
   const idMap = new Map<string, string>();
@@ -1026,6 +1453,141 @@ function deepCloneWithIdRemap(obj: Record<string, unknown>, remapId: (old: strin
     clone.id = remapId(clone.id as string);
   }
   return clone;
+}
+
+// --- Duplicate (issue #44: PIP local retouch — copy a clip above itself) ---
+
+export interface DuplicateSegmentOptions {
+  /** Place the copy onto this existing same-type track instead of creating one. */
+  trackName?: string;
+}
+
+export interface DuplicateSegmentResult {
+  segmentId: string;
+  sourceSegmentId: string;
+  materialId: string;
+  trackId: string;
+  trackName: string;
+  createdTrack: boolean;
+  clonedMaterials: Array<{ type: string; id: string; source_id: string }>;
+}
+
+// Every material entry is per-segment state, including videos/audios: the
+// media FILE on disk stays shared, but the entry must be cloned so
+// material-level edits (crop, mix-mode, replace-media) on the copy never
+// leak to the source segment underneath it.
+
+/**
+ * Duplicate a segment at the SAME timeline position/duration onto a track that
+ * renders above the source. Default: a fresh same-type track inserted directly
+ * after the source track — sortTracks is stable within a type and a later
+ * same-type track renders ABOVE, so the copy sits exactly on top of its
+ * source. With `trackName`, the copy goes onto that existing same-type track
+ * instead; occupied target range / missing track / type mismatch all throw.
+ */
+export function duplicateSegment(
+  draft: Draft,
+  segId: string,
+  opts: DuplicateSegmentOptions = {},
+): DuplicateSegmentResult {
+  const found = findSegment(draft, segId);
+  if (!found) throw new Error(`Segment not found: ${segId}`);
+  const { track: sourceTrack, segment: sourceSeg } = found;
+  const { start, duration } = sourceSeg.target_timerange;
+
+  const primary = findMaterialGlobal(draft, sourceSeg.material_id);
+  if (!primary) throw new Error(`Material not found for segment: ${segId}`);
+
+  let track: Track;
+  let createdTrack = false;
+  if (opts.trackName !== undefined) {
+    const target = draft.tracks.find((t) => t.name === opts.trackName);
+    if (!target) throw new Error(`Track not found: ${opts.trackName}`);
+    if (target.type !== sourceTrack.type) {
+      throw new Error(
+        `Track "${opts.trackName}" is a ${target.type} track; the copy of a ${sourceTrack.type} segment needs a ${sourceTrack.type} track.`,
+      );
+    }
+    const end = start + duration;
+    const blocking = target.segments.find(
+      (s) => s.target_timerange.start < end && s.target_timerange.start + s.target_timerange.duration > start,
+    );
+    if (blocking) {
+      throw new Error(
+        `Track "${opts.trackName}" is occupied over ${start}us-${end}us (segment ${blocking.id}). ` +
+          "Pick a track that is free at that range, or omit --track to create a new one above the source.",
+      );
+    }
+    track = target;
+  } else {
+    const names = new Set(draft.tracks.map((t) => t.name));
+    let name = `${sourceTrack.name}-copy`;
+    for (let n = 2; names.has(name); n++) name = `${sourceTrack.name}-copy-${n}`;
+    track = {
+      id: uuid(),
+      type: sourceTrack.type,
+      name,
+      attribute: 0,
+      segments: [],
+      is_default_name: false,
+      flag: 0,
+    } as unknown as Track;
+    draft.tracks.splice(draft.tracks.indexOf(sourceTrack) + 1, 0, track);
+    createdTrack = true;
+  }
+
+  const newSeg = structuredClone(sourceSeg);
+  newSeg.id = uuid();
+  newSeg.raw_segment_id = track.id;
+  const clonedMaterials: DuplicateSegmentResult["clonedMaterials"] = [];
+
+  const primaryClone = structuredClone(primary.material);
+  primaryClone.id = uuid();
+  draft.materials[primary.type].push(primaryClone);
+  newSeg.material_id = primaryClone.id as string;
+  clonedMaterials.push({ type: primary.type, id: primaryClone.id as string, source_id: sourceSeg.material_id });
+
+  // Per-segment companions referenced via extra_material_refs (speed,
+  // placeholder_info, sound_channel_mapping, vocal_separation, canvas,
+  // material_color, masks, animations, ...) are cloned with fresh ids —
+  // mirroring createCompanionMaterials, which never shares one instance
+  // between two segments. Dangling refs are dropped, not copied.
+  const newRefs: string[] = [];
+  for (const refId of sourceSeg.extra_material_refs ?? []) {
+    const extra = findMaterialGlobal(draft, refId);
+    if (!extra) continue;
+    const clone = structuredClone(extra.material);
+    clone.id = uuid();
+    draft.materials[extra.type].push(clone);
+    newRefs.push(clone.id as string);
+    clonedMaterials.push({ type: extra.type, id: clone.id as string, source_id: refId });
+  }
+  newSeg.extra_material_refs = newRefs;
+
+  // Keyframe lists/entries live embedded in the segment; re-mint their ids on
+  // the copy with the same uuidHex scheme addKeyframes writes.
+  if (Array.isArray(newSeg.common_keyframes)) {
+    for (const list of newSeg.common_keyframes as Array<Record<string, unknown>>) {
+      if (typeof list.id === "string") list.id = uuidHex();
+      if (Array.isArray(list.keyframe_list)) {
+        for (const kf of list.keyframe_list as Array<Record<string, unknown>>) {
+          if (typeof kf.id === "string") kf.id = uuidHex();
+        }
+      }
+    }
+  }
+
+  track.segments.push(newSeg);
+
+  return {
+    segmentId: newSeg.id,
+    sourceSegmentId: sourceSeg.id,
+    materialId: newSeg.material_id,
+    trackId: track.id,
+    trackName: track.name,
+    createdTrack,
+    clonedMaterials,
+  };
 }
 
 // --- Sticker ---
@@ -1319,6 +1881,136 @@ export function setMixMode(
   const value = MIX_MODES[slug];
   mat.mix_mode = value;
   return { segmentId: seg.id, material_id: mat.id, mix_mode: value };
+}
+
+// --- Material crop ---
+
+// Normalized crop rect in source-material space: x/y = top-left corner,
+// w/h = extent, all 0..1 fractions of the source frame.
+export interface CropRect {
+  x: number;
+  y: number;
+  w: number;
+  h: number;
+}
+
+// Preset aspect ratios for `crop --ratio`. "free" restores the full frame.
+const CROP_RATIOS: Record<string, number> = {
+  "1:1": 1,
+  "16:9": 16 / 9,
+  "9:16": 9 / 16,
+  "4:3": 4 / 3,
+  "3:4": 3 / 4,
+};
+
+export function cropPresets(): string[] {
+  return ["free", ...Object.keys(CROP_RATIOS)];
+}
+
+// Centered maximal crop of `preset` aspect against a width x height source.
+export function cropRectForRatio(width: number, height: number, preset: string): CropRect {
+  if (preset === "free") return { x: 0, y: 0, w: 1, h: 1 };
+  const ratio = CROP_RATIOS[preset];
+  if (!ratio) throw new Error(`Unknown ratio: ${preset}. Valid: ${cropPresets().join(", ")}`);
+  if (!(width > 0) || !(height > 0)) {
+    throw new Error(
+      `Source material has no stored width/height, so --ratio cannot be computed. Pass an explicit --rect <x,y,w,h> instead.`,
+    );
+  }
+  const source = width / height;
+  // Target wider than the source: keep full width, shrink height. Else inverse.
+  const w = ratio >= source ? 1 : ratio / source;
+  const h = ratio >= source ? source / ratio : 1;
+  return { x: (1 - w) / 2, y: (1 - h) / 2, w, h };
+}
+
+// The crop lives on the *video material*, not the segment (same as mix-mode).
+function findCropMaterial(
+  draft: Draft,
+  segmentId: string,
+): { seg: Segment; mat: Record<string, unknown> & { id: string; type?: string } } {
+  const found = findSegment(draft, segmentId);
+  if (!found) throw new Error(`Segment not found: ${segmentId}`);
+  const seg = found.segment;
+  const videos = (draft.materials.videos ?? []) as Array<Record<string, unknown> & { id: string; type?: string }>;
+  const mat = videos.find((v) => v.id === seg.material_id);
+  if (!mat) {
+    throw new Error(`crop only applies to video/photo segments (no video material for ${segmentId})`);
+  }
+  if (mat.type !== "video" && mat.type !== "photo") {
+    throw new Error(`crop only applies to video/photo materials (got type=${mat.type})`);
+  }
+  return { seg, mat };
+}
+
+export function getCrop(
+  draft: Draft,
+  segmentId: string,
+): {
+  segmentId: string;
+  material_id: string;
+  width: number | null;
+  height: number | null;
+  crop: Record<string, number> | null;
+} {
+  const { seg, mat } = findCropMaterial(draft, segmentId);
+  return {
+    segmentId: seg.id,
+    material_id: mat.id,
+    width: typeof mat.width === "number" ? mat.width : null,
+    height: typeof mat.height === "number" ? mat.height : null,
+    crop: (mat.crop as Record<string, number> | undefined) ?? null,
+  };
+}
+
+// Tolerance for x+w / y+h sums that land a float ulp past 1 (e.g. 0.3 + 0.7).
+const CROP_EPSILON = 1e-9;
+
+export function setCrop(
+  draft: Draft,
+  segmentId: string,
+  rect: CropRect,
+): { segmentId: string; material_id: string; rect: CropRect; crop: Record<string, number>; crop_ratio?: string } {
+  const { x, y, w, h } = rect;
+  for (const [name, value] of Object.entries(rect)) {
+    if (!Number.isFinite(value)) throw new Error(`Crop rect ${name} must be a finite number (got ${value})`);
+  }
+  if (x < 0 || y < 0) throw new Error(`Crop rect x/y must be >= 0 (got x=${x}, y=${y})`);
+  if (w <= 0 || h <= 0) throw new Error(`Crop rect w/h must be > 0 (got w=${w}, h=${h})`);
+  if (x + w > 1 + CROP_EPSILON || y + h > 1 + CROP_EPSILON) {
+    throw new Error(`Crop rect must stay inside the frame: x+w <= 1 and y+h <= 1 (got x+w=${x + w}, y+h=${y + h})`);
+  }
+  const { seg, mat } = findCropMaterial(draft, segmentId);
+  const right = Math.min(1, x + w);
+  const bottom = Math.min(1, y + h);
+  // Same 8-corner struct the factory writes at creation: y grows downward,
+  // upper_left = (x, y) ... lower_right = (x+w, y+h).
+  const crop = {
+    lower_left_x: x,
+    lower_left_y: bottom,
+    lower_right_x: right,
+    lower_right_y: bottom,
+    upper_left_x: x,
+    upper_left_y: y,
+    upper_right_x: right,
+    upper_right_y: y,
+  };
+  mat.crop = crop;
+  const result: {
+    segmentId: string;
+    material_id: string;
+    rect: CropRect;
+    crop: Record<string, number>;
+    crop_ratio?: string;
+  } = { segmentId: seg.id, material_id: mat.id, rect, crop };
+  // CapCut's preset enum values for crop_ratio are not published, so when the
+  // material carries the field we stamp the safe "free" value and let the app
+  // recompute from the corner points (stated in --help).
+  if ("crop_ratio" in mat) {
+    mat.crop_ratio = "free";
+    result.crop_ratio = "free";
+  }
+  return result;
 }
 
 // --- Audio fade-in / fade-out ---

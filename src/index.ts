@@ -5,6 +5,7 @@ import { homedir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { parseAss } from "./ass.js";
+import { stripBom } from "./bom.js";
 import { captionDraft } from "./caption.js";
 import { removeChroma, setChroma } from "./chroma.js";
 import {
@@ -32,7 +33,10 @@ import {
   addTransition,
   bubbleCatalogue,
   bubbleSlugs,
+  buildEmphasisRanges,
+  DEFAULT_KEYWORD_SIZE,
   imageAnimSlugs,
+  KARAOKE_HIGHLIGHT_COLOR,
   keyframeProperties,
   maskSlugs,
   parseKeyframeValue,
@@ -74,18 +78,25 @@ import {
   addSticker,
   addText,
   addVideo,
+  applyDraftRegistration,
   applyTemplate,
+  type CropRect,
   copyTextStyle,
+  cropRectForRatio,
   cutProject,
+  duplicateSegment,
   effectSlugs,
   filterCatalogue,
   filterSlugs,
+  getCrop,
   initDraft,
   mixModeSlugs,
+  planDraftRegistration,
   resolveAssetPath,
   saveTemplate,
   setAudioFade,
   setCover,
+  setCrop,
   setMixMode,
   uuid,
 } from "./factory.js";
@@ -127,7 +138,9 @@ export const COMMANDS = [
   "add-audio",
   "add-video",
   "add-text",
+  "crop",
   "cut",
+  "duplicate",
   "keyframe",
   "transition",
   "mask",
@@ -156,6 +169,7 @@ export const COMMANDS = [
   "add-sfx",
   "chroma",
   "prune",
+  "register",
   "relink",
   "replace-media",
   "timeline",
@@ -318,12 +332,51 @@ Edit:
   volume     <project> <id> <level>             Set volume (0.0-1.0)
   trim       <project> <id> <start> <duration>  Trim segment (times in seconds)
   opacity    <project> <id> <alpha>             Set opacity (0.0-1.0)
+  crop       <project> <segment-id> [options]   Read or set the source-material crop
+             No flags: read-only — print the material's crop struct as JSON
+             (plus source width/height when stored) and write nothing.
+             Options:
+               --ratio <r>        free|1:1|16:9|9:16|4:3|3:4 — centered maximal
+                                  crop of that aspect against the source
+                                  width/height stored in the draft (errors if
+                                  the dims are missing/zero: pass --rect)
+               --rect <x,y,w,h>   Explicit normalized rect, 0..1 fractions of
+                                  the source frame; overrides --ratio
+               --reset            Restore the full frame
+             When the material carries a crop_ratio field it is stamped
+             "free" (CapCut's preset enum values are not published), so the
+             app recomputes from the corner points.
+  duplicate  <project> <segment-id> [--track <track-name> | --new-track]
+             Duplicate a segment at the SAME timeline position/duration onto a
+             track that renders ABOVE the source (the PIP local-retouch flow
+             from issue #44: copy the clip above itself, then mask the copy).
+             Default and --new-track: a fresh same-type track directly above
+             the source. --track <track-name>: use that existing same-type
+             track; exits 1 when the target range is occupied there. The media
+             file on disk stays shared, but the material entry and every
+             per-segment companion (speed, canvas, mask, ...) are cloned with
+             fresh ids, so edits like crop/mix-mode on the copy never touch
+             the source segment.
   export-srt <project> [options]                Export subtitles to SRT/WebVTT
   batch      <project>                          Run multiple edits from stdin (JSONL)
   restore    <project> [--step N | --list]      Undo writes (latest .bak, or N writes back; --list history)
 
 Maintenance & inspection:
   prune      <project>                          Remove materials no segment references
+  register   <project-dir> [--apply] [--drafts <dir>]  Repair an EXISTING draft's
+             registration metadata so the CapCut app lists it again (init only
+             registers drafts it creates): recreates a missing/corrupt
+             draft_meta_info.json sidecar and inserts/updates the draft's entry
+             in the store's root_meta_info.json. id/name/duration derive from
+             draft_content.json, which is never written. Prints the per-target
+             plan (needs_repair + detail) by default; --apply writes atomically
+             with a .bak per file modified and no-ops (applied: []) when the
+             draft is already registered. A draft that does not live inside a
+             known store root (parent with root_meta_info.json, a managed
+             com.lveditor.draft path, or --drafts <dir>) is reported explicitly
+             and nothing is written. Refuses to write while the editor is
+             running unless --force-write. Exits 2 on --apply when a target
+             stays blocked (unknown store root, unreadable root_meta_info.json).
   relink     <project> --dir <d> | --from <p> --to <q>  Repair broken media paths
   replace-media <project> <segment-id> <new-file> [--retime]
              Swap a segment's source clip (placeholder > final render) while
@@ -495,6 +548,23 @@ Caption (v0.4 — real subtitle objects, fixes import-srt mimicry):
                --style-ref <seg-id> Mirror styling from existing text segment
                --preset <file>      Base style from a make-preset file
                                     (same coverage as --style-ref)
+               --highlight-words <w1,w2,...|@file>
+                                    Emphasize these words in every cue
+                                    (case-insensitive whole-word match;
+                                    @file = one word/phrase per line)
+               --keyword-color <#RRGGBB>
+                                    Emphasis colour (default #FFD700, the
+                                    same gold --karaoke uses)
+               --keyword-size <n>   Emphasis size as a multiplier on the
+                                    cue's base font size (default 1.2)
+               --color-cycle <#hex1,#hex2,...>
+                                    Rotate the BASE text colour per cue in
+                                    list order (independent of emphasis)
+             Precedence: --color-cycle wins over the style-ref/preset base
+             colour per cue; keyword emphasis sits on top of base/karaoke
+             styling and overrides the matched words' colour/size; with
+             --karaoke, karaoke ranges are built first and keyword matches
+             override those words.
 
 Translate (v0.4 — multi-language draft clone):
   translate  <project> --to <lang> --out <path> [options]
@@ -554,6 +624,22 @@ Subtitles (Phase 3):
                --alpha --vertical --shadow --shadow-color --shadow-distance
                --border-width --border-color --border-alpha
                --bg-color --bg-alpha --bg-style --bg-round-radius --bg-h-offset
+               --highlight-words <w1,w2,...|@file>
+                                     Emphasize these words in every cue
+                                     (case-insensitive whole-word match;
+                                     @file = one word/phrase per line)
+               --keyword-color <#RRGGBB>
+                                     Emphasis colour (default #FFD700, the
+                                     same gold caption --karaoke uses)
+               --keyword-size <n>    Emphasis size as a multiplier on the
+                                     cue's base font size (default 1.2)
+               --color-cycle <#hex1,#hex2,...>
+                                     Rotate the BASE text colour per cue in
+                                     list order (independent of emphasis)
+             Precedence: --color sets the base colour for all cues unless
+             --color-cycle is given (then the cycle wins per cue); keyword
+             emphasis sits on top of the base styling and overrides the
+             matched words' colour/size.
   export-srt <project> [options]
              Export subtitles to stdout.
              Options:
@@ -682,6 +768,11 @@ interface Flags {
   karaoke?: boolean;
   maxWords?: number;
   maxGapMs?: number;
+  // caption / import-srt keyword emphasis + colour cycling
+  highlightWords?: string;
+  keywordColor?: string;
+  keywordSize?: number;
+  colorCycle?: string;
   noProbe?: boolean;
   ffprobeCmd?: string;
   // export-srt
@@ -734,6 +825,12 @@ interface Flags {
   minGap?: number;
   limit?: number;
   json?: boolean;
+  // crop
+  ratio?: string;
+  rect?: string;
+  reset?: boolean;
+  // duplicate
+  newTrack?: boolean;
 }
 
 // Map CLI enum flags -> enums.json category key. Order matters for HELP text.
@@ -985,6 +1082,14 @@ function parseFlags(args: string[]): { positional: string[]; flags: Flags } {
       flags.maxWords = parseInt(args[++i], 10);
     } else if (a === "--max-gap-ms" && i + 1 < args.length) {
       flags.maxGapMs = parseFloat(args[++i]);
+    } else if (a === "--highlight-words" && i + 1 < args.length) {
+      flags.highlightWords = args[++i];
+    } else if (a === "--keyword-color" && i + 1 < args.length) {
+      flags.keywordColor = args[++i];
+    } else if (a === "--keyword-size" && i + 1 < args.length) {
+      flags.keywordSize = parseFloat(args[++i]);
+    } else if (a === "--color-cycle" && i + 1 < args.length) {
+      flags.colorCycle = args[++i];
     } else if (a === "--no-probe") {
       flags.noProbe = true;
     } else if (a === "--granularity" && i + 1 < args.length) {
@@ -1073,6 +1178,14 @@ function parseFlags(args: string[]): { positional: string[]; flags: Flags } {
       flags.limit = parseInt(args[++i], 10);
     } else if (a === "--json") {
       flags.json = true;
+    } else if (a === "--ratio" && i + 1 < args.length) {
+      flags.ratio = args[++i];
+    } else if (a === "--rect" && i + 1 < args.length) {
+      flags.rect = args[++i];
+    } else if (a === "--reset") {
+      flags.reset = true;
+    } else if (a === "--new-track") {
+      flags.newTrack = true;
     } else {
       const hit = ENUM_FLAG_MAP.find((f) => f.flag === a);
       if (hit) {
@@ -1680,7 +1793,7 @@ function cmdKeyframe(draft: Draft, filePath: string, positional: string[], flags
   const inputs: KeyframeInput[] = [];
 
   if (flags.batch) {
-    const raw = readFileSync(0, "utf-8").trim();
+    const raw = stripBom(readFileSync(0, "utf-8")).trim();
     if (!raw) die("No input on stdin for --batch");
     for (const line of raw.split("\n")) {
       const trimmed = line.trim();
@@ -1989,6 +2102,34 @@ function cmdMixMode(draft: Draft, filePath: string, positional: string[], flags:
   out({ ok: true, ...result }, flags);
 }
 
+function cmdCrop(draft: Draft, filePath: string, positional: string[], flags: Flags): void {
+  const segId = positional[2];
+  if (!segId) die(`Usage: capcut crop <project> <segment-id> [--ratio <r> | --rect <x,y,w,h> | --reset]`);
+  // No write flag: read-only — print the material's crop, write nothing.
+  if (flags.rect === undefined && flags.ratio === undefined && !flags.reset) {
+    out(getCrop(draft, segId), flags);
+    return;
+  }
+  let rect: CropRect;
+  if (flags.rect !== undefined) {
+    // --rect beats --ratio when both are given.
+    const parts = flags.rect.split(",").map((p) => parseFloat(p.trim()));
+    if (parts.length !== 4 || parts.some((n) => Number.isNaN(n))) {
+      die(`--rect expects four comma-separated numbers: x,y,w,h (got "${flags.rect}")`);
+    }
+    rect = { x: parts[0], y: parts[1], w: parts[2], h: parts[3] };
+  } else if (flags.ratio !== undefined) {
+    const info = getCrop(draft, segId);
+    rect = cropRectForRatio(info.width ?? 0, info.height ?? 0, flags.ratio);
+  } else {
+    // --reset: full frame.
+    rect = { x: 0, y: 0, w: 1, h: 1 };
+  }
+  const result = setCrop(draft, segId, rect);
+  saveDraft(filePath, draft);
+  out({ ok: true, ...result }, flags);
+}
+
 function cmdCut(draft: Draft, _filePath: string, positional: string[], flags: Flags): void {
   if (!flags.out) die("Missing --out <path>. Usage: capcut cut <project> <start> <end> --out <path>");
   const start = parseTimeInput(positional[2]);
@@ -2000,6 +2141,31 @@ function cmdCut(draft: Draft, _filePath: string, positional: string[], flags: Fl
   const indent = 0;
   writeFileSync(flags.out, JSON.stringify(draft, null, indent), "utf-8");
   out({ ok: true, kept: result.kept, removed: result.removed, duration_us: end - start, out: flags.out }, flags);
+}
+
+function cmdDuplicate(draft: Draft, filePath: string, positional: string[], flags: Flags): void {
+  const segId = positional[2];
+  if (!segId) die("Usage: capcut duplicate <project> <segment-id> [--track <track-name>] [--new-track]");
+  if (flags.track !== undefined && flags.newTrack) {
+    die(
+      "--track and --new-track are mutually exclusive: --track reuses an existing track, --new-track creates one (the default).",
+    );
+  }
+  const result = duplicateSegment(draft, segId, { trackName: flags.track });
+  saveDraft(filePath, draft);
+  out(
+    {
+      ok: true,
+      new_segment_id: result.segmentId,
+      source_segment_id: result.sourceSegmentId,
+      material_id: result.materialId,
+      track_id: result.trackId,
+      track_name: result.trackName,
+      new_track: result.createdTrack,
+      cloned_materials: result.clonedMaterials,
+    },
+    flags,
+  );
 }
 
 // --- Templates ---
@@ -2070,7 +2236,7 @@ function cmdTextRanges(draft: Draft, filePath: string, positional: string[], fla
   if (!flags.styles) die(`Missing --styles. Accepts @path.json or inline JSON array.`);
   let raw = flags.styles;
   if (raw.startsWith("@")) {
-    raw = readFileSync(raw.slice(1), "utf-8");
+    raw = stripBom(readFileSync(raw.slice(1), "utf-8"));
   }
   let parsed: unknown;
   try {
@@ -2129,6 +2295,68 @@ function cmdEnums(flags: Flags): void {
   }
 }
 
+// --- v0.14: keyword emphasis + colour cycling (caption, import-srt) ---
+
+const HEX_COLOR_RE = /^#[0-9a-fA-F]{6}$/;
+
+/** --highlight-words value: comma-separated words, or @file with one word/phrase per line. */
+function parseHighlightWords(raw: string): string[] {
+  const fromFile = raw.startsWith("@");
+  const text = fromFile ? stripBom(readFileSync(raw.slice(1), "utf-8")) : raw;
+  return (fromFile ? text.split(/\r?\n/) : text.split(","))
+    .map((word) => word.trim())
+    .filter((word) => word.length > 0);
+}
+
+interface KeywordEmphasisFlags {
+  words?: string[];
+  color: string;
+  size: number;
+  cycle?: string[];
+}
+
+/** Validate the four emphasis flags once, before any cue is written. */
+function keywordEmphasisFromFlags(flags: Flags): KeywordEmphasisFlags {
+  if (!flags.highlightWords) {
+    if (flags.keywordColor !== undefined) die("--keyword-color requires --highlight-words.");
+    if (flags.keywordSize !== undefined) die("--keyword-size requires --highlight-words.");
+  }
+  const words = flags.highlightWords ? parseHighlightWords(flags.highlightWords) : undefined;
+  if (words && words.length === 0) die("--highlight-words is empty. Pass w1,w2,... or @file with one word per line.");
+  const color = flags.keywordColor ?? KARAOKE_HIGHLIGHT_COLOR;
+  if (!HEX_COLOR_RE.test(color)) die(`--keyword-color must be #RRGGBB (got '${color}').`);
+  const size = flags.keywordSize ?? DEFAULT_KEYWORD_SIZE;
+  if (!Number.isFinite(size) || size <= 0 || size > 10) {
+    die(`--keyword-size must be a multiplier > 0 and <= 10 (got '${flags.keywordSize}').`);
+  }
+  let cycle: string[] | undefined;
+  if (flags.colorCycle !== undefined) {
+    cycle = flags.colorCycle
+      .split(",")
+      .map((c) => c.trim())
+      .filter((c) => c.length > 0);
+    if (cycle.length === 0) die("--color-cycle is empty. Pass a comma-separated #RRGGBB list.");
+    for (const c of cycle) {
+      if (!HEX_COLOR_RE.test(c)) die(`--color-cycle entries must be #RRGGBB (got '${c}').`);
+    }
+  }
+  return { words, color, size, cycle };
+}
+
+/** The cue's effective base font size: content styles[0].size after style-ref/flags applied. */
+function textBaseFontSize(draft: Draft, materialId: string): number {
+  const mat = (draft.materials.texts as unknown as Array<Record<string, unknown>>).find((t) => t.id === materialId);
+  try {
+    const content = JSON.parse(String(mat?.content)) as { styles?: Array<{ size?: number }> };
+    const size = content.styles?.[0]?.size;
+    if (typeof size === "number" && Number.isFinite(size)) return size;
+  } catch {
+    /* fall through */
+  }
+  const fallback = mat?.font_size;
+  return typeof fallback === "number" && Number.isFinite(fallback) ? fallback : 15;
+}
+
 function importCuesToDraft(
   draft: Draft,
   filePath: string,
@@ -2169,9 +2397,12 @@ function importCuesToDraft(
     bgVOffset: flags.bgVOffset,
   };
   const hasStyleFlags = Object.values(styleOpts).some((v) => v !== undefined);
+  const emphasis = keywordEmphasisFromFlags(flags);
 
   const created: Array<{ id: string; start_us: number; duration_us: number; text: string }> = [];
-  for (const cue of cues) {
+  let keywordMatches = 0;
+  for (let cueIndex = 0; cueIndex < cues.length; cueIndex++) {
+    const cue = cues[cueIndex];
     const start = cue.startUs + offsetUs;
     const duration = cue.endUs - cue.startUs;
     if (start < 0) die(`Cue ${cue.index} has negative start after --time-offset (${start}us)`);
@@ -2180,15 +2411,31 @@ function importCuesToDraft(
       start,
       duration,
       fontSize: flags.fontSize,
-      color: flags.color,
+      // --color-cycle rotates the base colour per cue and wins over --color.
+      color: emphasis.cycle ? emphasis.cycle[cueIndex % emphasis.cycle.length] : flags.color,
       alignment: flags.align,
       x: flags.x,
       y: flags.y,
       trackName: flags.trackName ?? "subtitle",
     };
     const res = addText(draft, filePath, opts);
-    if (flags.styleRef) copyTextStyle(draft, flags.styleRef, res.materialId);
+    // --color-cycle wins over the style-ref base colour per cue: keep the
+    // fill colour addText just wrote instead of the ref's.
+    if (flags.styleRef)
+      copyTextStyle(draft, flags.styleRef, res.materialId, { keepFillColor: Boolean(emphasis.cycle) });
     if (hasStyleFlags) setTextStyle(draft, res.segmentId, styleOpts);
+    if (emphasis.words) {
+      // Emphasis ranges sit on top of the base styling written above; unmatched
+      // text inherits the cue's styles[0] via setTextRanges' gap fill.
+      const { ranges, matches } = buildEmphasisRanges(cue.text, {
+        words: emphasis.words,
+        color: emphasis.color,
+        sizeMultiplier: emphasis.size,
+        baseSize: textBaseFontSize(draft, res.materialId),
+      });
+      if (ranges.length > 0) setTextRanges(draft, res.segmentId, ranges);
+      keywordMatches += matches;
+    }
     created.push({ id: res.segmentId, start_us: start, duration_us: duration, text: cue.text });
   }
 
@@ -2203,6 +2450,9 @@ function importCuesToDraft(
       time_offset_us: offsetUs,
       first: created[0],
       last: created[created.length - 1],
+      // undefined when the flags are off, so the JSON stays byte-identical.
+      keyword_matches: emphasis.words ? keywordMatches : undefined,
+      color_cycle: emphasis.cycle ? emphasis.cycle.length : undefined,
     },
     flags,
   );
@@ -2211,7 +2461,7 @@ function importCuesToDraft(
 function cmdImportSrt(draft: Draft, filePath: string, positional: string[], flags: Flags): void {
   const srtArg = positional[2];
   if (!srtArg) die(`Usage: capcut import-srt <project> <srt-path-or-->`);
-  const srtContent = srtArg === "-" ? readFileSync(0, "utf-8") : readFileSync(srtArg, "utf-8");
+  const srtContent = stripBom(srtArg === "-" ? readFileSync(0, "utf-8") : readFileSync(srtArg, "utf-8"));
   const cues = parseSrt(srtContent);
   if (cues.length === 0) die(`SRT produced 0 cues`);
   importCuesToDraft(draft, filePath, cues, flags, "srt");
@@ -2220,7 +2470,7 @@ function cmdImportSrt(draft: Draft, filePath: string, positional: string[], flag
 function cmdImportAss(draft: Draft, filePath: string, positional: string[], flags: Flags): void {
   const assArg = positional[2];
   if (!assArg) die(`Usage: capcut import-ass <project> <ass-path-or-->`);
-  const assContent = assArg === "-" ? readFileSync(0, "utf-8") : readFileSync(assArg, "utf-8");
+  const assContent = stripBom(assArg === "-" ? readFileSync(0, "utf-8") : readFileSync(assArg, "utf-8"));
   const cues = parseAss(assContent);
   if (cues.length === 0) die(`ASS produced 0 cues`);
   importCuesToDraft(draft, filePath, cues, flags, "ass");
@@ -2313,6 +2563,7 @@ function cmdCaption(draft: Draft, filePath: string, flags: Flags): void {
   if (!flags.audio && !flags.fromSegment) {
     die("Missing --audio <path> or --from-segment <id>. One is required.");
   }
+  const emphasis = keywordEmphasisFromFlags(flags);
   const result = captionDraft(draft, {
     audio: flags.audio,
     fromSegment: flags.fromSegment,
@@ -2327,6 +2578,10 @@ function cmdCaption(draft: Draft, filePath: string, flags: Flags): void {
     maxWords: flags.maxWords,
     maxChars: flags.maxChars,
     maxGapMs: flags.maxGapMs,
+    highlightWords: emphasis.words,
+    keywordColor: emphasis.color,
+    keywordSize: emphasis.size,
+    colorCycle: emphasis.cycle,
   });
   saveDraft(filePath, draft);
   out(result, flags);
@@ -2493,7 +2748,7 @@ function execBatchOp(draft: Draft, filePath: string, op: BatchOp, flags: Flags):
 }
 
 function cmdBatch(draft: Draft, filePath: string, flags: Flags): void {
-  const input = readFileSync(0, "utf-8").trim();
+  const input = stripBom(readFileSync(0, "utf-8")).trim();
   if (!input) die("No input on stdin");
   const lines = input.split("\n");
   let working = structuredClone(draft);
@@ -2578,6 +2833,92 @@ function cmdDiagnose(projectPath: string | undefined, flags: Flags): void {
   } else {
     out({ ...report, bundle: flags.bundle ?? null }, flags);
   }
+}
+
+// `register` is the meta-repair sidecar for EXISTING drafts: `init` registers
+// a draft only at creation time (factory.ts registerDraftInIndex), so an
+// existing folder missing draft_meta_info.json or its entry in the store's
+// root_meta_info.json is invisible to the CapCut app with no repair path.
+// draft_content.json is the read-only id/name/duration source and is NEVER
+// written. Plan-only by default; --apply writes atomically with a .bak per
+// file modified and is idempotent (re-run -> applied: [], exit 0). Returns the
+// exit code: 0 ok (the plan form always exits 0), 1 via die(), 2 when --apply
+// leaves a target blocked (draft outside any known store root, unreadable
+// root_meta_info.json).
+function cmdRegister(projectPath: string | undefined, flags: Flags): number {
+  if (!projectPath) die("Usage: capcut register <project-dir> [--apply] [--drafts <dir>]");
+  const result = planDraftRegistration(projectPath, { draftsDir: flags.drafts });
+  const { plan } = result;
+
+  const warnBlocked = (): void => {
+    if (flags.quiet) return;
+    for (const target of plan.targets) {
+      if (target.action === "blocked") process.stderr.write(`WARNING ${target.file}: ${target.detail}\n`);
+    }
+  };
+
+  if (!flags.apply) {
+    const message = plan.needs_repair
+      ? `Would write ${plan.repairs.join(", ")}. Re-run with --apply to write.`
+      : plan.blocked.length > 0
+        ? `Registration cannot be verified or repaired: ${plan.blocked.join(", ")} — see targets.`
+        : "Draft is registered: draft_meta_info.json and the store's root_meta_info.json entry agree with draft_content.json.";
+    out({ ok: plan.blocked.length === 0, applied: false, message, ...plan }, flags);
+    if (!flags.quiet) {
+      for (const target of plan.targets) {
+        if (target.action === "create" || target.action === "update") {
+          process.stderr.write(`plan: ${target.action} ${target.file} (${target.detail})\n`);
+        }
+      }
+      warnBlocked();
+      process.stderr.write(plan.needs_repair ? "Plan only — re-run with --apply to write.\n" : `${message}\n`);
+    }
+    return 0;
+  }
+
+  if (plan.repairs.length === 0) {
+    const ok = plan.blocked.length === 0;
+    const message = ok
+      ? "Draft is already registered — nothing to write."
+      : `Nothing writable: ${plan.blocked.join(", ")} cannot be repaired by the CLI — see targets.`;
+    out({ ok, applied: [], backups: [], message, ...plan }, flags);
+    if (!flags.quiet) process.stderr.write(`${message}\n`);
+    warnBlocked();
+    return ok ? 0 : 2;
+  }
+
+  if (!flags.forceWrite) {
+    const running = editorProcesses();
+    if (running.length > 0) {
+      die(
+        `${running.join(" / ")} is running. Close the editor before repairing this draft's registration, ` +
+          "or pass --force-write if you accept that the app may overwrite the change.",
+      );
+    }
+  }
+
+  if (isDryRun()) {
+    const message = `Dry run — plan only. Would write ${plan.repairs.join(", ")}; nothing was written.`;
+    out({ ok: true, applied: [], backups: [], would_apply: plan.repairs, message, ...plan }, flags);
+    if (!flags.quiet) process.stderr.write(`${message}\n`);
+    warnBlocked();
+    return 0;
+  }
+
+  const { applied, backups } = applyDraftRegistration(result, { forceWrite: flags.forceWrite === true });
+
+  const verify = planDraftRegistration(projectPath, { draftsDir: flags.drafts });
+  if (verify.plan.needs_repair) {
+    die(
+      `register wrote ${applied.join(", ")} but the draft still needs repair (${verify.plan.repairs.join(", ")}). ` +
+        "Restore from the .bak files and report this.",
+    );
+  }
+  const ok = plan.blocked.length === 0;
+  out({ ok, applied, backups, ...verify.plan }, flags);
+  if (!flags.quiet) process.stderr.write(`Registered from draft_content.json: wrote ${applied.join(", ")}\n`);
+  warnBlocked();
+  return ok ? 0 : 2;
 }
 
 // `sync-timelines` repairs a draft whose mirror files (template-2.tmp /
@@ -2973,7 +3314,7 @@ function cmdProjects(positional: string[], flags: Flags): void {
       };
       if (flags.names) {
         try {
-          const d = JSON.parse(readFileSync(draftFile, "utf-8")) as { name?: string };
+          const d = JSON.parse(stripBom(readFileSync(draftFile, "utf-8"))) as { name?: string };
           rec.name = d.name || undefined;
         } catch {
           /* unreadable draft — leave name undefined */
@@ -3022,7 +3363,9 @@ const SUMMARIES: Record<string, string> = {
   "add-audio": "Add a local or Wikimedia audio file on an audio track.",
   "add-video": "Add a local or Wikimedia video/image on a video track.",
   "add-text": "Add a text segment with font/color/position options.",
+  crop: "Read or set a video/photo segment's source-material crop (--ratio preset, --rect x,y,w,h, or --reset).",
   cut: "Extract a time range into a new standalone draft.",
+  duplicate: "Duplicate a segment at its same timeline position onto a track above the source.",
   keyframe: "Add a keyframe (position/scale/rotation/alpha/volume); single or --batch.",
   transition: "Add a transition between segments.",
   mask: "Apply a mask (linear/circle/heart/...) with geometry flags, or --off.",
@@ -3056,6 +3399,8 @@ const SUMMARIES: Record<string, string> = {
   "sync-timelines":
     "Reconcile drifted timeline mirrors (template-2.tmp, draft_info.json) from a read-only draft_content.json (plan with mtimes by default; --apply rewrites only the drifted mirrors).",
   prune: "Remove materials no segment references.",
+  register:
+    "Repair an existing draft's registration metadata (draft_meta_info.json + root_meta_info.json entry) from a read-only draft_content.json so the CapCut app lists it (plan by default; --apply writes with .bak).",
   relink: "Repair broken media paths (--dir or --from/--to).",
   timeline: "Show the track/segment layout (JSON, or -H ASCII bars).",
   projects: "List CapCut/JianYing draft folders on disk.",
@@ -3109,7 +3454,7 @@ function loadConfig(): { path: string | null; config: CapcutConfig } {
   for (const p of [path.join(process.cwd(), ".capcutrc"), path.join(homedir(), ".capcutrc")]) {
     if (!existsSync(p)) continue;
     try {
-      const cfg = JSON.parse(readFileSync(p, "utf-8")) as CapcutConfig;
+      const cfg = JSON.parse(stripBom(readFileSync(p, "utf-8"))) as CapcutConfig;
       return { path: p, config: cfg };
     } catch {
       // Malformed config is ignored rather than crashing every command.
@@ -3145,7 +3490,7 @@ function cmdConfig(flags: Flags): void {
 // be loaded at once for diff/concat).
 function readDraft(input: string): { draft: Draft; filePath: string } {
   const filePath = findDraft(input);
-  return { draft: JSON.parse(readFileSync(filePath, "utf-8")) as Draft, filePath };
+  return { draft: JSON.parse(stripBom(readFileSync(filePath, "utf-8"))) as Draft, filePath };
 }
 
 function indexSegments(draft: Draft): Map<string, { seg: Segment; track: string }> {
@@ -3242,7 +3587,7 @@ function cmdConcat(positional: string[], flags: Flags): void {
   const bInput = positional[2];
   if (!aInput || !bInput) die("Usage: capcut concat <projectA> <draftB> [--out <path>]");
   const { draft: a, filePath: aFile } = loadDraft(aInput);
-  const b = JSON.parse(readFileSync(findDraft(bInput), "utf-8")) as Draft;
+  const b = JSON.parse(stripBom(readFileSync(findDraft(bInput), "utf-8"))) as Draft;
 
   const offset = a.duration || 0;
   const aSegIds = new Set<string>();
@@ -3305,7 +3650,7 @@ function cmdCompile(positional: string[], flags: Flags): void {
 
   let spec: CompileSpec;
   try {
-    spec = parseSpec(readFileSync(specPath, "utf-8"));
+    spec = parseSpec(stripBom(readFileSync(specPath, "utf-8")));
   } catch (e) {
     die((e as Error).message);
   }
@@ -3489,6 +3834,12 @@ async function main(): Promise<void> {
       process.stderr.write(`Review the files, then attach the folder to issue #35.\n`);
     }
     process.exit(0);
+  }
+
+  // `register` reads draft_content.json directly — no loadDraft: the draft may
+  // be missing exactly the sidecar files sibling discovery would look at.
+  if (cmd === "register") {
+    process.exit(cmdRegister(projectPath, flags));
   }
 
   // `sync-timelines` must see drifted/unreadable siblings itself — loadDraft would
@@ -3725,9 +4076,17 @@ async function main(): Promise<void> {
       requireArgs(positional, 5, "capcut add-text <project> <start> <duration> <text>");
       cmdAddText(draft, filePath, positional, flags);
       break;
+    case "crop":
+      requireArgs(positional, 3, "capcut crop <project> <segment-id> [--ratio <r> | --rect <x,y,w,h> | --reset]");
+      cmdCrop(draft, filePath, positional, flags);
+      break;
     case "cut":
       requireArgs(positional, 4, "capcut cut <project> <start> <end> --out <path>");
       cmdCut(draft, filePath, positional, flags);
+      break;
+    case "duplicate":
+      requireArgs(positional, 3, "capcut duplicate <project> <segment-id> [--track <track-name>] [--new-track]");
+      cmdDuplicate(draft, filePath, positional, flags);
       break;
     case "keyframe":
       requireArgs(positional, 3, "capcut keyframe <project> <id> <property> <time> <value>");

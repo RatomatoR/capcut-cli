@@ -13,6 +13,7 @@ import {
   writeSync,
 } from "node:fs";
 import { basename, dirname, join, resolve } from "node:path";
+import { stripBom } from "./bom.js";
 import {
   type DraftCandidate,
   type DraftStore,
@@ -223,7 +224,9 @@ export function listSnapshots(filePath: string): Array<{ step: number; index: nu
 export function assertTargetsUnchangedOnDisk(targets: DraftCandidate[]): void {
   for (const target of targets) {
     if (!target.exists || target.raw === null) continue;
-    const current = readFileSync(target.path, "utf-8");
+    // `target.raw` was BOM-stripped at load; strip here too so a BOM'd file
+    // that is otherwise untouched does not read as a concurrent change.
+    const current = stripBom(readFileSync(target.path, "utf-8"));
     if (current !== target.raw) {
       throw new Error(
         `Draft changed on disk after it was loaded: ${target.name}. ` +
@@ -317,7 +320,9 @@ function writeAndSync(path: string, content: string): void {
   }
 }
 
-function writeAtomic(path: string, content: string): void {
+// Exported for factory.ts (register): the same temp+fsync+rename write the
+// draft save path uses, for metadata files outside commitDraftTargets.
+export function writeAtomic(path: string, content: string): void {
   const temp = `${path}.capcut-cli-${process.pid}-${Date.now()}.tmp`;
   writeAndSync(temp, content);
   renameSync(temp, path);

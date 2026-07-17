@@ -124,6 +124,31 @@ const TEXT_STYLE: OptionSpec[] = [
   option("bg_v_offset", ["--bg-v-offset"], "number", "Background vertical offset."),
 ];
 
+const KEYWORD_EMPHASIS: OptionSpec[] = [
+  option(
+    "color_cycle",
+    ["--color-cycle"],
+    "string",
+    "Rotate the base text colour per cue: comma-separated #RRGGBB list, in order. Wins over --color per cue; independent of keyword emphasis.",
+  ),
+  option(
+    "highlight_words",
+    ["--highlight-words"],
+    "string",
+    "Emphasize case-insensitive whole-word matches per cue: comma-separated words, or @file with one word/phrase per line.",
+  ),
+  option("keyword_color", ["--keyword-color"], "string", "Emphasis colour for --highlight-words matches.", {
+    default: "#FFD700",
+  }),
+  option(
+    "keyword_size",
+    ["--keyword-size"],
+    "number",
+    "Emphasis size for --highlight-words matches, as a multiplier on the cue's base font size.",
+    { default: 1.2 },
+  ),
+];
+
 const usages = {
   info: "capcut info <project>",
   version: "capcut version <project>",
@@ -145,7 +170,9 @@ const usages = {
   "add-audio": "capcut add-audio <project> <file-or-url> <start> [duration] [options]",
   "add-video": "capcut add-video <project> <file-or-url> <start> [duration] [options]",
   "add-text": "capcut add-text <project> <start> <duration> <text> [options]",
+  crop: "capcut crop <project> <segment-id> [--ratio <r> | --rect <x,y,w,h> | --reset]",
   cut: "capcut cut <project> <start> <end> --out <path>",
+  duplicate: "capcut duplicate <project> <segment-id> [--track <track-name>] [--new-track]",
   keyframe: "capcut keyframe <project> <id> <property> <time> <value> [--easing <name>] | --batch",
   transition: "capcut transition <project> <id> <slug> [--duration <time>]",
   mask: "capcut mask <project> <id> <slug> [options] | --off",
@@ -173,6 +200,7 @@ const usages = {
   "add-sfx": "capcut add-sfx <project> <slug> <start> <duration> [options]",
   chroma: "capcut chroma <project> <id> (--color <hex> | --off) [options]",
   prune: "capcut prune <project>",
+  register: "capcut register <project-dir> [--apply] [--drafts <dir>]",
   relink: "capcut relink <project> (--dir <path> | --from <prefix> --to <prefix>)",
   timeline: "capcut timeline <project> [--cols <number>]",
   projects: "capcut projects [query] [--drafts <path>] [--names]",
@@ -230,7 +258,32 @@ const optionsByCommand: Record<string, OptionSpec[]> = {
     FFPROBE,
   ],
   "add-text": [TRACK_NAME, ...TEXT_STYLE.slice(0, 5), PRESET],
+  crop: [
+    option(
+      "ratio",
+      ["--ratio"],
+      "enum",
+      "Centered maximal crop of this aspect against the source material's stored width/height.",
+      { values: ["free", "1:1", "16:9", "9:16", "4:3", "3:4"] },
+    ),
+    option("rect", ["--rect"], "string", "Explicit normalized crop rect x,y,w,h (0..1); overrides --ratio."),
+    option("reset", ["--reset"], "boolean", "Restore the full frame."),
+  ],
   cut: [OUT],
+  duplicate: [
+    option(
+      "track",
+      ["--track"],
+      "string",
+      "Place the copy onto this existing same-type track; errors when the target range is occupied there.",
+    ),
+    option(
+      "new_track",
+      ["--new-track"],
+      "boolean",
+      "Create a fresh same-type track directly above the source (the default).",
+    ),
+  ],
   keyframe: [
     option("batch", ["--batch"], "boolean", "Read JSONL keyframes from stdin."),
     option(
@@ -312,6 +365,7 @@ const optionsByCommand: Record<string, OptionSpec[]> = {
     STYLE_REF,
     option("time_offset", ["--time-offset"], "time", "Shift imported cues."),
     ...TEXT_STYLE,
+    ...KEYWORD_EMPHASIS,
   ],
   "import-ass": [
     TRACK_NAME,
@@ -335,6 +389,7 @@ const optionsByCommand: Record<string, OptionSpec[]> = {
     TRACK_NAME,
     STYLE_REF,
     PRESET,
+    ...KEYWORD_EMPHASIS,
   ],
   translate: [
     option("to", ["--to"], "string", "Target language."),
@@ -352,6 +407,15 @@ const optionsByCommand: Record<string, OptionSpec[]> = {
     option("color", ["--color"], "string", "Chroma colour."),
     option("intensity", ["--intensity"], "number", "Key intensity."),
     option("off", ["--off"], "boolean", "Remove chroma key."),
+  ],
+  register: [
+    option(
+      "apply",
+      ["--apply"],
+      "boolean",
+      "Write the repaired draft_meta_info.json / root_meta_info.json entry (default: print the plan only).",
+    ),
+    option("drafts", ["--drafts"], "path", "Draft store root when the draft does not live inside a known one."),
   ],
   relink: [
     option("dir", ["--dir"], "path", "Directory containing replacement files."),
@@ -447,19 +511,31 @@ optionsByCommand["image-anim"] = optionsByCommand["text-anim"];
 //   --easing            -> keyframe
 //   --granularity, --format -> export-srt
 //   --preset            -> add-text, text-style, caption
-//   --apply             -> sync-timelines
+//   --apply             -> register, sync-timelines
+//   --ratio, --rect, --reset -> crop
 //   --threshold, --min-gap, --limit, --json -> detect-scenes
+//   --highlight-words, --keyword-color, --keyword-size, --color-cycle
+//                       -> caption, import-srt (v0.14 keyword emphasis)
+//   --new-track          -> duplicate
 // Everywhere else they fall through to the positional stream verbatim, matching
 // pre-release behaviour where these tokens were unknown and preserved.
 export const RELEASE_SCOPED_FLAGS: ReadonlySet<string> = new Set([
   "--apply",
+  "--color-cycle",
   "--easing",
   "--format",
   "--granularity",
+  "--highlight-words",
   "--json",
+  "--keyword-color",
+  "--keyword-size",
   "--limit",
   "--min-gap",
+  "--new-track",
   "--preset",
+  "--ratio",
+  "--rect",
+  "--reset",
   "--threshold",
 ]);
 
@@ -481,7 +557,9 @@ const mutating = new Set([
   "add-audio",
   "add-video",
   "add-text",
+  "crop",
   "cut",
+  "duplicate",
   "keyframe",
   "transition",
   "mask",
@@ -507,6 +585,7 @@ const mutating = new Set([
   "add-sfx",
   "chroma",
   "prune",
+  "register",
   "relink",
   "replace-media",
   "sync-timelines",

@@ -3,6 +3,7 @@ import { createHash } from "node:crypto";
 import { existsSync, readFileSync, statSync } from "node:fs";
 import { platform } from "node:os";
 import { basename, dirname, join, resolve } from "node:path";
+import { stripBom } from "./bom.js";
 import type { Draft } from "./draft.js";
 
 const STANDARD_FILES = ["draft_content.json", "draft_info.json", "draft_meta_info.json", "template-2.tmp"] as const;
@@ -115,7 +116,9 @@ function parseCandidate(path: string): DraftCandidate {
   }
 
   const stat = statSync(path);
-  const raw = readFileSync(path, "utf-8");
+  // BOM-strip once at load: `raw` is what gets parsed, hashed, backed up, and
+  // re-serialized, so a PowerShell-written BOM never survives a CLI write.
+  const raw = stripBom(readFileSync(path, "utf-8"));
   const base = {
     name,
     path,
@@ -439,6 +442,12 @@ export function diagnoseDraftStore(input: string): DraftStoreReport {
   if (store.modernStorage && !store.targets.some((candidate) => candidate.name === "template-2.tmp")) {
     actions.push(
       "CapCut >= 8.7 detected without a readable template-2.tmp timeline; run `capcut sync-timelines <project>` to see which targets can be reconciled.",
+    );
+  }
+  if (store.candidates.some((candidate) => candidate.name === "draft_meta_info.json" && !candidate.exists)) {
+    actions.push(
+      "draft_meta_info.json is missing, so the CapCut app may not list this draft. Run `capcut register <project>` " +
+        "(plan only) to review the repair before deciding whether to --apply.",
     );
   }
   if (running.length > 0) actions.push(`Close ${running.join(" / ")} before editing this managed draft.`);

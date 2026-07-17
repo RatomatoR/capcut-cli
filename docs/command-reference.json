@@ -1,6 +1,6 @@
 {
   "name": "capcut-cli",
-  "version": "0.13.0",
+  "version": "0.14.0",
   "schema_version": 2,
   "description": "Edit CapCut/JianYing draft_content.json directly. JSON in, JSON out.",
   "global_flags": [
@@ -950,6 +950,75 @@
       }
     },
     {
+      "name": "crop",
+      "summary": "Read or set a video/photo segment's source-material crop (--ratio preset, --rect x,y,w,h, or --reset).",
+      "usage": "capcut crop <project> <segment-id> [--ratio <r> | --rect <x,y,w,h> | --reset]",
+      "positionals": [
+        {
+          "name": "project",
+          "type": "path",
+          "required": true
+        },
+        {
+          "name": "segment-id",
+          "type": "id",
+          "required": true
+        },
+        {
+          "name": "r",
+          "type": "string",
+          "required": false
+        }
+      ],
+      "options": [
+        {
+          "name": "ratio",
+          "flags": [
+            "--ratio"
+          ],
+          "type": "enum",
+          "required": false,
+          "description": "Centered maximal crop of this aspect against the source material's stored width/height.",
+          "values": [
+            "free",
+            "1:1",
+            "16:9",
+            "9:16",
+            "4:3",
+            "3:4"
+          ]
+        },
+        {
+          "name": "rect",
+          "flags": [
+            "--rect"
+          ],
+          "type": "string",
+          "required": false,
+          "description": "Explicit normalized crop rect x,y,w,h (0..1); overrides --ratio."
+        },
+        {
+          "name": "reset",
+          "flags": [
+            "--reset"
+          ],
+          "type": "boolean",
+          "required": false,
+          "description": "Restore the full frame."
+        }
+      ],
+      "mutates": true,
+      "prerequisites": [],
+      "output": {
+        "type": "object",
+        "description": "JSON by default; use -H where supported for human output."
+      },
+      "exit_codes": {
+        "0": "success",
+        "1": "invalid input, warning, or operation failure"
+      }
+    },
+    {
       "name": "cut",
       "summary": "Extract a time range into a new standalone draft.",
       "usage": "capcut cut <project> <start> <end> --out <path>",
@@ -985,6 +1054,58 @@
       "prerequisites": [],
       "output": {
         "type": "file",
+        "description": "JSON by default; use -H where supported for human output."
+      },
+      "exit_codes": {
+        "0": "success",
+        "1": "invalid input, warning, or operation failure"
+      }
+    },
+    {
+      "name": "duplicate",
+      "summary": "Duplicate a segment at its same timeline position onto a track above the source.",
+      "usage": "capcut duplicate <project> <segment-id> [--track <track-name>] [--new-track]",
+      "positionals": [
+        {
+          "name": "project",
+          "type": "path",
+          "required": true
+        },
+        {
+          "name": "segment-id",
+          "type": "id",
+          "required": true
+        },
+        {
+          "name": "track-name",
+          "type": "string",
+          "required": false
+        }
+      ],
+      "options": [
+        {
+          "name": "track",
+          "flags": [
+            "--track"
+          ],
+          "type": "string",
+          "required": false,
+          "description": "Place the copy onto this existing same-type track; errors when the target range is occupied there."
+        },
+        {
+          "name": "new_track",
+          "flags": [
+            "--new-track"
+          ],
+          "type": "boolean",
+          "required": false,
+          "description": "Create a fresh same-type track directly above the source (the default)."
+        }
+      ],
+      "mutates": true,
+      "prerequisites": [],
+      "output": {
+        "type": "object",
         "description": "JSON by default; use -H where supported for human output."
       },
       "exit_codes": {
@@ -2572,6 +2693,44 @@
           "type": "number",
           "required": false,
           "description": "Background vertical offset."
+        },
+        {
+          "name": "color_cycle",
+          "flags": [
+            "--color-cycle"
+          ],
+          "type": "string",
+          "required": false,
+          "description": "Rotate the base text colour per cue: comma-separated #RRGGBB list, in order. Wins over --color per cue; independent of keyword emphasis."
+        },
+        {
+          "name": "highlight_words",
+          "flags": [
+            "--highlight-words"
+          ],
+          "type": "string",
+          "required": false,
+          "description": "Emphasize case-insensitive whole-word matches per cue: comma-separated words, or @file with one word/phrase per line."
+        },
+        {
+          "name": "keyword_color",
+          "flags": [
+            "--keyword-color"
+          ],
+          "type": "string",
+          "required": false,
+          "description": "Emphasis colour for --highlight-words matches.",
+          "default": "#FFD700"
+        },
+        {
+          "name": "keyword_size",
+          "flags": [
+            "--keyword-size"
+          ],
+          "type": "number",
+          "required": false,
+          "description": "Emphasis size for --highlight-words matches, as a multiplier on the cue's base font size.",
+          "default": 1.2
         }
       ],
       "mutates": true,
@@ -3048,6 +3207,44 @@
           "type": "path",
           "required": false,
           "description": "Apply a make-preset style preset; explicit flags override preset values."
+        },
+        {
+          "name": "color_cycle",
+          "flags": [
+            "--color-cycle"
+          ],
+          "type": "string",
+          "required": false,
+          "description": "Rotate the base text colour per cue: comma-separated #RRGGBB list, in order. Wins over --color per cue; independent of keyword emphasis."
+        },
+        {
+          "name": "highlight_words",
+          "flags": [
+            "--highlight-words"
+          ],
+          "type": "string",
+          "required": false,
+          "description": "Emphasize case-insensitive whole-word matches per cue: comma-separated words, or @file with one word/phrase per line."
+        },
+        {
+          "name": "keyword_color",
+          "flags": [
+            "--keyword-color"
+          ],
+          "type": "string",
+          "required": false,
+          "description": "Emphasis colour for --highlight-words matches.",
+          "default": "#FFD700"
+        },
+        {
+          "name": "keyword_size",
+          "flags": [
+            "--keyword-size"
+          ],
+          "type": "number",
+          "required": false,
+          "description": "Emphasis size for --highlight-words matches, as a multiplier on the cue's base font size.",
+          "default": 1.2
         }
       ],
       "mutates": true,
@@ -3306,6 +3503,53 @@
         }
       ],
       "options": [],
+      "mutates": true,
+      "prerequisites": [],
+      "output": {
+        "type": "object",
+        "description": "JSON by default; use -H where supported for human output."
+      },
+      "exit_codes": {
+        "0": "success",
+        "1": "invalid input, warning, or operation failure"
+      }
+    },
+    {
+      "name": "register",
+      "summary": "Repair an existing draft's registration metadata (draft_meta_info.json + root_meta_info.json entry) from a read-only draft_content.json so the CapCut app lists it (plan by default; --apply writes with .bak).",
+      "usage": "capcut register <project-dir> [--apply] [--drafts <dir>]",
+      "positionals": [
+        {
+          "name": "project-dir",
+          "type": "path",
+          "required": true
+        },
+        {
+          "name": "dir",
+          "type": "path",
+          "required": false
+        }
+      ],
+      "options": [
+        {
+          "name": "apply",
+          "flags": [
+            "--apply"
+          ],
+          "type": "boolean",
+          "required": false,
+          "description": "Write the repaired draft_meta_info.json / root_meta_info.json entry (default: print the plan only)."
+        },
+        {
+          "name": "drafts",
+          "flags": [
+            "--drafts"
+          ],
+          "type": "path",
+          "required": false,
+          "description": "Draft store root when the draft does not live inside a known one."
+        }
+      ],
       "mutates": true,
       "prerequisites": [],
       "output": {

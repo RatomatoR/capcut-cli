@@ -120,7 +120,7 @@ export interface KeyframeInput {
   easing?: string; // per-keyframe override of the per-call easing
 }
 
-function uuidHex(): string {
+export function uuidHex(): string {
   return randomUUID().replace(/-/g, "");
 }
 
@@ -1057,6 +1057,116 @@ export function setTextRanges(
   text.content = JSON.stringify(content);
 
   return { segmentId: seg.id, material_id: text.id, styles: styles.length, text_length: maxCodeUnits };
+}
+
+// --- v0.14: per-word keyword emphasis + colour cycling ---
+// Both `caption` and `import-srt` accept --highlight-words / --keyword-color /
+// --keyword-size / --color-cycle. The offset scheme is the one setTextRanges
+// already defines: JS string code-unit indices in, UTF-16LE bytes in the draft.
+// No second offset scheme — findKeywordRanges only ever produces code-unit
+// indices that feed straight into TextRangeInput.
+
+/** The gold `caption --karaoke` paints the active word with; --keyword-color defaults to it. */
+export const KARAOKE_HIGHLIGHT_COLOR = "#FFD700";
+/** Default --keyword-size multiplier when --highlight-words is present. */
+export const DEFAULT_KEYWORD_SIZE = 1.2;
+
+/**
+ * Case-insensitive whole-word matches of `words` (words or phrases) in `text`.
+ * Offsets are JS code-unit indices — exactly what TextRangeInput.start/end
+ * take. "Whole word" is Unicode-aware: a match may not butt against a letter
+ * or digit, so `für` matches inside `Grüße für alle` but `cap` never matches
+ * inside `capcut`. Overlapping matches (e.g. "New York" + "York") keep the
+ * earlier one, matching setTextRanges' no-overlap contract.
+ */
+export function findKeywordRanges(text: string, words: string[]): Array<{ start: number; end: number }> {
+  const matches: Array<{ start: number; end: number }> = [];
+  for (const word of words) {
+    const needle = word.trim();
+    if (!needle) continue;
+    const escaped = needle.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    const re = new RegExp(`(?<![\\p{L}\\p{N}])${escaped}(?![\\p{L}\\p{N}])`, "giu");
+    for (const m of text.matchAll(re)) {
+      matches.push({ start: m.index, end: m.index + m[0].length });
+    }
+  }
+  matches.sort((a, b) => a.start - b.start || a.end - b.end);
+  const kept: Array<{ start: number; end: number }> = [];
+  for (const m of matches) {
+    const last = kept[kept.length - 1];
+    if (last && m.start < last.end) continue;
+    kept.push(m);
+  }
+  return kept;
+}
+
+export interface KeywordEmphasisOptions {
+  words: string[]; // keywords/phrases to emphasize (may be empty when only cycling colours)
+  color: string; // emphasis "#RRGGBB"
+  sizeMultiplier: number; // emphasis size = baseSize * sizeMultiplier
+  baseSize: number; // the cue's base font size the multiplier applies to
+  /**
+   * When set, gaps between emphasis ranges are written as explicit base-styled
+   * ranges instead of relying on setTextRanges' styles[0] inheritance. Caption
+   * materials store their base style as {font_color, font_size} (no fill/size
+   * keys), which that inheritance cannot see — explicit coverage keeps the
+   * cue's real base colour/size on the unmatched text.
+   */
+  baseColor?: string;
+  baseBold?: boolean;
+  /** Ranges built first (e.g. the karaoke active word); keyword matches override them. */
+  presetRanges?: TextRangeInput[];
+}
+
+/**
+ * Build the non-overlapping range list for one cue: keyword emphasis ranges,
+ * any preset (karaoke) ranges that no keyword overlaps, and — when baseColor
+ * is given — explicit base-styled gap ranges covering the rest of the text.
+ * Follows the v0.13 "explicit flags beat preset ranges" contract: a keyword
+ * match overrides the overlapped preset word's colour/size but inherits its
+ * bold/italic/underline. Returns zero ranges when there is nothing to style.
+ */
+export function buildEmphasisRanges(
+  text: string,
+  opts: KeywordEmphasisOptions,
+): { ranges: TextRangeInput[]; matches: number } {
+  const keywordRanges: TextRangeInput[] = findKeywordRanges(text, opts.words).map((m) => ({
+    start: m.start,
+    end: m.end,
+    font_color: opts.color,
+    font_size: opts.baseSize * opts.sizeMultiplier,
+  }));
+
+  const merged: TextRangeInput[] = [...keywordRanges];
+  for (const preset of opts.presetRanges ?? []) {
+    const overlapping = keywordRanges.filter((k) => k.start < preset.end && preset.start < k.end);
+    if (overlapping.length === 0) {
+      merged.push(preset);
+      continue;
+    }
+    for (const k of overlapping) {
+      if (k.bold === undefined) k.bold = preset.bold;
+      if (k.italic === undefined) k.italic = preset.italic;
+      if (k.underline === undefined) k.underline = preset.underline;
+    }
+  }
+  merged.sort((a, b) => a.start - b.start);
+  if (merged.length === 0 || opts.baseColor === undefined) return { ranges: merged, matches: keywordRanges.length };
+
+  const baseProps = {
+    font_color: opts.baseColor,
+    font_size: opts.baseSize,
+    ...(opts.baseBold === undefined ? {} : { bold: opts.baseBold }),
+  };
+  const covered: TextRangeInput[] = [];
+  let cursor = 0;
+  for (const r of merged) {
+    if (r.start > cursor) covered.push({ start: cursor, end: r.start, ...baseProps });
+    covered.push(r);
+    cursor = r.end;
+  }
+  if (cursor < text.length) covered.push({ start: cursor, end: text.length, ...baseProps });
+  return { ranges: covered, matches: keywordRanges.length };
 }
 
 // --- Bubble (speech-bubble) effect on a text segment ---
