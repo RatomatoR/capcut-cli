@@ -1322,6 +1322,136 @@ export function setMixMode(
   return { segmentId: seg.id, material_id: mat.id, mix_mode: value };
 }
 
+// --- Material crop ---
+
+// Normalized crop rect in source-material space: x/y = top-left corner,
+// w/h = extent, all 0..1 fractions of the source frame.
+export interface CropRect {
+  x: number;
+  y: number;
+  w: number;
+  h: number;
+}
+
+// Preset aspect ratios for `crop --ratio`. "free" restores the full frame.
+const CROP_RATIOS: Record<string, number> = {
+  "1:1": 1,
+  "16:9": 16 / 9,
+  "9:16": 9 / 16,
+  "4:3": 4 / 3,
+  "3:4": 3 / 4,
+};
+
+export function cropPresets(): string[] {
+  return ["free", ...Object.keys(CROP_RATIOS)];
+}
+
+// Centered maximal crop of `preset` aspect against a width x height source.
+export function cropRectForRatio(width: number, height: number, preset: string): CropRect {
+  if (preset === "free") return { x: 0, y: 0, w: 1, h: 1 };
+  const ratio = CROP_RATIOS[preset];
+  if (!ratio) throw new Error(`Unknown ratio: ${preset}. Valid: ${cropPresets().join(", ")}`);
+  if (!(width > 0) || !(height > 0)) {
+    throw new Error(
+      `Source material has no stored width/height, so --ratio cannot be computed. Pass an explicit --rect <x,y,w,h> instead.`,
+    );
+  }
+  const source = width / height;
+  // Target wider than the source: keep full width, shrink height. Else inverse.
+  const w = ratio >= source ? 1 : ratio / source;
+  const h = ratio >= source ? source / ratio : 1;
+  return { x: (1 - w) / 2, y: (1 - h) / 2, w, h };
+}
+
+// The crop lives on the *video material*, not the segment (same as mix-mode).
+function findCropMaterial(
+  draft: Draft,
+  segmentId: string,
+): { seg: Segment; mat: Record<string, unknown> & { id: string; type?: string } } {
+  const found = findSegment(draft, segmentId);
+  if (!found) throw new Error(`Segment not found: ${segmentId}`);
+  const seg = found.segment;
+  const videos = (draft.materials.videos ?? []) as Array<Record<string, unknown> & { id: string; type?: string }>;
+  const mat = videos.find((v) => v.id === seg.material_id);
+  if (!mat) {
+    throw new Error(`crop only applies to video/photo segments (no video material for ${segmentId})`);
+  }
+  if (mat.type !== "video" && mat.type !== "photo") {
+    throw new Error(`crop only applies to video/photo materials (got type=${mat.type})`);
+  }
+  return { seg, mat };
+}
+
+export function getCrop(
+  draft: Draft,
+  segmentId: string,
+): {
+  segmentId: string;
+  material_id: string;
+  width: number | null;
+  height: number | null;
+  crop: Record<string, number> | null;
+} {
+  const { seg, mat } = findCropMaterial(draft, segmentId);
+  return {
+    segmentId: seg.id,
+    material_id: mat.id,
+    width: typeof mat.width === "number" ? mat.width : null,
+    height: typeof mat.height === "number" ? mat.height : null,
+    crop: (mat.crop as Record<string, number> | undefined) ?? null,
+  };
+}
+
+// Tolerance for x+w / y+h sums that land a float ulp past 1 (e.g. 0.3 + 0.7).
+const CROP_EPSILON = 1e-9;
+
+export function setCrop(
+  draft: Draft,
+  segmentId: string,
+  rect: CropRect,
+): { segmentId: string; material_id: string; rect: CropRect; crop: Record<string, number>; crop_ratio?: string } {
+  const { x, y, w, h } = rect;
+  for (const [name, value] of Object.entries(rect)) {
+    if (!Number.isFinite(value)) throw new Error(`Crop rect ${name} must be a finite number (got ${value})`);
+  }
+  if (x < 0 || y < 0) throw new Error(`Crop rect x/y must be >= 0 (got x=${x}, y=${y})`);
+  if (w <= 0 || h <= 0) throw new Error(`Crop rect w/h must be > 0 (got w=${w}, h=${h})`);
+  if (x + w > 1 + CROP_EPSILON || y + h > 1 + CROP_EPSILON) {
+    throw new Error(`Crop rect must stay inside the frame: x+w <= 1 and y+h <= 1 (got x+w=${x + w}, y+h=${y + h})`);
+  }
+  const { seg, mat } = findCropMaterial(draft, segmentId);
+  const right = Math.min(1, x + w);
+  const bottom = Math.min(1, y + h);
+  // Same 8-corner struct the factory writes at creation: y grows downward,
+  // upper_left = (x, y) ... lower_right = (x+w, y+h).
+  const crop = {
+    lower_left_x: x,
+    lower_left_y: bottom,
+    lower_right_x: right,
+    lower_right_y: bottom,
+    upper_left_x: x,
+    upper_left_y: y,
+    upper_right_x: right,
+    upper_right_y: y,
+  };
+  mat.crop = crop;
+  const result: {
+    segmentId: string;
+    material_id: string;
+    rect: CropRect;
+    crop: Record<string, number>;
+    crop_ratio?: string;
+  } = { segmentId: seg.id, material_id: mat.id, rect, crop };
+  // CapCut's preset enum values for crop_ratio are not published, so when the
+  // material carries the field we stamp the safe "free" value and let the app
+  // recompute from the corner points (stated in --help).
+  if ("crop_ratio" in mat) {
+    mat.crop_ratio = "free";
+    result.crop_ratio = "free";
+  }
+  return result;
+}
+
 // --- Audio fade-in / fade-out ---
 
 // Writes a `materials.audio_fades[]` entry shaped like pyJianYingDraft's

@@ -145,6 +145,7 @@ const usages = {
   "add-audio": "capcut add-audio <project> <file-or-url> <start> [duration] [options]",
   "add-video": "capcut add-video <project> <file-or-url> <start> [duration] [options]",
   "add-text": "capcut add-text <project> <start> <duration> <text> [options]",
+  crop: "capcut crop <project> <segment-id> [--ratio <r> | --rect <x,y,w,h> | --reset]",
   cut: "capcut cut <project> <start> <end> --out <path>",
   keyframe: "capcut keyframe <project> <id> <property> <time> <value> [--easing <name>] | --batch",
   transition: "capcut transition <project> <id> <slug> [--duration <time>]",
@@ -230,6 +231,17 @@ const optionsByCommand: Record<string, OptionSpec[]> = {
     FFPROBE,
   ],
   "add-text": [TRACK_NAME, ...TEXT_STYLE.slice(0, 5), PRESET],
+  crop: [
+    option(
+      "ratio",
+      ["--ratio"],
+      "enum",
+      "Centered maximal crop of this aspect against the source material's stored width/height.",
+      { values: ["free", "1:1", "16:9", "9:16", "4:3", "3:4"] },
+    ),
+    option("rect", ["--rect"], "string", "Explicit normalized crop rect x,y,w,h (0..1); overrides --ratio."),
+    option("reset", ["--reset"], "boolean", "Restore the full frame."),
+  ],
   cut: [OUT],
   keyframe: [
     option("batch", ["--batch"], "boolean", "Read JSONL keyframes from stdin."),
@@ -448,6 +460,7 @@ optionsByCommand["image-anim"] = optionsByCommand["text-anim"];
 //   --granularity, --format -> export-srt
 //   --preset            -> add-text, text-style, caption
 //   --apply             -> sync-timelines
+//   --ratio, --rect, --reset -> crop
 //   --threshold, --min-gap, --limit, --json -> detect-scenes
 // Everywhere else they fall through to the positional stream verbatim, matching
 // pre-release behaviour where these tokens were unknown and preserved.
@@ -460,6 +473,9 @@ export const RELEASE_SCOPED_FLAGS: ReadonlySet<string> = new Set([
   "--limit",
   "--min-gap",
   "--preset",
+  "--ratio",
+  "--rect",
+  "--reset",
   "--threshold",
 ]);
 
@@ -481,6 +497,7 @@ const mutating = new Set([
   "add-audio",
   "add-video",
   "add-text",
+  "crop",
   "cut",
   "keyframe",
   "transition",
