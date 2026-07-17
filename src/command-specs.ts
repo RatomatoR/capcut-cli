@@ -172,6 +172,7 @@ const usages = {
   "add-text": "capcut add-text <project> <start> <duration> <text> [options]",
   crop: "capcut crop <project> <segment-id> [--ratio <r> | --rect <x,y,w,h> | --reset]",
   cut: "capcut cut <project> <start> <end> --out <path>",
+  duplicate: "capcut duplicate <project> <segment-id> [--track <track-name>] [--new-track]",
   keyframe: "capcut keyframe <project> <id> <property> <time> <value> [--easing <name>] | --batch",
   transition: "capcut transition <project> <id> <slug> [--duration <time>]",
   mask: "capcut mask <project> <id> <slug> [options] | --off",
@@ -269,6 +270,20 @@ const optionsByCommand: Record<string, OptionSpec[]> = {
     option("reset", ["--reset"], "boolean", "Restore the full frame."),
   ],
   cut: [OUT],
+  duplicate: [
+    option(
+      "track",
+      ["--track"],
+      "string",
+      "Place the copy onto this existing same-type track; errors when the target range is occupied there.",
+    ),
+    option(
+      "new_track",
+      ["--new-track"],
+      "boolean",
+      "Create a fresh same-type track directly above the source (the default).",
+    ),
+  ],
   keyframe: [
     option("batch", ["--batch"], "boolean", "Read JSONL keyframes from stdin."),
     option(
@@ -501,6 +516,7 @@ optionsByCommand["image-anim"] = optionsByCommand["text-anim"];
 //   --threshold, --min-gap, --limit, --json -> detect-scenes
 //   --highlight-words, --keyword-color, --keyword-size, --color-cycle
 //                       -> caption, import-srt (v0.14 keyword emphasis)
+//   --new-track          -> duplicate
 // Everywhere else they fall through to the positional stream verbatim, matching
 // pre-release behaviour where these tokens were unknown and preserved.
 export const RELEASE_SCOPED_FLAGS: ReadonlySet<string> = new Set([
@@ -515,6 +531,7 @@ export const RELEASE_SCOPED_FLAGS: ReadonlySet<string> = new Set([
   "--keyword-size",
   "--limit",
   "--min-gap",
+  "--new-track",
   "--preset",
   "--ratio",
   "--rect",
@@ -542,6 +559,7 @@ const mutating = new Set([
   "add-text",
   "crop",
   "cut",
+  "duplicate",
   "keyframe",
   "transition",
   "mask",
