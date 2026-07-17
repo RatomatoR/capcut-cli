@@ -24,6 +24,8 @@ JSON in, JSON out: every command reads and writes the local draft store directly
 - **Library** — `import { loadDraft, lintDraft, saveDraft } from "capcut-cli"` (typed, zero-dep)
 - **Queue runner** — `capcut serve` reads JSONL jobs from stdin, for [n8n / Make / Coze](./examples/serve-automation.md)
 
+> **New in v0.14.0:** duplicate a segment onto an overlay track above its source (`duplicate`), repair missing draft registration on existing drafts (`register`), read + edit the source-material crop (`crop --ratio | --rect`), per-word keyword emphasis and per-cue colour cycling for captions (`--highlight-words`, `--keyword-size`, `--color-cycle` on `caption`/`import-srt`), and UTF-8 BOM tolerance on every file the CLI reads. Full details in the [changelog](./CHANGELOG.md).
+
 > **New in v0.13.0:** timeline-mirror repair for CapCut ≥ 8.7 (`sync-timelines`), word-level subtitle export (`export-srt --granularity word`, SRT + VTT), CapCut-native keyframe easing (`keyframe --easing`), deterministic scene-cut detection (`detect-scenes`), portable text-style presets (`make-preset` + `--preset`), and `lint --fix` auto-repair. Full details in the [changelog](./CHANGELOG.md).
 
 ## Install
