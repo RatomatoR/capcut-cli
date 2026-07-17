@@ -77,6 +77,7 @@ import {
   applyTemplate,
   copyTextStyle,
   cutProject,
+  duplicateSegment,
   effectSlugs,
   filterCatalogue,
   filterSlugs,
@@ -128,6 +129,7 @@ export const COMMANDS = [
   "add-video",
   "add-text",
   "cut",
+  "duplicate",
   "keyframe",
   "transition",
   "mask",
@@ -318,6 +320,15 @@ Edit:
   volume     <project> <id> <level>             Set volume (0.0-1.0)
   trim       <project> <id> <start> <duration>  Trim segment (times in seconds)
   opacity    <project> <id> <alpha>             Set opacity (0.0-1.0)
+  duplicate  <project> <segment-id> [--track <track-name> | --new-track]
+             Duplicate a segment at the SAME timeline position/duration onto a
+             track that renders ABOVE the source (the PIP local-retouch flow
+             from issue #44: copy the clip above itself, then mask the copy).
+             Default and --new-track: a fresh same-type track directly above
+             the source. --track <track-name>: use that existing same-type
+             track; exits 1 when the target range is occupied there. The
+             source video/audio material stays shared; per-segment companion
+             materials (speed, canvas, mask, ...) are cloned with fresh ids.
   export-srt <project> [options]                Export subtitles to SRT/WebVTT
   batch      <project>                          Run multiple edits from stdin (JSONL)
   restore    <project> [--step N | --list]      Undo writes (latest .bak, or N writes back; --list history)
@@ -734,6 +745,8 @@ interface Flags {
   minGap?: number;
   limit?: number;
   json?: boolean;
+  // duplicate
+  newTrack?: boolean;
 }
 
 // Map CLI enum flags -> enums.json category key. Order matters for HELP text.
@@ -1073,6 +1086,8 @@ function parseFlags(args: string[]): { positional: string[]; flags: Flags } {
       flags.limit = parseInt(args[++i], 10);
     } else if (a === "--json") {
       flags.json = true;
+    } else if (a === "--new-track") {
+      flags.newTrack = true;
     } else {
       const hit = ENUM_FLAG_MAP.find((f) => f.flag === a);
       if (hit) {
@@ -2000,6 +2015,31 @@ function cmdCut(draft: Draft, _filePath: string, positional: string[], flags: Fl
   const indent = 0;
   writeFileSync(flags.out, JSON.stringify(draft, null, indent), "utf-8");
   out({ ok: true, kept: result.kept, removed: result.removed, duration_us: end - start, out: flags.out }, flags);
+}
+
+function cmdDuplicate(draft: Draft, filePath: string, positional: string[], flags: Flags): void {
+  const segId = positional[2];
+  if (!segId) die("Usage: capcut duplicate <project> <segment-id> [--track <track-name>] [--new-track]");
+  if (flags.track !== undefined && flags.newTrack) {
+    die(
+      "--track and --new-track are mutually exclusive: --track reuses an existing track, --new-track creates one (the default).",
+    );
+  }
+  const result = duplicateSegment(draft, segId, { trackName: flags.track });
+  saveDraft(filePath, draft);
+  out(
+    {
+      ok: true,
+      new_segment_id: result.segmentId,
+      source_segment_id: result.sourceSegmentId,
+      material_id: result.materialId,
+      track_id: result.trackId,
+      track_name: result.trackName,
+      new_track: result.createdTrack,
+      cloned_materials: result.clonedMaterials,
+    },
+    flags,
+  );
 }
 
 // --- Templates ---
@@ -3023,6 +3063,7 @@ const SUMMARIES: Record<string, string> = {
   "add-video": "Add a local or Wikimedia video/image on a video track.",
   "add-text": "Add a text segment with font/color/position options.",
   cut: "Extract a time range into a new standalone draft.",
+  duplicate: "Duplicate a segment at its same timeline position onto a track above the source.",
   keyframe: "Add a keyframe (position/scale/rotation/alpha/volume); single or --batch.",
   transition: "Add a transition between segments.",
   mask: "Apply a mask (linear/circle/heart/...) with geometry flags, or --off.",
@@ -3728,6 +3769,10 @@ async function main(): Promise<void> {
     case "cut":
       requireArgs(positional, 4, "capcut cut <project> <start> <end> --out <path>");
       cmdCut(draft, filePath, positional, flags);
+      break;
+    case "duplicate":
+      requireArgs(positional, 3, "capcut duplicate <project> <segment-id> [--track <track-name>] [--new-track]");
+      cmdDuplicate(draft, filePath, positional, flags);
       break;
     case "keyframe":
       requireArgs(positional, 3, "capcut keyframe <project> <id> <property> <time> <value>");

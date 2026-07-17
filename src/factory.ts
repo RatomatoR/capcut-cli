@@ -1028,6 +1028,146 @@ function deepCloneWithIdRemap(obj: Record<string, unknown>, remapId: (old: strin
   return clone;
 }
 
+// --- Duplicate (issue #44: PIP local retouch — copy a clip above itself) ---
+
+export interface DuplicateSegmentOptions {
+  /** Place the copy onto this existing same-type track instead of creating one. */
+  trackName?: string;
+}
+
+export interface DuplicateSegmentResult {
+  segmentId: string;
+  sourceSegmentId: string;
+  materialId: string;
+  trackId: string;
+  trackName: string;
+  createdTrack: boolean;
+  clonedMaterials: Array<{ type: string; id: string; source_id: string }>;
+}
+
+// The heavy file-backed media buckets. A duplicate SHARES these by reference —
+// both segments point at the same source clip. Every other material the app
+// treats as a per-segment instance and must be cloned (see below).
+const SHARED_PRIMARY_BUCKETS = new Set(["videos", "audios"]);
+
+/**
+ * Duplicate a segment at the SAME timeline position/duration onto a track that
+ * renders above the source. Default: a fresh same-type track inserted directly
+ * after the source track — sortTracks is stable within a type and a later
+ * same-type track renders ABOVE, so the copy sits exactly on top of its
+ * source. With `trackName`, the copy goes onto that existing same-type track
+ * instead; occupied target range / missing track / type mismatch all throw.
+ */
+export function duplicateSegment(
+  draft: Draft,
+  segId: string,
+  opts: DuplicateSegmentOptions = {},
+): DuplicateSegmentResult {
+  const found = findSegment(draft, segId);
+  if (!found) throw new Error(`Segment not found: ${segId}`);
+  const { track: sourceTrack, segment: sourceSeg } = found;
+  const { start, duration } = sourceSeg.target_timerange;
+
+  const primary = findMaterialGlobal(draft, sourceSeg.material_id);
+  if (!primary) throw new Error(`Material not found for segment: ${segId}`);
+
+  let track: Track;
+  let createdTrack = false;
+  if (opts.trackName !== undefined) {
+    const target = draft.tracks.find((t) => t.name === opts.trackName);
+    if (!target) throw new Error(`Track not found: ${opts.trackName}`);
+    if (target.type !== sourceTrack.type) {
+      throw new Error(
+        `Track "${opts.trackName}" is a ${target.type} track; the copy of a ${sourceTrack.type} segment needs a ${sourceTrack.type} track.`,
+      );
+    }
+    const end = start + duration;
+    const blocking = target.segments.find(
+      (s) => s.target_timerange.start < end && s.target_timerange.start + s.target_timerange.duration > start,
+    );
+    if (blocking) {
+      throw new Error(
+        `Track "${opts.trackName}" is occupied over ${start}us-${end}us (segment ${blocking.id}). ` +
+          "Pick a track that is free at that range, or omit --track to create a new one above the source.",
+      );
+    }
+    track = target;
+  } else {
+    const names = new Set(draft.tracks.map((t) => t.name));
+    let name = `${sourceTrack.name}-copy`;
+    for (let n = 2; names.has(name); n++) name = `${sourceTrack.name}-copy-${n}`;
+    track = {
+      id: uuid(),
+      type: sourceTrack.type,
+      name,
+      attribute: 0,
+      segments: [],
+      is_default_name: false,
+      flag: 0,
+    } as unknown as Track;
+    draft.tracks.splice(draft.tracks.indexOf(sourceTrack) + 1, 0, track);
+    createdTrack = true;
+  }
+
+  const newSeg = structuredClone(sourceSeg);
+  newSeg.id = uuid();
+  newSeg.raw_segment_id = track.id;
+  const clonedMaterials: DuplicateSegmentResult["clonedMaterials"] = [];
+
+  // Non-media primaries (a text segment's text material, a sticker's sticker
+  // material, ...) are 1:1 with their segment — clone them like the
+  // companions. Only videos/audios stay shared.
+  if (!SHARED_PRIMARY_BUCKETS.has(primary.type)) {
+    const clone = structuredClone(primary.material);
+    clone.id = uuid();
+    draft.materials[primary.type].push(clone);
+    newSeg.material_id = clone.id as string;
+    clonedMaterials.push({ type: primary.type, id: clone.id as string, source_id: sourceSeg.material_id });
+  }
+
+  // Per-segment companions referenced via extra_material_refs (speed,
+  // placeholder_info, sound_channel_mapping, vocal_separation, canvas,
+  // material_color, masks, animations, ...) are cloned with fresh ids —
+  // mirroring createCompanionMaterials, which never shares one instance
+  // between two segments. Dangling refs are dropped, not copied.
+  const newRefs: string[] = [];
+  for (const refId of sourceSeg.extra_material_refs ?? []) {
+    const extra = findMaterialGlobal(draft, refId);
+    if (!extra) continue;
+    const clone = structuredClone(extra.material);
+    clone.id = uuid();
+    draft.materials[extra.type].push(clone);
+    newRefs.push(clone.id as string);
+    clonedMaterials.push({ type: extra.type, id: clone.id as string, source_id: refId });
+  }
+  newSeg.extra_material_refs = newRefs;
+
+  // Keyframe lists/entries live embedded in the segment; re-mint their ids on
+  // the copy (dash-less hex, matching what addKeyframes writes).
+  if (Array.isArray(newSeg.common_keyframes)) {
+    for (const list of newSeg.common_keyframes as Array<Record<string, unknown>>) {
+      if (typeof list.id === "string") list.id = uuid().replace(/-/g, "");
+      if (Array.isArray(list.keyframe_list)) {
+        for (const kf of list.keyframe_list as Array<Record<string, unknown>>) {
+          if (typeof kf.id === "string") kf.id = uuid().replace(/-/g, "");
+        }
+      }
+    }
+  }
+
+  track.segments.push(newSeg);
+
+  return {
+    segmentId: newSeg.id,
+    sourceSegmentId: sourceSeg.id,
+    materialId: newSeg.material_id,
+    trackId: track.id,
+    trackName: track.name,
+    createdTrack,
+    clonedMaterials,
+  };
+}
+
 // --- Sticker ---
 
 export interface AddStickerOptions {

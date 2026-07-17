@@ -146,6 +146,7 @@ const usages = {
   "add-video": "capcut add-video <project> <file-or-url> <start> [duration] [options]",
   "add-text": "capcut add-text <project> <start> <duration> <text> [options]",
   cut: "capcut cut <project> <start> <end> --out <path>",
+  duplicate: "capcut duplicate <project> <segment-id> [--track <track-name>] [--new-track]",
   keyframe: "capcut keyframe <project> <id> <property> <time> <value> [--easing <name>] | --batch",
   transition: "capcut transition <project> <id> <slug> [--duration <time>]",
   mask: "capcut mask <project> <id> <slug> [options] | --off",
@@ -231,6 +232,20 @@ const optionsByCommand: Record<string, OptionSpec[]> = {
   ],
   "add-text": [TRACK_NAME, ...TEXT_STYLE.slice(0, 5), PRESET],
   cut: [OUT],
+  duplicate: [
+    option(
+      "track",
+      ["--track"],
+      "string",
+      "Place the copy onto this existing same-type track; errors when the target range is occupied there.",
+    ),
+    option(
+      "new_track",
+      ["--new-track"],
+      "boolean",
+      "Create a fresh same-type track directly above the source (the default).",
+    ),
+  ],
   keyframe: [
     option("batch", ["--batch"], "boolean", "Read JSONL keyframes from stdin."),
     option(
@@ -449,6 +464,7 @@ optionsByCommand["image-anim"] = optionsByCommand["text-anim"];
 //   --preset            -> add-text, text-style, caption
 //   --apply             -> sync-timelines
 //   --threshold, --min-gap, --limit, --json -> detect-scenes
+//   --new-track          -> duplicate
 // Everywhere else they fall through to the positional stream verbatim, matching
 // pre-release behaviour where these tokens were unknown and preserved.
 export const RELEASE_SCOPED_FLAGS: ReadonlySet<string> = new Set([
@@ -459,6 +475,7 @@ export const RELEASE_SCOPED_FLAGS: ReadonlySet<string> = new Set([
   "--json",
   "--limit",
   "--min-gap",
+  "--new-track",
   "--preset",
   "--threshold",
 ]);
@@ -482,6 +499,7 @@ const mutating = new Set([
   "add-video",
   "add-text",
   "cut",
+  "duplicate",
   "keyframe",
   "transition",
   "mask",
