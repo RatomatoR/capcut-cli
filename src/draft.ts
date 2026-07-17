@@ -320,7 +320,9 @@ function writeAndSync(path: string, content: string): void {
   }
 }
 
-function writeAtomic(path: string, content: string): void {
+// Exported for factory.ts (register): the same temp+fsync+rename write the
+// draft save path uses, for metadata files outside commitDraftTargets.
+export function writeAtomic(path: string, content: string): void {
   const temp = `${path}.capcut-cli-${process.pid}-${Date.now()}.tmp`;
   writeAndSync(temp, content);
   renameSync(temp, path);

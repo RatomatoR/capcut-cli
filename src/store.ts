@@ -444,6 +444,12 @@ export function diagnoseDraftStore(input: string): DraftStoreReport {
       "CapCut >= 8.7 detected without a readable template-2.tmp timeline; run `capcut sync-timelines <project>` to see which targets can be reconciled.",
     );
   }
+  if (store.candidates.some((candidate) => candidate.name === "draft_meta_info.json" && !candidate.exists)) {
+    actions.push(
+      "draft_meta_info.json is missing, so the CapCut app may not list this draft. Run `capcut register <project>` " +
+        "(plan only) to review the repair before deciding whether to --apply.",
+    );
+  }
   if (running.length > 0) actions.push(`Close ${running.join(" / ")} before editing this managed draft.`);
   if (actions.length === 0)
     actions.push("Storage targets are readable and agree. A normal CLI write will synchronize them.");
